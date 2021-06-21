@@ -13,20 +13,18 @@
  */
 package io.trino.plugin.clickhouse;
 
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.json.JSONArray;
+import cn.hutool.json.JSONUtil;
+import com.clickhouse.client.data.ClickHouseObjectValue;
+import com.clickhouse.client.data.array.ClickHouseDoubleArrayValue;
+import com.clickhouse.client.data.array.ClickHouseIntArrayValue;
+import com.clickhouse.jdbc.ClickHouseArray;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
-import io.trino.plugin.jdbc.BaseJdbcClient;
-import io.trino.plugin.jdbc.BaseJdbcConfig;
-import io.trino.plugin.jdbc.ColumnMapping;
-import io.trino.plugin.jdbc.ConnectionFactory;
-import io.trino.plugin.jdbc.JdbcColumnHandle;
-import io.trino.plugin.jdbc.JdbcExpression;
-import io.trino.plugin.jdbc.JdbcTableHandle;
-import io.trino.plugin.jdbc.JdbcTypeHandle;
-import io.trino.plugin.jdbc.RemoteTableName;
-import io.trino.plugin.jdbc.SliceWriteFunction;
-import io.trino.plugin.jdbc.WriteMapping;
+import io.trino.plugin.base.util.JsonTypeUtil;
+import io.trino.plugin.jdbc.*;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRewriter;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRule;
 import io.trino.plugin.jdbc.expression.ImplementAvgFloatingPoint;
@@ -42,31 +40,18 @@ import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.SchemaTableName;
-import io.trino.spi.type.CharType;
-import io.trino.spi.type.DecimalType;
-import io.trino.spi.type.Decimals;
-import io.trino.spi.type.StandardTypes;
-import io.trino.spi.type.Type;
-import io.trino.spi.type.TypeManager;
-import io.trino.spi.type.TypeSignature;
-import io.trino.spi.type.VarbinaryType;
-import io.trino.spi.type.VarcharType;
+import io.trino.spi.type.*;
 
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 
-import java.sql.Connection;
-import java.sql.DatabaseMetaData;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Types;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.UUID;
+import java.io.IOException;
+import java.sql.*;
+import java.util.*;
 import java.util.function.BiFunction;
 
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Verify.verify;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
 import static io.airlift.slice.Slices.wrappedLongArray;
 import static io.trino.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
@@ -75,29 +60,7 @@ import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRou
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timestampColumnMappingUsingSqlTimestampWithRounding;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varcharReadFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.*;
 import static io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -108,6 +71,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.StandardTypes.JSON;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
@@ -124,6 +88,7 @@ public class ClickHouseClient
     private final boolean mapStringAsVarchar;
     private final AggregateFunctionRewriter aggregateFunctionRewriter;
     private final Type uuidType;
+    private final Type jsonType;
 
     @Inject
     public ClickHouseClient(
@@ -134,6 +99,7 @@ public class ClickHouseClient
             IdentifierMapping identifierMapping)
     {
         super(config, "\"", connectionFactory, identifierMapping);
+        this.jsonType = typeManager.getType(new TypeSignature(JSON));
         this.uuidType = typeManager.getType(new TypeSignature(StandardTypes.UUID));
         // TODO (https://github.com/trinodb/trino/issues/7102) define session property
         this.mapStringAsVarchar = clickHouseConfig.isMapStringAsVarchar();
@@ -315,15 +281,19 @@ public class ClickHouseClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        String jdbcTypeName = typeHandle.getJdbcTypeName()
+        String typeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
+        if (typeName.startsWith("Nullable(")){
+            typeName = StrUtil.removePrefix(typeName,"Nullable(");
+            typeName = StrUtil.removeSuffix(typeName,")");
+        }
 
+        String jdbcTypeName = typeName.replaceAll("\\(.*\\)$", "");
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;
         }
-
-        switch (jdbcTypeName.replaceAll("\\(.*\\)$", "")) {
+        switch (jdbcTypeName) {
             case "IPv4":
             case "IPv6":
                 // TODO (https://github.com/trinodb/trino/issues/7098) map to Trino IPADDRESS
@@ -349,6 +319,17 @@ public class ClickHouseClient
                 return Optional.of(varbinaryColumnMapping());
             case "UUID":
                 return Optional.of(uuidColumnMapping());
+            case "UInt64":
+                return Optional.of(bigintColumnMapping());
+        }
+
+        if(StrUtil.startWithIgnoreCase(typeName,"DateTime")) {
+            return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MILLIS));
+        }
+
+        String typeNameJson = typeName.toLowerCase(Locale.ROOT);
+        if(typeNameJson.startsWith("json") || typeNameJson.startsWith("array") || typeNameJson.startsWith("map")) {
+            return Optional.of(jsonColumnMapping(typeName));
         }
 
         switch (typeHandle.getJdbcType()) {
@@ -396,6 +377,8 @@ public class ClickHouseClient
                 // clickhouse not implemented for type=class java.time.LocalDateTime
                 // TODO replace it using timestamp relative function after clickhouse adds support for LocalDateTime, or use UTC Calendar
                 return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MILLIS));
+            default:
+                System.out.println("--------暂不支持---------" + typeHandle.getJdbcTypeName());
         }
 
         return Optional.empty();
@@ -496,5 +479,95 @@ public class ClickHouseClient
         return wrappedLongArray(
                 reverseBytes(uuid.getMostSignificantBits()),
                 reverseBytes(uuid.getLeastSignificantBits()));
+    }
+
+    public static Object deserialize(Object object)
+    {
+        try {
+            String json = JSONUtil.toJsonStr(object);
+            if (JSONUtil.isTypeJSONObject(json)){
+                return deserializeJSONObject(json);
+            }else if (JSONUtil.isTypeJSONArray(json)){
+                return deserializeJSONArray(json);
+            }else {
+                return json;
+            }
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+
+    public static Map<String, Object> deserializeJSONObject(Object object)
+    {
+        return JSONUtil.parseObj(object);
+    }
+
+    public static List<Object> deserializeJSONArray(Object object)
+    {
+        return JSONUtil.parseArray(object);
+    }
+
+    private ColumnMapping jsonColumnMapping(String jsonTypeName)
+    {
+        return ColumnMapping.sliceMapping(
+                jsonType,
+                (resultSet, columnIndex) -> {
+                    Object jsonObject = resultSet.getObject(columnIndex);
+                    Object deserialize;
+                    if (jsonObject instanceof ClickHouseArray) {
+                        deserialize = deserialize(resultSet.getString(columnIndex));
+                    }else {
+                        deserialize = deserialize(jsonObject);
+                    }
+                    try {
+                        return JsonTypeUtil.toJsonValue(deserialize);
+                    } catch (IOException e) {
+                        throw new SQLException("无法解析", e);
+                    }
+
+                },
+                (statement, index, value) -> {
+                    if (StrUtil.containsIgnoreCase(jsonTypeName,"array")){
+                        JSONArray list = JSONUtil.parseArray(value.toStringUtf8());
+                        if (StrUtil.containsIgnoreCase(jsonTypeName, "float")){
+                            Double[] json = (Double[]) JSONUtil.parseArray(value.toStringUtf8()).toArray(Double.class);
+                            double[] data = Arrays.stream(json).mapToDouble(Double::doubleValue).toArray();
+                            ClickHouseObjectValue<double[]> of = ClickHouseDoubleArrayValue.of(data);
+                            Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
+                            statement.setArray(index, arrayOf);
+                        }else if (StrUtil.containsIgnoreCase(jsonTypeName, "int")){
+                            Long[] json = (Long[]) JSONUtil.parseArray(value.toStringUtf8()).toArray(Long.class);
+                            int[] data = Arrays.stream(json).mapToInt(Long::intValue).toArray();
+                            ClickHouseObjectValue<int[]> of = ClickHouseIntArrayValue.of(data);
+                            Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
+                            statement.setArray(index, arrayOf);
+                        }else {
+                            Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, list.toArray());
+                            statement.setArray(index, arrayOf);
+                        }
+                    }else if (StrUtil.containsIgnoreCase(jsonTypeName,"map")){
+                        Map data = JSONUtil.parseObj(value.toStringUtf8()).toBean(Map.class);
+                        statement.setObject(index, data);
+                    }else {
+                        throw new SQLException("暂不支持");
+                    }
+                }
+                ,
+                DISABLE_PUSHDOWN);
+    }
+
+    @Override
+    protected void execute(Connection connection, String query)
+    {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(query);
+        }
+        catch (SQLException e) {
+            TrinoException exception = new TrinoException(JDBC_ERROR, e);
+            exception.addSuppressed(new RuntimeException("Query: " + query));
+            throw exception;
+        }
     }
 }

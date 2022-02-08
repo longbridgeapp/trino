@@ -505,7 +505,7 @@ public final class StandardColumnMappings
                 "Precision is out of range: %s", timestampType.getPrecision());
         return ObjectReadFunction.of(
                 LongTimestamp.class,
-                (resultSet, columnIndex) -> toLongTimestamp(timestampType, resultSet.getObject(columnIndex, LocalDateTime.class)));
+                (resultSet, columnIndex) -> toLongTimestamp(timestampType, resultSet.getTimestamp(columnIndex).toLocalDateTime()));
     }
 
     /**

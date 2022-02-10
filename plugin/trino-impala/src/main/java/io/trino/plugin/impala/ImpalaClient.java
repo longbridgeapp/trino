@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.impala;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
@@ -25,6 +26,7 @@ import io.trino.plugin.jdbc.JdbcSortItem;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.PreparedQuery;
+import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.plugin.jdbc.WriteMapping;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRewriter;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRule;
@@ -66,6 +68,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -74,6 +77,7 @@ import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.trino.plugin.base.util.JsonTypeUtil.jsonParse;
@@ -181,10 +185,10 @@ public class ImpalaClient
     public Collection<String> listSchemas(Connection connection)
     {
         // for MySQL, we need to list catalogs instead of schemas
-        try (ResultSet resultSet = connection.getMetaData().getCatalogs()) {
+        try (ResultSet resultSet = connection.getMetaData().getSchemas()) {
             ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
             while (resultSet.next()) {
-                String schemaName = resultSet.getString("TABLE_CAT");
+                String schemaName = resultSet.getString("TABLE_SCHEM");
                 // skip internal schemas
                 if (filterSchema(schemaName)) {
                     schemaNames.add(schemaName);
@@ -225,11 +229,69 @@ public class ImpalaClient
     {
         // MySQL maps their "database" to SQL catalogs and does not have schemas
         DatabaseMetaData metadata = connection.getMetaData();
-        return metadata.getTables(
+        final ResultSet tables = metadata.getTables(
+                "Impala",
                 schemaName.orElse(null),
                 null,
-                escapeNamePattern(tableName, metadata.getSearchStringEscape()).orElse(null),
-                getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
+                null);
+        return tables;
+    }
+
+    @Override
+    public List<SchemaTableName> getTableNames(ConnectorSession session, Optional<String> schema)
+    {
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            try (ResultSet resultSet = getTables(connection, schema, Optional.empty())) {
+                ImmutableList.Builder<SchemaTableName> list = ImmutableList.builder();
+                while (resultSet.next()) {
+                    if (filterSchema(schema.get())) {
+                        list.add(new SchemaTableName(schema.get(), resultSet.getString("TABLE_NAME")));
+                    }
+                }
+                //list.add(new SchemaTableName(schema.get(), "events"));
+                return list.build();
+            }
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public Optional<JdbcTableHandle> getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
+    {
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            String remoteSchema = schemaTableName.getSchemaName();
+            String remoteTable = schemaTableName.getTableName();
+            try (ResultSet resultSet = getTables(connection, Optional.of(remoteSchema), Optional.of(remoteTable))) {
+                List<JdbcTableHandle> tableHandles = new ArrayList<>();
+                while (resultSet.next()) {
+                    final RemoteTableName remoteTableName = getRemoteTable(resultSet);
+                    if (remoteTableName.getSchemaName().get().equals(remoteSchema) && remoteTableName.getTableName().equals(remoteTable)) {
+                        tableHandles.add(new JdbcTableHandle(schemaTableName, remoteTableName));
+                    }
+                }
+                //tableHandles.add(new JdbcTableHandle(schemaTableName, new RemoteTableName(Optional.of("Impala"), Optional.of("rawdata"), "events")));
+                if (tableHandles.isEmpty()) {
+                    return Optional.empty();
+                }
+                if (tableHandles.size() > 1) {
+                    throw new TrinoException(NOT_SUPPORTED, "Multiple tables matched: " + schemaTableName);
+                }
+                return Optional.of(getOnlyElement(tableHandles));
+            }
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    private static RemoteTableName getRemoteTable(ResultSet resultSet) throws SQLException
+    {
+        return new RemoteTableName(
+                Optional.ofNullable(resultSet.getString("TABLE_CAT")),
+                Optional.ofNullable(resultSet.getString("TABLE_SCHEM")),
+                resultSet.getString("TABLE_NAME"));
     }
 
     @Override
@@ -237,7 +299,7 @@ public class ImpalaClient
             throws SQLException
     {
         // MySQL uses catalogs instead of schemas
-        return resultSet.getString("TABLE_CAT");
+        return resultSet.getString("TABLE_SCHEM");
     }
 
     @Override

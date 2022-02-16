@@ -217,7 +217,6 @@ public class ImpalaClient
     public PreparedStatement getPreparedStatement(Connection connection, String sql)
             throws SQLException
     {
-        System.out.println("-------------------" + sql);
         return connection.prepareStatement(sql + " /*sa(production)*/");
     }
 

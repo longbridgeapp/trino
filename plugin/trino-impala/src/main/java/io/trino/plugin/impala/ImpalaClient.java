@@ -13,10 +13,12 @@
  */
 package io.trino.plugin.impala;
 
+import cn.hutool.core.collection.CollUtil;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.trino.plugin.impala.sc.EventTracking;
+import io.trino.plugin.impala.sc.entity.FieldSchema;
 import io.trino.plugin.jdbc.BaseJdbcClient;
-import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
@@ -27,6 +29,7 @@ import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
 import io.trino.plugin.jdbc.PreparedQuery;
 import io.trino.plugin.jdbc.RemoteTableName;
+import io.trino.plugin.jdbc.UnsupportedTypeHandling;
 import io.trino.plugin.jdbc.WriteMapping;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRewriter;
 import io.trino.plugin.jdbc.expression.AggregateFunctionRule;
@@ -50,6 +53,7 @@ import io.trino.spi.connector.JoinCondition;
 import io.trino.spi.connector.JoinStatistics;
 import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.type.CharType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
@@ -63,7 +67,6 @@ import io.trino.spi.type.VarcharType;
 import javax.inject.Inject;
 
 import java.sql.Connection;
-import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -71,11 +74,13 @@ import java.sql.Types;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
@@ -91,7 +96,6 @@ import static io.trino.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.charWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
 import static io.trino.plugin.jdbc.StandardColumnMappings.defaultCharColumnMapping;
@@ -114,6 +118,8 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryReadFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
 import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
+import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
+import static io.trino.plugin.jdbc.UnsupportedTypeHandling.IGNORE;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.DateType.DATE;
@@ -141,16 +147,21 @@ public class ImpalaClient
     // require 19 + precision + 1 characters with the additional character
     // required for the decimal separator.
     private static final int ZERO_PRECISION_TIMESTAMP_COLUMN_SIZE = 19;
+    public static final String IMPALA = "Impala";
+    public static final String RAWDATA = "rawdata";
 
     private final Type jsonType;
     private final AggregateFunctionRewriter aggregateFunctionRewriter;
 
+    private EventTracking eventTracking;
+
     @Inject
-    public ImpalaClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, TypeManager typeManager, IdentifierMapping identifierMapping)
+    public ImpalaClient(ImpalaJdbcConfig config, ConnectionFactory connectionFactory, TypeManager typeManager, IdentifierMapping identifierMapping)
     {
         super(config, "`", connectionFactory, identifierMapping);
-        this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
+        this.eventTracking = new EventTracking(config.getUrl(), config.getScUser(), config.getScPwd());
 
+        this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter(
                 this::quoted,
@@ -184,21 +195,7 @@ public class ImpalaClient
     @Override
     public Collection<String> listSchemas(Connection connection)
     {
-        // for MySQL, we need to list catalogs instead of schemas
-        try (ResultSet resultSet = connection.getMetaData().getSchemas()) {
-            ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
-            while (resultSet.next()) {
-                String schemaName = resultSet.getString("TABLE_SCHEM");
-                // skip internal schemas
-                if (filterSchema(schemaName)) {
-                    schemaNames.add(schemaName);
-                }
-            }
-            return schemaNames.build();
-        }
-        catch (SQLException e) {
-            throw new TrinoException(JDBC_ERROR, e);
-        }
+        return CollUtil.newArrayList(RAWDATA);
     }
 
     @Override
@@ -220,93 +217,122 @@ public class ImpalaClient
     public PreparedStatement getPreparedStatement(Connection connection, String sql)
             throws SQLException
     {
-        return connection.prepareStatement(sql);
-    }
-
-    @Override
-    public ResultSet getTables(Connection connection, Optional<String> schemaName, Optional<String> tableName)
-            throws SQLException
-    {
-        // MySQL maps their "database" to SQL catalogs and does not have schemas
-        DatabaseMetaData metadata = connection.getMetaData();
-        final ResultSet tables = metadata.getTables(
-                "Impala",
-                schemaName.orElse(null),
-                null,
-                null);
-        return tables;
+        System.out.println("-------------------" + sql);
+        return connection.prepareStatement(sql + " /*sa(production)*/");
     }
 
     @Override
     public List<SchemaTableName> getTableNames(ConnectorSession session, Optional<String> schema)
     {
-        try (Connection connection = connectionFactory.openConnection(session)) {
-            try (ResultSet resultSet = getTables(connection, schema, Optional.empty())) {
-                ImmutableList.Builder<SchemaTableName> list = ImmutableList.builder();
-                while (resultSet.next()) {
-                    if (filterSchema(schema.get())) {
-                        list.add(new SchemaTableName(schema.get(), resultSet.getString("TABLE_NAME")));
-                    }
-                }
-                //list.add(new SchemaTableName(schema.get(), "events"));
-                return list.build();
+        ImmutableList.Builder<SchemaTableName> list = ImmutableList.builder();
+        for (String table : eventTracking.getTables()) {
+            if (filterSchema(schema.get())) {
+                list.add(new SchemaTableName(RAWDATA, table));
             }
         }
-        catch (SQLException e) {
-            throw new TrinoException(JDBC_ERROR, e);
-        }
+        return list.build();
     }
 
     @Override
     public Optional<JdbcTableHandle> getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
     {
-        try (Connection connection = connectionFactory.openConnection(session)) {
-            String remoteSchema = schemaTableName.getSchemaName();
-            String remoteTable = schemaTableName.getTableName();
-            try (ResultSet resultSet = getTables(connection, Optional.of(remoteSchema), Optional.of(remoteTable))) {
-                List<JdbcTableHandle> tableHandles = new ArrayList<>();
-                while (resultSet.next()) {
-                    final RemoteTableName remoteTableName = getRemoteTable(resultSet);
-                    if (remoteTableName.getSchemaName().get().equals(remoteSchema) && remoteTableName.getTableName().equals(remoteTable)) {
-                        tableHandles.add(new JdbcTableHandle(schemaTableName, remoteTableName));
-                    }
-                }
-                //tableHandles.add(new JdbcTableHandle(schemaTableName, new RemoteTableName(Optional.of("Impala"), Optional.of("rawdata"), "events")));
-                if (tableHandles.isEmpty()) {
-                    return Optional.empty();
-                }
-                if (tableHandles.size() > 1) {
-                    throw new TrinoException(NOT_SUPPORTED, "Multiple tables matched: " + schemaTableName);
-                }
-                return Optional.of(getOnlyElement(tableHandles));
+        try {
+            List<JdbcTableHandle> tableHandles = new ArrayList<>();
+            final RemoteTableName remoteTableName = getRemoteTable(schemaTableName.getTableName());
+            tableHandles.add(new JdbcTableHandle(schemaTableName, remoteTableName));
+            if (tableHandles.isEmpty()) {
+                return Optional.empty();
             }
+            if (tableHandles.size() > 1) {
+                throw new TrinoException(NOT_SUPPORTED, "Multiple tables matched: " + schemaTableName);
+            }
+            return Optional.of(getOnlyElement(tableHandles));
         }
-        catch (SQLException e) {
+        catch (Exception e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
     }
 
-    private static RemoteTableName getRemoteTable(ResultSet resultSet) throws SQLException
+    private static RemoteTableName getRemoteTable(String remoteTable)
     {
         return new RemoteTableName(
-                Optional.ofNullable(resultSet.getString("TABLE_CAT")),
-                Optional.ofNullable(resultSet.getString("TABLE_SCHEM")),
-                resultSet.getString("TABLE_NAME"));
+                Optional.ofNullable(IMPALA),
+                Optional.ofNullable(RAWDATA),
+                remoteTable);
     }
 
     @Override
-    protected String getTableSchemaName(ResultSet resultSet)
-            throws SQLException
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
     {
-        // MySQL uses catalogs instead of schemas
-        return resultSet.getString("TABLE_SCHEM");
+        if (tableHandle.getColumns().isPresent()) {
+            return tableHandle.getColumns().get();
+        }
+
+        checkArgument(tableHandle.isNamedRelation(), "Cannot get columns for %s", tableHandle);
+        SchemaTableName schemaTableName = tableHandle.getRequiredNamedRelation().getSchemaTableName();
+        RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
+
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            List<JdbcColumnHandle> columns = new ArrayList<>();
+            final Map<String, List<FieldSchema>> tableInfo = eventTracking.getTableInfo();
+            for (FieldSchema fieldSchema : tableInfo.get(remoteTableName.getTableName())) {
+                String columnName = fieldSchema.getName();
+                String type = fieldSchema.getType();
+                if ("etl_time".equals(columnName)) {
+                    type = "bigint";
+                }
+                JdbcTypeHandle typeHandle = new JdbcTypeHandle(
+                        0,
+                        Optional.ofNullable(type),
+                        Optional.ofNullable(0),
+                        Optional.ofNullable(10),
+                        Optional.empty(),
+                        Optional.empty());
+                Optional<ColumnMapping> columnMapping = toColumnMapping(session, connection, typeHandle);
+                if (columnMapping.isPresent()) {
+                    columns.add(JdbcColumnHandle.builder()
+                            .setColumnName(columnName)
+                            .setJdbcTypeHandle(typeHandle)
+                            .setColumnType(columnMapping.get().getType())
+                            .setNullable(false)
+                            .setComment(Optional.empty())
+                            .build());
+                }
+                if (columnMapping.isEmpty()) {
+                    UnsupportedTypeHandling unsupportedTypeHandling = getUnsupportedTypeHandling(session);
+                    verify(
+                            unsupportedTypeHandling == IGNORE,
+                            "Unsupported type handling is set to %s, but toTrinoType() returned empty for %s",
+                            unsupportedTypeHandling,
+                            typeHandle);
+                }
+            }
+
+            if (columns.isEmpty()) {
+                // A table may have no supported columns. In rare cases (e.g. PostgreSQL) a table might have no columns at all.
+                throw new TableNotFoundException(
+                        schemaTableName,
+                        format("Table '%s' has no supported columns (all columns are not supported)", schemaTableName));
+            }
+            return ImmutableList.copyOf(columns);
+        }
+        catch (Exception e) {
+            e.printStackTrace();
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public String quoted(RemoteTableName remoteTableName)
+    {
+        return remoteTableName.getTableName();
     }
 
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
         String jdbcTypeName = typeHandle.getJdbcTypeName()
-                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
+                .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle)).toLowerCase(Locale.ROOT);
 
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
@@ -321,26 +347,30 @@ public class ImpalaClient
             return Optional.of(jsonColumnMapping());
         }
 
-        switch (typeHandle.getJdbcType()) {
-            case Types.TINYINT:
+        switch (jdbcTypeName) {
+            case "tinyint":
                 return Optional.of(tinyintColumnMapping());
 
-            case Types.SMALLINT:
+            case "smallint":
                 return Optional.of(smallintColumnMapping());
 
-            case Types.INTEGER:
+            case "bool":
+            case "int":
+            case "integer":
                 return Optional.of(integerColumnMapping());
 
-            case Types.BIGINT:
+            case "bigint":
+            case "number":
                 return Optional.of(bigintColumnMapping());
 
-            case Types.REAL:
+            case "float":
+            case "real":
                 return Optional.of(realColumnMapping());
 
-            case Types.DOUBLE:
+            case "double":
                 return Optional.of(doubleColumnMapping());
 
-            case Types.DECIMAL:
+            case "decimal":
                 int decimalDigits = typeHandle.getDecimalDigits().orElseThrow(() -> new IllegalStateException("decimal digits not present"));
                 int precision = typeHandle.getRequiredColumnSize();
                 if (getDecimalRounding(session) == ALLOW_OVERFLOW && precision > Decimals.MAX_PRECISION) {
@@ -354,38 +384,29 @@ public class ImpalaClient
                 }
                 return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0))));
 
-            case Types.CHAR:
+            case "char":
                 return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), false));
 
             // TODO not all these type constants are necessarily used by the JDBC driver
-            case Types.VARCHAR:
-            case Types.NVARCHAR:
-            case Types.LONGVARCHAR:
-            case Types.LONGNVARCHAR:
-                return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), false));
+            case "varchar":
+            case "nvarchar":
+            case "longvarchar":
+            case "longnvarchar":
+            case "string":
+                return Optional.of(defaultVarcharColumnMapping(32767, false));
 
-            case Types.BINARY:
-            case Types.VARBINARY:
-            case Types.LONGVARBINARY:
+            case "binary":
+            case "varbinary":
+            case "longvarbinary":
                 return Optional.of(ColumnMapping.sliceMapping(VARBINARY, varbinaryReadFunction(), varbinaryWriteFunction(), FULL_PUSHDOWN));
 
-            case Types.DATE:
-                return Optional.of(dateColumnMapping());
-
-            case Types.TIMESTAMP:
-                TimestampType timestampType = createTimestampType(getTimestampPrecision(typeHandle.getRequiredColumnSize()));
+            case "date":
+            case "datetime":
+            case "timestamp":
+                TimestampType timestampType = createTimestampType(getTimestampPrecision(29));
                 return Optional.of(timestampColumnMapping(timestampType));
-
             default:
-                final String jdbcType = jdbcTypeName.toLowerCase(java.util.Locale.ROOT);
-                switch (jdbcType) {
-                    case "int":
-                        return Optional.of(integerColumnMapping());
-                    case "float":
-                        return Optional.of(realColumnMapping());
-                    case "string":
-                        return Optional.of(defaultVarcharColumnMapping(typeHandle.getRequiredColumnSize(), false));
-                }
+                System.out.println(jdbcTypeName + "--------");
         }
 
         // TODO add explicit mappings

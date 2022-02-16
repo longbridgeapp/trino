@@ -14,13 +14,20 @@
 package io.trino.plugin.impala;
 
 import com.cloudera.impala.jdbc.Driver;
+import io.airlift.configuration.Config;
+import io.airlift.configuration.ConfigDescription;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 
 import javax.validation.constraints.AssertTrue;
 
 public class ImpalaJdbcConfig
         extends BaseJdbcConfig
+
 {
+    private String url;
+    private String scUser;
+    private String scPwd;
+
     @AssertTrue(message = "Invalid JDBC URL for MySQL connector")
     public boolean isUrlValid()
     {
@@ -31,5 +38,44 @@ public class ImpalaJdbcConfig
         catch (Exception e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public String getUrl()
+    {
+        return url;
+    }
+
+    @Config("sc.url")
+    @ConfigDescription("sc.url")
+    public ImpalaJdbcConfig setUrl(String url)
+    {
+        this.url = url;
+        return this;
+    }
+
+    public String getScUser()
+    {
+        return scUser;
+    }
+
+    @Config("sc.user")
+    @ConfigDescription("sc.user")
+    public ImpalaJdbcConfig setScUser(String scUser)
+    {
+        this.scUser = scUser;
+        return this;
+    }
+
+    public String getScPwd()
+    {
+        return scPwd;
+    }
+
+    @Config("sc.pwd")
+    @ConfigDescription("sc.pwd")
+    public ImpalaJdbcConfig setScPwd(String scPwd)
+    {
+        this.scPwd = scPwd;
+        return this;
     }
 }

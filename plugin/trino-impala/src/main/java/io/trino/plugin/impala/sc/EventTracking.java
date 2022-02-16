@@ -70,26 +70,28 @@ public class EventTracking
         String urlField = StrUtil.format("{}/api/sql/meta?project={}&token={}", url, scUser, scPwd);
 
         List<String> tables = JSONUtil.toList(httpRequest(urlTable), String.class);
-        this.tables.put(TABLES,tables);
+        this.tables.put(TABLES, tables);
         final List<TableSchema> tableSchemas = JSONUtil.toList(httpRequest(urlField), TableSchema.class);
         Map<String, List<FieldSchema>> map = new HashMap<>();
         for (TableSchema tableSchema : tableSchemas) {
-            map.put(tableSchema.getName(),tableSchema.getColumns());
+            map.put(tableSchema.getName(), tableSchema.getColumns());
         }
-        this.tableInfo.put(TABLE_SCHEMA,map);
+        this.tableInfo.put(TABLE_SCHEMA, map);
     }
 
     public List<String> getTables()
     {
-        if (!this.tables.containsKey(TABLES))
+        if (!this.tables.containsKey(TABLES)) {
             init();
+        }
         return this.tables.get(TABLES);
     }
 
     public Map<String, List<FieldSchema>> getTableInfo()
     {
-        if (!this.tableInfo.containsKey(TABLE_SCHEMA))
+        if (!this.tableInfo.containsKey(TABLE_SCHEMA)) {
             init();
+        }
         return this.tableInfo.get(TABLE_SCHEMA);
     }
 

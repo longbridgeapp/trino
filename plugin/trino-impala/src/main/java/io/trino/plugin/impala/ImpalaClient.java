@@ -159,7 +159,7 @@ public class ImpalaClient
     public ImpalaClient(ImpalaJdbcConfig config, ConnectionFactory connectionFactory, TypeManager typeManager, IdentifierMapping identifierMapping)
     {
         super(config, "`", connectionFactory, identifierMapping);
-        this.eventTracking = new EventTracking(config.getUrl(), config.getScUser(), config.getScPwd());
+        this.eventTracking = new EventTracking(config.getUrl(), config.getProject(), config.getToken());
 
         this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());

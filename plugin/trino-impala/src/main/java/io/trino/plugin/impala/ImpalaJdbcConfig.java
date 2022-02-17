@@ -25,8 +25,8 @@ public class ImpalaJdbcConfig
 
 {
     private String url;
-    private String scUser;
-    private String scPwd;
+    private String project;
+    private String token;
 
     @AssertTrue(message = "Invalid JDBC URL for MySQL connector")
     public boolean isUrlValid()
@@ -53,29 +53,29 @@ public class ImpalaJdbcConfig
         return this;
     }
 
-    public String getScUser()
+    public String getProject()
     {
-        return scUser;
+        return project;
     }
 
-    @Config("sc.user")
-    @ConfigDescription("sc.user")
-    public ImpalaJdbcConfig setScUser(String scUser)
+    @Config("sc.project")
+    @ConfigDescription("sc.project")
+    public ImpalaJdbcConfig setProject(String project)
     {
-        this.scUser = scUser;
+        this.project = project;
         return this;
     }
 
-    public String getScPwd()
+    public String getToken()
     {
-        return scPwd;
+        return token;
     }
 
-    @Config("sc.pwd")
-    @ConfigDescription("sc.pwd")
-    public ImpalaJdbcConfig setScPwd(String scPwd)
+    @Config("sc.token")
+    @ConfigDescription("sc.token")
+    public ImpalaJdbcConfig setToken(String token)
     {
-        this.scPwd = scPwd;
+        this.token = token;
         return this;
     }
 }

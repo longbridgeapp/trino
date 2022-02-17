@@ -16,6 +16,7 @@ package io.trino.plugin.impala.sc;
 import cn.hutool.cache.CacheUtil;
 import cn.hutool.cache.impl.TimedCache;
 import cn.hutool.core.io.IoUtil;
+import cn.hutool.core.lang.Tuple;
 import cn.hutool.core.map.MapUtil;
 import cn.hutool.core.util.StrUtil;
 import cn.hutool.http.ContentType;
@@ -37,64 +38,68 @@ import java.util.Map;
  */
 public class EventTracking
 {
-    private static Map<Header, String> header = new java.util.HashMap<>();
     private static final int CONNECTION_TIMEOUT = 60 * 1000;
     private static final int CACHE_TIMEOUT = 60 * CONNECTION_TIMEOUT;
-    public static final String TABLES = "tables";
-    public static final String TABLE_SCHEMA = "tableSchema";
-
-    private static TimedCache<String, List<String>> tables = CacheUtil.newTimedCache(3 * CACHE_TIMEOUT);
-    private static TimedCache<String, Map<String, List<FieldSchema>>> tableInfo = CacheUtil.newTimedCache(3 * CACHE_TIMEOUT);
-
+    private static final String TABLE_SCHEMA = "tableSchema";
+    private static final String SC_URL = "{}/api/sql/{}?project={}&token={}";
     private String url;
-    private String scUser;
-    private String scPwd;
+    private String project;
+    private String token;
+
+    private static Map<Header, String> header = new java.util.HashMap<>();
+    private static TimedCache<String, Tuple> tableInfo = CacheUtil.newTimedCache(3 * CACHE_TIMEOUT);
 
     static {
         header.put(Header.CONTENT_TYPE, ContentType.JSON.getValue());
-        tables.schedulePrune(CACHE_TIMEOUT);
         tableInfo.schedulePrune(CACHE_TIMEOUT);
     }
 
-    public EventTracking(String url, String scUser, String scPwd)
+    public EventTracking(String url, String project, String token)
     {
         this.url = url;
-        this.scUser = scUser;
-        this.scPwd = scPwd;
+        this.project = project;
+        this.token = token;
         init();
     }
 
     private void init()
     {
-        String urlTable = StrUtil.format("{}/api/sql/tables?project={}&token={}", url, scUser, scPwd);
-        String urlField = StrUtil.format("{}/api/sql/meta?project={}&token={}", url, scUser, scPwd);
-
+        String urlTable = StrUtil.format(SC_URL, url, "tables", project, token);
         List<String> tables = JSONUtil.toList(httpRequest(urlTable), String.class);
-        this.tables.put(TABLES, tables);
+
+        String urlField = StrUtil.format(SC_URL, url, "meta", project, token);
         final List<TableSchema> tableSchemas = JSONUtil.toList(httpRequest(urlField), TableSchema.class);
         Map<String, List<FieldSchema>> map = new HashMap<>();
         for (TableSchema tableSchema : tableSchemas) {
             map.put(tableSchema.getName(), tableSchema.getColumns());
         }
-        this.tableInfo.put(TABLE_SCHEMA, map);
+
+        tableInfo.put(TABLE_SCHEMA, new Tuple(tables, map));
     }
 
     public List<String> getTables()
     {
-        if (!this.tables.containsKey(TABLES)) {
-            init();
-        }
-        return this.tables.get(TABLES);
+        return getTuple().get(0);
     }
 
     public Map<String, List<FieldSchema>> getTableInfo()
     {
+        return getTuple().get(1);
+    }
+
+    private Tuple getTuple()
+    {
         if (!this.tableInfo.containsKey(TABLE_SCHEMA)) {
             init();
         }
-        return this.tableInfo.get(TABLE_SCHEMA);
+        return this.tableInfo.get(TABLE_SCHEMA, false);
     }
 
+    /**
+     *
+     * @param url
+     * @return
+     */
     private String httpRequest(String url)
     {
         final HttpRequest httpRequest = HttpRequest.get(url);

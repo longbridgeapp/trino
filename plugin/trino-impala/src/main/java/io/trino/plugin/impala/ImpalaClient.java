@@ -387,6 +387,7 @@ public class ImpalaClient
                 return Optional.of(defaultCharColumnMapping(typeHandle.getRequiredColumnSize(), false));
 
             // TODO not all these type constants are necessarily used by the JDBC driver
+            case "list":
             case "varchar":
             case "nvarchar":
             case "longvarchar":
@@ -405,7 +406,7 @@ public class ImpalaClient
                 TimestampType timestampType = createTimestampType(getTimestampPrecision(29));
                 return Optional.of(timestampColumnMapping(timestampType));
             default:
-                System.out.println(jdbcTypeName + "--------");
+                System.out.println(jdbcTypeName + ":不能解析的类型");
         }
 
         // TODO add explicit mappings

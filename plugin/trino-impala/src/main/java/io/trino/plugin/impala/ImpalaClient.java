@@ -277,7 +277,7 @@ public class ImpalaClient
             for (FieldSchema fieldSchema : tableInfo.get(remoteTableName.getTableName())) {
                 String columnName = fieldSchema.getName();
                 String type = fieldSchema.getType();
-                if ("etl_time".equals(columnName)) {
+                if ("etl_time".equals(columnName) || "base_time".equals(columnName)) {
                     type = "bigint";
                 }
                 JdbcTypeHandle typeHandle = new JdbcTypeHandle(

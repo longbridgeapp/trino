@@ -422,7 +422,6 @@ public class PostgreSqlClient
     {
         String jdbcTypeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle));
-
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;
@@ -431,6 +430,8 @@ public class PostgreSqlClient
             return Optional.of(jsonColumnMapping());
         }
         switch (jdbcTypeName) {
+            case "numeric":
+                return Optional.of(doubleColumnMapping());
             case "money":
                 return Optional.of(moneyColumnMapping());
             case "uuid":

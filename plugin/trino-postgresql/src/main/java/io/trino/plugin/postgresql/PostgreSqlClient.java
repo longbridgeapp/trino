@@ -430,8 +430,8 @@ public class PostgreSqlClient
             return Optional.of(jsonColumnMapping());
         }
         switch (jdbcTypeName) {
-            case "numeric":
-                return Optional.of(doubleColumnMapping());
+/*            case "numeric":
+                return Optional.of(doubleColumnMapping());*/
             case "money":
                 return Optional.of(moneyColumnMapping());
             case "uuid":
@@ -447,6 +447,7 @@ public class PostgreSqlClient
                 return Optional.of(hstoreColumnMapping(session));
         }
 
+        boolean boolNumeric = true;
         switch (typeHandle.getJdbcType()) {
             case Types.BIT:
                 return Optional.of(booleanColumnMapping());
@@ -474,11 +475,13 @@ public class PostgreSqlClient
                     if (columnSize == 131089) {
                         // decimal type with unspecified scale - up to 131072 digits before the decimal point; up to 16383 digits after the decimal point)
                         // 131089 = SELECT LENGTH(pow(10::numeric,131071)::varchar); 131071 = 2^17-1  (org.postgresql.jdbc.TypeInfoCache#getDisplaySize)
+                        boolNumeric = false;
                         return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, getDecimalDefaultScale(session)), getDecimalRoundingMode(session)));
                     }
                     precision = columnSize;
                     if (precision > Decimals.MAX_PRECISION) {
                         int scale = min(decimalDigits, getDecimalDefaultScale(session));
+                        boolNumeric = false;
                         return Optional.of(decimalColumnMapping(createDecimalType(Decimals.MAX_PRECISION, scale), getDecimalRoundingMode(session)));
                     }
                 }
@@ -486,6 +489,7 @@ public class PostgreSqlClient
                 if (precision > Decimals.MAX_PRECISION) {
                     break;
                 }
+                boolNumeric = false;
                 return Optional.of(decimalColumnMapping(createDecimalType(precision, max(decimalDigits, 0)), UNNECESSARY));
             }
 
@@ -521,6 +525,13 @@ public class PostgreSqlClient
                     return columnMapping;
                 }
                 break;
+        }
+
+        if (boolNumeric) {
+            switch (typeHandle.getJdbcType()) {
+                case Types.NUMERIC:
+                    return Optional.of(doubleColumnMapping());
+            }
         }
 
         if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {

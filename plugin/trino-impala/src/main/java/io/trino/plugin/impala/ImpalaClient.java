@@ -280,6 +280,9 @@ public class ImpalaClient
                 if ("etl_time".equals(columnName) || "base_time".equals(columnName)) {
                     type = "bigint";
                 }
+                if ("events".equals(remoteTableName.getTableName()) || "datetime".equals(type)) {
+                    type = "bigint";
+                }
                 JdbcTypeHandle typeHandle = new JdbcTypeHandle(
                         0,
                         Optional.ofNullable(type),

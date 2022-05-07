@@ -14,9 +14,9 @@
 package io.trino.metadata;
 
 import com.google.common.base.Splitter;
+import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.ImmutableSetMultimap;
 import com.google.common.collect.SetMultimap;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Sets.SetView;
@@ -30,6 +30,8 @@ import io.trino.client.NodeVersion;
 import io.trino.connector.CatalogName;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.failuredetector.FailureDetector;
+import io.trino.restful.CatalogEntity;
+import io.trino.restful.CatalogOperationEnum;
 import io.trino.server.InternalCommunicationConfig;
 import org.weakref.jmx.Managed;
 
@@ -38,7 +40,6 @@ import javax.annotation.PreDestroy;
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
-
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
@@ -83,6 +84,8 @@ public final class DiscoveryNodeManager
 
     @GuardedBy("this")
     private SetMultimap<CatalogName, InternalNode> activeNodesByCatalogName;
+
+    private static List<CatalogName> restApiAddedCatalogNameList = new ArrayList<>();
 
     @GuardedBy("this")
     private AllNodes allNodes;
@@ -207,7 +210,8 @@ public final class DiscoveryNodeManager
         ImmutableSet.Builder<InternalNode> inactiveNodesBuilder = ImmutableSet.builder();
         ImmutableSet.Builder<InternalNode> shuttingDownNodesBuilder = ImmutableSet.builder();
         ImmutableSet.Builder<InternalNode> coordinatorsBuilder = ImmutableSet.builder();
-        ImmutableSetMultimap.Builder<CatalogName, InternalNode> byConnectorIdBuilder = ImmutableSetMultimap.builder();
+        //ImmutableSetMultimap.Builder<CatalogName, InternalNode> byConnectorIdBuilder = ImmutableSetMultimap.builder();
+        SetMultimap<CatalogName, InternalNode> byConnectorIdBuilder = HashMultimap.create();
 
         for (ServiceDescriptor service : services) {
             URI uri = getHttpUri(service, httpsRequired);
@@ -235,6 +239,10 @@ public final class DiscoveryNodeManager
 
                         // always add system connector
                         byConnectorIdBuilder.put(new CatalogName(GlobalSystemConnector.NAME), node);
+                        //add restapi connector
+                        for(CatalogName cata: restApiAddedCatalogNameList){
+                            byConnectorIdBuilder.put(cata,node);
+                        }
                         break;
                     case INACTIVE:
                         inactiveNodesBuilder.add(node);
@@ -257,7 +265,8 @@ public final class DiscoveryNodeManager
         }
 
         // nodes by connector id changes anytime a node adds or removes a connector (note: this is not part of the listener system)
-        activeNodesByCatalogName = byConnectorIdBuilder.build();
+        //activeNodesByCatalogName = byConnectorIdBuilder.build();
+        activeNodesByCatalogName = byConnectorIdBuilder;
 
         AllNodes allNodes = new AllNodes(activeNodesBuilder.build(), inactiveNodesBuilder.build(), shuttingDownNodesBuilder.build(), coordinatorsBuilder.build());
         // only update if all nodes actually changed (note: this does not include the connectors registered with the nodes)
@@ -389,4 +398,31 @@ public final class DiscoveryNodeManager
     {
         return Boolean.parseBoolean(service.getProperties().get("coordinator"));
     }
+
+    public synchronized void updateCatalogToActiveConnectorNodes(String key, CatalogEntity catalogEntity){
+        CatalogName systemCatalog = new CatalogName("system");
+        Set<InternalNode> nodes = activeNodesByCatalogName.get(systemCatalog);
+
+        String catalogName = catalogEntity.getCatalogName();
+        CatalogName catalog = new CatalogName(catalogName);
+        if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+            activeNodesByCatalogName.putAll(catalog,nodes);
+            restApiAddedCatalogNameList.add(catalog);
+        }else if(CatalogOperationEnum.CATALOG_UPDATE.getKey().equals(key)){
+            String removedCatalogName = catalogName;
+            if(catalogEntity.getOrigCatalogName()!=null
+                    && !"".equals(catalogEntity.getOrigCatalogName())){
+                removedCatalogName = catalogEntity.getOrigCatalogName();
+            }
+            CatalogName removedCatalog = new CatalogName(removedCatalogName);
+            activeNodesByCatalogName.removeAll(removedCatalog);
+            restApiAddedCatalogNameList.remove(removedCatalog);
+            activeNodesByCatalogName.putAll(catalog,nodes);
+            restApiAddedCatalogNameList.add(catalog);
+        }else if(CatalogOperationEnum.CATALOG_DELETE.getKey().equals(key)){
+            activeNodesByCatalogName.removeAll(catalog);
+            restApiAddedCatalogNameList.remove(catalog);
+        }
+    }
+
 }

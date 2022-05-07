@@ -30,6 +30,8 @@ import io.trino.metadata.CatalogManager;
 import io.trino.metadata.HandleResolver;
 import io.trino.metadata.InternalNodeManager;
 import io.trino.metadata.MetadataManager;
+import io.trino.restful.CatalogEntity;
+import io.trino.restful.CatalogOperationEnum;
 import io.trino.security.AccessControlManager;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.PageSorter;
@@ -63,7 +65,6 @@ import javax.annotation.PreDestroy;
 import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
-
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -191,6 +192,33 @@ public class ConnectorManager
         InternalConnectorFactory connectorFactory = connectorFactories.get(connectorName);
         checkArgument(connectorFactory != null, "No factory for connector '%s'.  Available factories: %s", connectorName, connectorFactories.keySet());
         return createCatalog(catalogName, connectorFactory, properties);
+    }
+
+    public synchronized void refreshConnector(String key, CatalogEntity catalogEntity){
+        if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+            this.createCatalog(catalogEntity.getCatalogName(), catalogEntity.getConnectorName(), catalogEntity.getProperties());
+        }else if(CatalogOperationEnum.CATALOG_UPDATE.getKey().equals(key)){
+            String removedCatalog = catalogEntity.getCatalogName();
+            if(catalogEntity.getOrigCatalogName()!=null
+                    && !"".equals(catalogEntity.getOrigCatalogName())){
+                String origCatalogName = catalogEntity.getOrigCatalogName();
+                removedCatalog = origCatalogName;
+            }
+            CatalogName rCatalog = new CatalogName(removedCatalog);
+            this.dropConnection(removedCatalog);
+            if(connectors.containsKey(rCatalog)){
+                connectors.remove(rCatalog);
+            }
+            catalogManager.removeCatalog(removedCatalog);
+            this.createCatalog(catalogEntity.getCatalogName(), catalogEntity.getConnectorName(), catalogEntity.getProperties());
+        }else if(CatalogOperationEnum.CATALOG_DELETE.getKey().equals(key)){
+            CatalogName rCatalog = new CatalogName(catalogEntity.getCatalogName());
+            this.dropConnection(catalogEntity.getCatalogName());
+            if(connectors.containsKey(rCatalog)){
+                connectors.remove(rCatalog);
+            }
+            catalogManager.removeCatalog(catalogEntity.getCatalogName());
+        }
     }
 
     private synchronized CatalogName createCatalog(String catalogName, InternalConnectorFactory connectorFactory, Map<String, String> properties)

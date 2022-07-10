@@ -27,6 +27,7 @@ import io.trino.plugin.base.classloader.ForClassLoaderSafe;
 import io.trino.plugin.jdbc.ConfiguringConnectionFactory;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DecimalModule;
+import io.trino.plugin.jdbc.DefaultQueryBuilder;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.ForLazyConnectionFactory;
@@ -41,6 +42,7 @@ import io.trino.plugin.jdbc.JdbcWriteConfig;
 import io.trino.plugin.jdbc.JdbcWriteSessionProperties;
 import io.trino.plugin.jdbc.LazyConnectionFactory;
 import io.trino.plugin.jdbc.MaxDomainCompactionThreshold;
+import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.StatsCollecting;
 import io.trino.plugin.jdbc.TypeHandlingJdbcConfig;
 import io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties;
@@ -69,6 +71,7 @@ import static com.google.inject.multibindings.OptionalBinder.newOptionalBinder;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.trino.plugin.jdbc.JdbcModule.bindSessionPropertiesProvider;
 import static io.trino.plugin.jdbc.JdbcModule.bindTablePropertiesProvider;
+import static io.trino.plugin.phoenix5.ConfigurationInstantiator.newEmptyConfiguration;
 import static io.trino.plugin.phoenix5.PhoenixErrorCode.PHOENIX_CONFIG_ERROR;
 
 public class PhoenixClientModule
@@ -83,6 +86,7 @@ public class PhoenixClientModule
         binder.bind(ConnectorRecordSetProvider.class).to(ClassLoaderSafeConnectorRecordSetProvider.class).in(Scopes.SINGLETON);
         binder.bind(ConnectorPageSinkProvider.class).annotatedWith(ForClassLoaderSafe.class).to(JdbcPageSinkProvider.class).in(Scopes.SINGLETON);
         binder.bind(ConnectorPageSinkProvider.class).to(ClassLoaderSafeConnectorPageSinkProvider.class).in(Scopes.SINGLETON);
+        binder.bind(QueryBuilder.class).to(DefaultQueryBuilder.class).in(Scopes.SINGLETON);
         newOptionalBinder(binder, Key.get(int.class, MaxDomainCompactionThreshold.class));
 
         configBinder(binder).bindConfig(TypeHandlingJdbcConfig.class);
@@ -93,7 +97,6 @@ public class PhoenixClientModule
 
         configBinder(binder).bindConfig(JdbcMetadataConfig.class);
         configBinder(binder).bindConfig(JdbcWriteConfig.class);
-        configBinder(binder).bindConfigDefaults(JdbcMetadataConfig.class, config -> config.setAllowDropTable(true));
 
         binder.bind(PhoenixClient.class).in(Scopes.SINGLETON);
         binder.bind(JdbcClient.class).annotatedWith(ForBaseJdbc.class).to(Key.get(PhoenixClient.class)).in(Scopes.SINGLETON);
@@ -165,7 +168,7 @@ public class PhoenixClientModule
 
     private static Configuration readConfig(PhoenixConfig config)
     {
-        Configuration result = new Configuration(false);
+        Configuration result = newEmptyConfiguration();
         for (String resourcePath : config.getResourceConfigFiles()) {
             result.addResource(new Path(resourcePath));
         }

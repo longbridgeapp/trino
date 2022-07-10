@@ -24,18 +24,17 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
-import io.trino.spi.connector.ConnectorHandleResolver;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorPageSource;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
-import io.trino.spi.connector.ConnectorPartitionHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.EmptyPageSource;
 import io.trino.spi.predicate.Domain;
@@ -46,7 +45,6 @@ import io.trino.spi.transaction.IsolationLevel;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
-import io.trino.testing.TestingHandleResolver;
 import io.trino.testing.TestingMetadata;
 import io.trino.testing.TestingPageSinkProvider;
 import io.trino.testing.TestingTransactionHandle;
@@ -63,10 +61,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.LongStream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.FeaturesConfig.JoinDistributionType;
-import static io.trino.FeaturesConfig.JoinDistributionType.BROADCAST;
-import static io.trino.FeaturesConfig.JoinDistributionType.PARTITIONED;
-import static io.trino.FeaturesConfig.JoinReorderingStrategy.NONE;
 import static io.trino.SystemSessionProperties.ENABLE_COORDINATOR_DYNAMIC_FILTERS_DISTRIBUTION;
 import static io.trino.SystemSessionProperties.FILTERING_SEMI_JOIN_TO_INNER;
 import static io.trino.SystemSessionProperties.JOIN_DISTRIBUTION_TYPE;
@@ -79,6 +73,10 @@ import static io.trino.spi.predicate.Domain.singleValue;
 import static io.trino.spi.predicate.Range.range;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.createVarcharType;
+import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
+import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
+import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.PARTITIONED;
+import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.NONE;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.testing.TestingSplit.createRemoteSplit;
 import static java.util.Objects.requireNonNull;
@@ -423,12 +421,6 @@ public class TestCoordinatorDynamicFiltering
                 }
 
                 @Override
-                public ConnectorHandleResolver getHandleResolver()
-                {
-                    return new TestingHandleResolver();
-                }
-
-                @Override
                 public Connector create(String catalogName, Map<String, String> config, ConnectorContext context)
                 {
                     return new TestConnector(metadata);
@@ -454,7 +446,7 @@ public class TestCoordinatorDynamicFiltering
         }
 
         @Override
-        public ConnectorMetadata getMetadata(ConnectorTransactionHandle transactionHandle)
+        public ConnectorMetadata getMetadata(ConnectorSession session, ConnectorTransactionHandle transactionHandle)
         {
             return metadata;
         }
@@ -469,8 +461,8 @@ public class TestCoordinatorDynamicFiltering
                         ConnectorTransactionHandle transaction,
                         ConnectorSession session,
                         ConnectorTableHandle table,
-                        SplitSchedulingStrategy splitSchedulingStrategy,
-                        DynamicFilter dynamicFilter)
+                        DynamicFilter dynamicFilter,
+                        Constraint constraint)
                 {
                     AtomicBoolean splitProduced = new AtomicBoolean();
 
@@ -480,7 +472,7 @@ public class TestCoordinatorDynamicFiltering
                     return new ConnectorSplitSource()
                     {
                         @Override
-                        public CompletableFuture<ConnectorSplitBatch> getNextBatch(ConnectorPartitionHandle partitionHandle, int maxSize)
+                        public CompletableFuture<ConnectorSplitBatch> getNextBatch(int maxSize)
                         {
                             CompletableFuture<?> blocked = dynamicFilter.isBlocked();
 

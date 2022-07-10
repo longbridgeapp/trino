@@ -26,6 +26,7 @@ import io.trino.metadata.Split;
 import io.trino.operator.WorkProcessor.Transformation;
 import io.trino.operator.WorkProcessor.TransformationState;
 import io.trino.operator.WorkProcessorAssertion.Transform;
+import io.trino.plugin.base.metrics.DurationTiming;
 import io.trino.plugin.base.metrics.LongCount;
 import io.trino.spi.Page;
 import io.trino.spi.connector.UpdatablePageSource;
@@ -45,7 +46,6 @@ import java.util.function.Supplier;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.RowPagesBuilder.rowPagesBuilder;
 import static io.trino.SessionTestUtils.TEST_SESSION;
-import static io.trino.execution.Lifespan.taskWide;
 import static io.trino.operator.WorkProcessorAssertion.transformationFrom;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.testing.TestingSplit.createLocalSplit;
@@ -217,7 +217,8 @@ public class TestWorkProcessorPipelineSourceOperator
                 .containsEntry("testSourceClosed", new LongCount(1));
         assertEquals(sourceOperatorStats.getConnectorMetrics().getMetrics(), ImmutableMap.of(
                 "testSourceConnectorMetric", new LongCount(2),
-                "testSourceConnectorClosed", new LongCount(1)));
+                "testSourceConnectorClosed", new LongCount(1),
+                "Physical input read time", new DurationTiming(new Duration(7, NANOSECONDS))));
 
         assertEquals(sourceOperatorStats.getDynamicFilterSplitsProcessed(), 42L);
 
@@ -230,7 +231,7 @@ public class TestWorkProcessorPipelineSourceOperator
         assertEquals(sourceOperatorStats.getInputDataSize(), DataSize.ofBytes(5));
         assertEquals(sourceOperatorStats.getInputPositions(), 6);
 
-        assertEquals(sourceOperatorStats.getAddInputWall(), new Duration(7, NANOSECONDS));
+        assertEquals(sourceOperatorStats.getAddInputWall(), new Duration(0, NANOSECONDS));
 
         // pipeline input stats should match source WorkProcessorOperator stats
         PipelineStats pipelineStats = pipelineOperator.getOperatorContext().getDriverContext().getPipelineContext().getPipelineStats();
@@ -243,7 +244,8 @@ public class TestWorkProcessorPipelineSourceOperator
         assertEquals(sourceOperatorStats.getInputDataSize(), pipelineStats.getProcessedInputDataSize());
         assertEquals(sourceOperatorStats.getInputPositions(), pipelineStats.getProcessedInputPositions());
 
-        assertEquals(sourceOperatorStats.getAddInputWall(), pipelineStats.getPhysicalInputReadTime());
+        assertThat(sourceOperatorStats.getPhysicalInputReadTime().convertToMostSuccinctTimeUnit())
+                .isEqualTo(pipelineStats.getPhysicalInputReadTime().convertToMostSuccinctTimeUnit());
 
         // assert pipeline metrics
         List<OperatorStats> operatorSummaries = pipelineStats.getOperatorSummaries();
@@ -253,7 +255,8 @@ public class TestWorkProcessorPipelineSourceOperator
                 .containsEntry("testSourceClosed", new LongCount(1));
         assertEquals(operatorSummaries.get(0).getConnectorMetrics().getMetrics(), ImmutableMap.of(
                 "testSourceConnectorMetric", new LongCount(2),
-                "testSourceConnectorClosed", new LongCount(1)));
+                "testSourceConnectorClosed", new LongCount(1),
+                "Physical input read time", new DurationTiming(new Duration(7, NANOSECONDS))));
         assertThat(operatorSummaries.get(1).getMetrics().getMetrics())
                 .hasSize(2)
                 .containsEntry("testOperatorMetric", new LongCount(1));
@@ -295,8 +298,7 @@ public class TestWorkProcessorPipelineSourceOperator
     {
         return new Split(
                 new CatalogName("catalog_name"),
-                createLocalSplit(),
-                taskWide());
+                createLocalSplit());
     }
 
     private Page createPage(int pageNumber)

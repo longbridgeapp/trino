@@ -20,6 +20,7 @@ import com.google.cloud.bigquery.DatasetId;
 import com.google.cloud.bigquery.DatasetInfo;
 import com.google.cloud.bigquery.Job;
 import com.google.cloud.bigquery.JobInfo;
+import com.google.cloud.bigquery.JobInfo.CreateDisposition;
 import com.google.cloud.bigquery.QueryJobConfiguration;
 import com.google.cloud.bigquery.Schema;
 import com.google.cloud.bigquery.Table;
@@ -28,8 +29,6 @@ import com.google.cloud.bigquery.TableId;
 import com.google.cloud.bigquery.TableInfo;
 import com.google.cloud.bigquery.TableResult;
 import com.google.cloud.http.BaseHttpServiceException;
-import com.google.common.cache.Cache;
-import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
@@ -54,7 +53,6 @@ import static io.trino.plugin.bigquery.BigQueryErrorCode.BIGQUERY_AMBIGUOUS_OBJE
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.stream.Collectors.joining;
 
 public class BigQueryClient
@@ -64,21 +62,12 @@ public class BigQueryClient
     private final BigQuery bigQuery;
     private final ViewMaterializationCache materializationCache;
     private final boolean caseInsensitiveNameMatching;
-    private final Cache<String, Optional<RemoteDatabaseObject>> remoteDatasets;
-    private final Cache<TableId, Optional<RemoteDatabaseObject>> remoteTables;
 
     public BigQueryClient(BigQuery bigQuery, BigQueryConfig config, ViewMaterializationCache materializationCache)
     {
         this.bigQuery = requireNonNull(bigQuery, "bigQuery is null");
         this.materializationCache = requireNonNull(materializationCache, "materializationCache is null");
-
-        Duration caseInsensitiveNameMatchingCacheTtl = requireNonNull(config.getCaseInsensitiveNameMatchingCacheTtl(), "caseInsensitiveNameMatchingCacheTtl is null");
-
         this.caseInsensitiveNameMatching = config.isCaseInsensitiveNameMatching();
-        CacheBuilder<Object, Object> remoteNamesCacheBuilder = CacheBuilder.newBuilder()
-                .expireAfterWrite(caseInsensitiveNameMatchingCacheTtl.toMillis(), MILLISECONDS);
-        this.remoteDatasets = remoteNamesCacheBuilder.build();
-        this.remoteTables = remoteNamesCacheBuilder.build();
     }
 
     public Optional<RemoteDatabaseObject> toRemoteDataset(String projectId, String datasetName)
@@ -90,12 +79,6 @@ public class BigQueryClient
             return Optional.of(RemoteDatabaseObject.of(datasetName));
         }
 
-        Optional<RemoteDatabaseObject> remoteDataset = remoteDatasets.getIfPresent(datasetName);
-        if (remoteDataset != null) {
-            return remoteDataset;
-        }
-
-        // cache miss, reload the cache
         Map<String, Optional<RemoteDatabaseObject>> mapping = new HashMap<>();
         for (Dataset dataset : listDatasets(projectId)) {
             mapping.merge(
@@ -104,8 +87,8 @@ public class BigQueryClient
                     (currentValue, collision) -> currentValue.map(current -> current.registerCollision(collision.get().getOnlyRemoteName())));
         }
 
-        // explicitly cache the information if the requested dataset doesn't exist
         if (!mapping.containsKey(datasetName)) {
+            // dataset doesn't exist
             mapping.put(datasetName, Optional.empty());
         }
 
@@ -134,12 +117,7 @@ public class BigQueryClient
         }
 
         TableId cacheKey = TableId.of(projectId, remoteDatasetName, tableName);
-        Optional<RemoteDatabaseObject> remoteTable = remoteTables.getIfPresent(cacheKey);
-        if (remoteTable != null) {
-            return remoteTable;
-        }
 
-        // cache miss, reload the cache
         Map<TableId, Optional<RemoteDatabaseObject>> mapping = new HashMap<>();
         for (Table table : tables.get()) {
             mapping.merge(
@@ -148,8 +126,8 @@ public class BigQueryClient
                     (currentValue, collision) -> currentValue.map(current -> current.registerCollision(collision.get().getOnlyRemoteName())));
         }
 
-        // explicitly cache the information if the requested table doesn't exist
         if (!mapping.containsKey(cacheKey)) {
+            // table doesn't exist
             mapping.put(cacheKey, Optional.empty());
         }
 
@@ -231,15 +209,50 @@ public class BigQueryClient
         return bigQuery.create(jobInfo);
     }
 
-    public TableResult query(String sql)
+    public TableResult query(String sql, boolean useQueryResultsCache, CreateDisposition createDisposition)
     {
         try {
-            return bigQuery.query(QueryJobConfiguration.of(sql));
+            return bigQuery.query(QueryJobConfiguration.newBuilder(sql)
+                    .setUseQueryCache(useQueryResultsCache)
+                    .setCreateDisposition(createDisposition)
+                    .build());
         }
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new BigQueryException(BaseHttpServiceException.UNKNOWN_CODE, format("Failed to run the query [%s]", sql), e);
         }
+    }
+
+    public TableResult query(TableId table, List<String> requiredColumns, Optional<String> filter, boolean useQueryResultsCache, CreateDisposition createDisposition)
+    {
+        String sql = selectSql(table, requiredColumns, filter);
+        log.debug("Execute query: %s", sql);
+        try {
+            return bigQuery.query(QueryJobConfiguration.newBuilder(sql)
+                    .setUseQueryCache(useQueryResultsCache)
+                    .setCreateDisposition(createDisposition)
+                    .build());
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BigQueryException(BaseHttpServiceException.UNKNOWN_CODE, format("Failed to run the query [%s]", sql), e);
+        }
+    }
+
+    private String selectSql(TableId table, List<String> requiredColumns, Optional<String> filter)
+    {
+        String columns = requiredColumns.stream().map(column -> format("`%s`", column)).collect(joining(","));
+        return selectSql(table, columns, filter);
+    }
+
+    private String selectSql(TableId table, String formattedColumns, Optional<String> filter)
+    {
+        String tableName = fullTableName(table);
+        String query = format("SELECT %s FROM `%s`", formattedColumns, tableName);
+        if (filter.isEmpty()) {
+            return query;
+        }
+        return query + " WHERE " + filter.get();
     }
 
     private String selectSql(TableInfo remoteTable, List<String> requiredColumns)

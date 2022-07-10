@@ -29,11 +29,10 @@ import io.trino.plugin.hive.HiveHdfsConfiguration;
 import io.trino.plugin.hive.HiveTableHandle;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.TestingHiveConnectorFactory;
-import io.trino.plugin.hive.authentication.HiveIdentity;
 import io.trino.plugin.hive.authentication.NoHdfsAuthentication;
 import io.trino.plugin.hive.metastore.Database;
 import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.MetastoreConfig;
+import io.trino.plugin.hive.metastore.HiveMetastoreConfig;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastore;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastoreConfig;
 import io.trino.spi.connector.ColumnHandle;
@@ -90,7 +89,7 @@ public class TestHiveProjectionPushdownIntoTableScan
         HiveMetastore metastore = new FileHiveMetastore(
                 new NodeVersion("test_version"),
                 environment,
-                new MetastoreConfig(),
+                new HiveMetastoreConfig().isHideDeltaLakeTables(),
                 new FileHiveMetastoreConfig()
                         .setCatalogDirectory(baseDir.toURI().toString())
                         .setMetastoreUser("test"));
@@ -100,7 +99,7 @@ public class TestHiveProjectionPushdownIntoTableScan
                 .setOwnerType(Optional.of(PrincipalType.ROLE))
                 .build();
 
-        metastore.createDatabase(new HiveIdentity(HIVE_SESSION.toConnectorSession()), database);
+        metastore.createDatabase(database);
 
         LocalQueryRunner queryRunner = LocalQueryRunner.create(HIVE_SESSION);
         queryRunner.createCatalog(HIVE_CATALOG_NAME, new TestingHiveConnectorFactory(metastore), ImmutableMap.of());

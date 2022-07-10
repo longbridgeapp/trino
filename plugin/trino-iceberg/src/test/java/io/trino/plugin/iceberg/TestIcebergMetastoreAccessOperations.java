@@ -25,8 +25,8 @@ import io.trino.plugin.hive.HdfsEnvironment;
 import io.trino.plugin.hive.HiveHdfsConfiguration;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.authentication.NoHdfsAuthentication;
+import io.trino.plugin.hive.metastore.CountingAccessHiveMetastore;
 import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.MetastoreConfig;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastore;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastoreConfig;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -39,16 +39,19 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.plugin.iceberg.CountingAccessFileHiveMetastore.Methods.CREATE_TABLE;
-import static io.trino.plugin.iceberg.CountingAccessFileHiveMetastore.Methods.GET_DATABASE;
-import static io.trino.plugin.iceberg.CountingAccessFileHiveMetastore.Methods.GET_TABLE;
-import static io.trino.plugin.iceberg.CountingAccessFileHiveMetastore.Methods.REPLACE_TABLE;
+import static com.google.inject.util.Modules.EMPTY_MODULE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.CREATE_TABLE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_DATABASE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.GET_TABLE;
+import static io.trino.plugin.hive.metastore.CountingAccessHiveMetastore.Methods.REPLACE_TABLE;
 import static io.trino.plugin.iceberg.TableType.DATA;
 import static io.trino.plugin.iceberg.TableType.FILES;
 import static io.trino.plugin.iceberg.TableType.HISTORY;
 import static io.trino.plugin.iceberg.TableType.MANIFESTS;
 import static io.trino.plugin.iceberg.TableType.PARTITIONS;
+import static io.trino.plugin.iceberg.TableType.PROPERTIES;
 import static io.trino.plugin.iceberg.TableType.SNAPSHOTS;
+import static io.trino.plugin.iceberg.catalog.hms.IcebergHiveMetastoreCatalogModule.HIDE_DELTA_LAKE_TABLES_IN_ICEBERG;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static java.lang.String.join;
@@ -64,7 +67,7 @@ public class TestIcebergMetastoreAccessOperations
             .setSchema("test_schema")
             .build();
 
-    private CountingAccessFileHiveMetastore metastore;
+    private CountingAccessHiveMetastore metastore;
 
     @Override
     protected DistributedQueryRunner createQueryRunner()
@@ -79,12 +82,12 @@ public class TestIcebergMetastoreAccessOperations
         HiveMetastore hiveMetastore = new FileHiveMetastore(
                 new NodeVersion("testversion"),
                 hdfsEnvironment,
-                new MetastoreConfig(),
+                HIDE_DELTA_LAKE_TABLES_IN_ICEBERG,
                 new FileHiveMetastoreConfig()
                         .setCatalogDirectory(baseDir.toURI().toString())
                         .setMetastoreUser("test"));
-        metastore = new CountingAccessFileHiveMetastore(hiveMetastore);
-        queryRunner.installPlugin(new TestingIcebergPlugin(Optional.of(metastore), Optional.empty()));
+        metastore = new CountingAccessHiveMetastore(hiveMetastore);
+        queryRunner.installPlugin(new TestingIcebergPlugin(Optional.of(metastore), Optional.empty(), EMPTY_MODULE));
         queryRunner.createCatalog("iceberg", "iceberg");
 
         queryRunner.execute("CREATE SCHEMA test_schema");
@@ -191,7 +194,7 @@ public class TestIcebergMetastoreAccessOperations
 
         assertMetastoreInvocations("REFRESH MATERIALIZED VIEW test_refresh_mview_view",
                 ImmutableMultiset.builder()
-                        .addCopies(GET_TABLE, 5)
+                        .addCopies(GET_TABLE, 9)
                         .addCopies(REPLACE_TABLE, 2)
                         .build());
     }
@@ -287,16 +290,22 @@ public class TestIcebergMetastoreAccessOperations
                         .addCopies(GET_TABLE, 1)
                         .build());
 
+        // select from $properties
+        assertMetastoreInvocations("SELECT * FROM \"test_select_snapshots$properties\"",
+                ImmutableMultiset.builder()
+                        .addCopies(GET_TABLE, 1)
+                        .build());
+
         // This test should get updated if a new system table is added.
         assertThat(TableType.values())
-                .containsExactly(DATA, HISTORY, SNAPSHOTS, MANIFESTS, PARTITIONS, FILES);
+                .containsExactly(DATA, HISTORY, SNAPSHOTS, MANIFESTS, PARTITIONS, FILES, PROPERTIES);
     }
 
     private void assertMetastoreInvocations(String query, Multiset<?> expectedInvocations)
     {
         metastore.resetCounters();
         getQueryRunner().execute(query);
-        Multiset<CountingAccessFileHiveMetastore.Methods> actualInvocations = metastore.getMethodInvocations();
+        Multiset<CountingAccessHiveMetastore.Methods> actualInvocations = metastore.getMethodInvocations();
 
         if (expectedInvocations.equals(actualInvocations)) {
             return;

@@ -26,6 +26,7 @@ import io.trino.spi.block.LazyBlockLoader;
 import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.connector.ConnectorPageSource;
+import io.trino.spi.metrics.Metrics;
 import io.trino.spi.type.Type;
 
 import java.io.IOException;
@@ -36,6 +37,7 @@ import java.util.OptionalLong;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CURSOR_ERROR;
 import static java.lang.String.format;
@@ -123,9 +125,9 @@ public class ParquetPageSource
     }
 
     @Override
-    public long getSystemMemoryUsage()
+    public long getMemoryUsage()
     {
-        return parquetReader.getSystemMemoryContext().getBytes();
+        return parquetReader.getMemoryContext().getBytes();
     }
 
     @Override
@@ -157,26 +159,12 @@ public class ParquetPageSource
             return new Page(batchSize, blocks);
         }
         catch (TrinoException e) {
-            closeWithSuppression(e);
+            closeAllSuppress(e, this);
             throw e;
         }
         catch (RuntimeException e) {
-            closeWithSuppression(e);
+            closeAllSuppress(e, this);
             throw new TrinoException(HIVE_CURSOR_ERROR, e);
-        }
-    }
-
-    private void closeWithSuppression(Throwable throwable)
-    {
-        requireNonNull(throwable, "throwable is null");
-        try {
-            close();
-        }
-        catch (RuntimeException e) {
-            // Self-suppression not permitted
-            if (e != throwable) {
-                throwable.addSuppressed(e);
-            }
         }
     }
 
@@ -213,7 +201,7 @@ public class ParquetPageSource
         }
 
         @Override
-        public final Block load()
+        public Block load()
         {
             checkState(!loaded, "Already loaded");
             checkState(batchId == expectedBatchId, "Inconsistent state; wrong batch");
@@ -242,5 +230,11 @@ public class ParquetPageSource
             rowIndices[position] = baseIndex + position;
         }
         return new LongArrayBlock(size, Optional.empty(), rowIndices);
+    }
+
+    @Override
+    public Metrics getMetrics()
+    {
+        return new Metrics(parquetReader.getCodecMetrics());
     }
 }

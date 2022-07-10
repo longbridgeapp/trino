@@ -113,7 +113,7 @@ public class InternalHiveSplitFactory
         return partitionName;
     }
 
-    public Optional<InternalHiveSplit> createInternalHiveSplit(LocatedFileStatus status, OptionalInt bucketNumber, boolean splittable, Optional<AcidInfo> acidInfo)
+    public Optional<InternalHiveSplit> createInternalHiveSplit(LocatedFileStatus status, OptionalInt readBucketNumber, OptionalInt tableBucketNumber, boolean splittable, Optional<AcidInfo> acidInfo)
     {
         splittable = splittable &&
                 status.getLen() > minimumTargetSplitSizeInBytes &&
@@ -125,7 +125,8 @@ public class InternalHiveSplitFactory
                 status.getLen(),
                 status.getLen(),
                 status.getModificationTime(),
-                bucketNumber,
+                readBucketNumber,
+                tableBucketNumber,
                 splittable,
                 acidInfo);
     }
@@ -142,6 +143,7 @@ public class InternalHiveSplitFactory
                 file.getLen(),
                 file.getModificationTime(),
                 OptionalInt.empty(),
+                OptionalInt.empty(),
                 false,
                 Optional.empty());
     }
@@ -154,7 +156,8 @@ public class InternalHiveSplitFactory
             // Estimated because, for example, encrypted S3 files may be padded, so reported size may not reflect actual size
             long estimatedFileSize,
             long fileModificationTime,
-            OptionalInt bucketNumber,
+            OptionalInt readBucketNumber,
+            OptionalInt tableBucketNumber,
             boolean splittable,
             Optional<AcidInfo> acidInfo)
     {
@@ -176,17 +179,6 @@ public class InternalHiveSplitFactory
 
         if (maxSplitFileSize.isPresent() && estimatedFileSize > maxSplitFileSize.get()) {
             return Optional.empty();
-        }
-
-        boolean forceLocalScheduling = this.forceLocalScheduling;
-
-        // For empty files, some filesystem (e.g. LocalFileSystem) produce one empty block
-        // while others (e.g. hdfs.DistributedFileSystem) produces no block.
-        // Synthesize an empty block if one does not already exist.
-        if (estimatedFileSize == 0 && blockLocations.length == 0) {
-            blockLocations = new BlockLocation[] {new BlockLocation()};
-            // Turn off force local scheduling because hosts list doesn't exist.
-            forceLocalScheduling = false;
         }
 
         ImmutableList.Builder<InternalHiveBlock> blockBuilder = ImmutableList.builder();
@@ -212,7 +204,7 @@ public class InternalHiveSplitFactory
             blocks = ImmutableList.of(new InternalHiveBlock(start, start + length, blocks.get(0).getAddresses()));
         }
 
-        int bucketNumberIndex = bucketNumber.orElse(0);
+        int bucketNumberIndex = readBucketNumber.orElse(0);
         return Optional.of(new InternalHiveSplit(
                 partitionName,
                 pathString,
@@ -223,7 +215,8 @@ public class InternalHiveSplitFactory
                 schema,
                 partitionKeys,
                 blocks,
-                bucketNumber,
+                readBucketNumber,
+                tableBucketNumber,
                 () -> bucketStatementCounters.computeIfAbsent(bucketNumberIndex, index -> new AtomicInteger()).getAndIncrement(),
                 splittable,
                 forceLocalScheduling && allBlocksHaveAddress(blocks),

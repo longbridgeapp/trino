@@ -19,20 +19,20 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.log.Logger;
+import io.airlift.slice.Slice;
 import io.airlift.stats.TimeStat;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.Session;
 import io.trino.execution.FailureInjector;
 import io.trino.execution.FailureInjector.InjectedFailure;
+import io.trino.execution.SqlTaskManager;
 import io.trino.execution.TaskId;
 import io.trino.execution.TaskInfo;
-import io.trino.execution.TaskManager;
 import io.trino.execution.TaskState;
 import io.trino.execution.TaskStatus;
 import io.trino.execution.buffer.BufferResult;
 import io.trino.execution.buffer.OutputBuffers.OutputBufferId;
-import io.trino.execution.buffer.SerializedPage;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.server.security.ResourceSecurity;
 import org.weakref.jmx.Managed;
@@ -94,7 +94,7 @@ public class TaskResource
     private static final Duration ADDITIONAL_WAIT_TIME = new Duration(5, SECONDS);
     private static final Duration DEFAULT_MAX_WAIT_TIME = new Duration(2, SECONDS);
 
-    private final TaskManager taskManager;
+    private final SqlTaskManager taskManager;
     private final SessionPropertyManager sessionPropertyManager;
     private final Executor responseExecutor;
     private final ScheduledExecutorService timeoutExecutor;
@@ -104,7 +104,7 @@ public class TaskResource
 
     @Inject
     public TaskResource(
-            TaskManager taskManager,
+            SqlTaskManager taskManager,
             SessionPropertyManager sessionPropertyManager,
             @ForAsyncHttp BoundedExecutor responseExecutor,
             @ForAsyncHttp ScheduledExecutorService timeoutExecutor,
@@ -151,7 +151,7 @@ public class TaskResource
         TaskInfo taskInfo = taskManager.updateTask(session,
                 taskId,
                 taskUpdateRequest.getFragment(),
-                taskUpdateRequest.getSources(),
+                taskUpdateRequest.getSplitAssignments(),
                 taskUpdateRequest.getOutputIds(),
                 taskUpdateRequest.getDynamicFilterDomains());
 
@@ -290,6 +290,21 @@ public class TaskResource
     }
 
     @ResourceSecurity(INTERNAL_ONLY)
+    @POST
+    @Path("{taskId}/fail")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public TaskInfo failTask(
+            @PathParam("taskId") TaskId taskId,
+            FailTaskRequest failTaskRequest,
+            @Context UriInfo uriInfo)
+    {
+        requireNonNull(taskId, "taskId is null");
+        requireNonNull(failTaskRequest, "failTaskRequest is null");
+        return taskManager.failTask(taskId, failTaskRequest.getFailureInfo().toException());
+    }
+
+    @ResourceSecurity(INTERNAL_ONLY)
     @GET
     @Path("{taskId}/results/{bufferId}/{token}")
     @Produces(TRINO_PAGES)
@@ -320,7 +335,7 @@ public class TaskResource
                 timeoutExecutor);
 
         ListenableFuture<Response> responseFuture = Futures.transform(bufferResultFuture, result -> {
-            List<SerializedPage> serializedPages = result.getSerializedPages();
+            List<Slice> serializedPages = result.getSerializedPages();
 
             GenericEntity<?> entity = null;
             Status status;
@@ -328,7 +343,7 @@ public class TaskResource
                 status = Status.NO_CONTENT;
             }
             else {
-                entity = new GenericEntity<>(serializedPages, new TypeToken<List<SerializedPage>>() {}.getType());
+                entity = new GenericEntity<>(serializedPages, new TypeToken<List<Slice>>() {}.getType());
                 status = Status.OK;
             }
 
@@ -375,7 +390,7 @@ public class TaskResource
     @ResourceSecurity(INTERNAL_ONLY)
     @DELETE
     @Path("{taskId}/results/{bufferId}")
-    public void abortResults(
+    public void destroyTaskResults(
             @PathParam("taskId") TaskId taskId,
             @PathParam("bufferId") OutputBufferId bufferId,
             @Context UriInfo uriInfo,
@@ -384,11 +399,11 @@ public class TaskResource
         requireNonNull(taskId, "taskId is null");
         requireNonNull(bufferId, "bufferId is null");
 
-        if (injectFailure(taskManager.getTraceToken(taskId), taskId, RequestType.ABORT_RESULTS, asyncResponse)) {
+        if (injectFailure(taskManager.getTraceToken(taskId), taskId, RequestType.DESTROY_RESULTS, asyncResponse)) {
             return;
         }
 
-        taskManager.abortTaskResults(taskId, bufferId);
+        taskManager.destroyTaskResults(taskId, bufferId);
         asyncResponse.resume(Response.noContent().build());
     }
 
@@ -461,7 +476,7 @@ public class TaskResource
         GET_TASK_STATUS(true),
         ACKNOWLEDGE_AND_GET_NEW_DYNAMIC_FILTER_DOMAINS(true),
         GET_RESULTS(false),
-        ABORT_RESULTS(false);
+        DESTROY_RESULTS(false);
 
         private final boolean taskManagement;
 

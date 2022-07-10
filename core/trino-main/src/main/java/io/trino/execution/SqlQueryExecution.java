@@ -22,15 +22,20 @@ import io.trino.SystemSessionProperties;
 import io.trino.connector.CatalogName;
 import io.trino.cost.CostCalculator;
 import io.trino.cost.StatsCalculator;
+import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.QueryPreparer.PreparedQuery;
 import io.trino.execution.StateMachine.StateChangeListener;
-import io.trino.execution.scheduler.ExecutionPolicy;
+import io.trino.execution.scheduler.NodeAllocatorService;
 import io.trino.execution.scheduler.NodeScheduler;
+import io.trino.execution.scheduler.PartitionMemoryEstimatorFactory;
 import io.trino.execution.scheduler.SplitSchedulerStats;
 import io.trino.execution.scheduler.SqlQueryScheduler;
+import io.trino.execution.scheduler.TaskDescriptorStorage;
+import io.trino.execution.scheduler.TaskExecutionStats;
+import io.trino.execution.scheduler.TaskSourceFactory;
+import io.trino.execution.scheduler.policy.ExecutionPolicy;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.failuredetector.FailureDetector;
-import io.trino.memory.VersionedMemoryPoolId;
 import io.trino.metadata.TableHandle;
 import io.trino.operator.ForScheduler;
 import io.trino.server.BasicQueryInfo;
@@ -97,6 +102,9 @@ public class SqlQueryExecution
     private final SplitSourceFactory splitSourceFactory;
     private final NodePartitioningManager nodePartitioningManager;
     private final NodeScheduler nodeScheduler;
+    private final NodeAllocatorService nodeAllocatorService;
+    private final PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory;
+    private final TaskExecutionStats taskExecutionStats;
     private final List<PlanOptimizer> planOptimizers;
     private final PlanFragmenter planFragmenter;
     private final RemoteTaskFactory remoteTaskFactory;
@@ -116,7 +124,10 @@ public class SqlQueryExecution
     private final DynamicFilterService dynamicFilterService;
     private final TableExecuteContextManager tableExecuteContextManager;
     private final TypeAnalyzer typeAnalyzer;
-    private final TaskManager coordinatorTaskManager;
+    private final SqlTaskManager coordinatorTaskManager;
+    private final ExchangeManagerRegistry exchangeManagerRegistry;
+    private final TaskSourceFactory taskSourceFactory;
+    private final TaskDescriptorStorage taskDescriptorStorage;
 
     private SqlQueryExecution(
             PreparedQuery preparedQuery,
@@ -127,6 +138,9 @@ public class SqlQueryExecution
             SplitSourceFactory splitSourceFactory,
             NodePartitioningManager nodePartitioningManager,
             NodeScheduler nodeScheduler,
+            NodeAllocatorService nodeAllocatorService,
+            PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory,
+            TaskExecutionStats taskExecutionStats,
             List<PlanOptimizer> planOptimizers,
             PlanFragmenter planFragmenter,
             RemoteTaskFactory remoteTaskFactory,
@@ -143,7 +157,10 @@ public class SqlQueryExecution
             WarningCollector warningCollector,
             TableExecuteContextManager tableExecuteContextManager,
             TypeAnalyzer typeAnalyzer,
-            TaskManager coordinatorTaskManager)
+            SqlTaskManager coordinatorTaskManager,
+            ExchangeManagerRegistry exchangeManagerRegistry,
+            TaskSourceFactory taskSourceFactory,
+            TaskDescriptorStorage taskDescriptorStorage)
     {
         try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
             this.slug = requireNonNull(slug, "slug is null");
@@ -151,6 +168,9 @@ public class SqlQueryExecution
             this.splitSourceFactory = requireNonNull(splitSourceFactory, "splitSourceFactory is null");
             this.nodePartitioningManager = requireNonNull(nodePartitioningManager, "nodePartitioningManager is null");
             this.nodeScheduler = requireNonNull(nodeScheduler, "nodeScheduler is null");
+            this.nodeAllocatorService = requireNonNull(nodeAllocatorService, "nodeAllocatorService is null");
+            this.partitionMemoryEstimatorFactory = requireNonNull(partitionMemoryEstimatorFactory, "partitionMemoryEstimatorFactory is null");
+            this.taskExecutionStats = requireNonNull(taskExecutionStats, "taskExecutionStats is null");
             this.planOptimizers = requireNonNull(planOptimizers, "planOptimizers is null");
             this.planFragmenter = requireNonNull(planFragmenter, "planFragmenter is null");
             this.queryExecutor = requireNonNull(queryExecutor, "queryExecutor is null");
@@ -199,6 +219,9 @@ public class SqlQueryExecution
             this.remoteTaskFactory = new MemoryTrackingRemoteTaskFactory(requireNonNull(remoteTaskFactory, "remoteTaskFactory is null"), stateMachine);
             this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
             this.coordinatorTaskManager = requireNonNull(coordinatorTaskManager, "coordinatorTaskManager is null");
+            this.exchangeManagerRegistry = requireNonNull(exchangeManagerRegistry, "exchangeManagerRegistry is null");
+            this.taskSourceFactory = requireNonNull(taskSourceFactory, "taskSourceFactory is null");
+            this.taskDescriptorStorage = requireNonNull(taskDescriptorStorage, "taskDescriptorStorage is null");
         }
     }
 
@@ -262,18 +285,6 @@ public class SqlQueryExecution
     public Slug getSlug()
     {
         return slug;
-    }
-
-    @Override
-    public VersionedMemoryPoolId getMemoryPool()
-    {
-        return stateMachine.getMemoryPool();
-    }
-
-    @Override
-    public void setMemoryPool(VersionedMemoryPoolId poolId)
-    {
-        stateMachine.setMemoryPool(poolId);
     }
 
     @Override
@@ -498,6 +509,9 @@ public class SqlQueryExecution
                 plan.getRoot(),
                 nodePartitioningManager,
                 nodeScheduler,
+                nodeAllocatorService,
+                partitionMemoryEstimatorFactory,
+                taskExecutionStats,
                 remoteTaskFactory,
                 plan.isSummarizeTaskInfos(),
                 scheduleSplitBatchSize,
@@ -511,7 +525,10 @@ public class SqlQueryExecution
                 tableExecuteContextManager,
                 plannerContext.getMetadata(),
                 splitSourceFactory,
-                coordinatorTaskManager);
+                coordinatorTaskManager,
+                exchangeManagerRegistry,
+                taskSourceFactory,
+                taskDescriptorStorage);
 
         queryScheduler.set(scheduler);
 
@@ -538,6 +555,19 @@ public class SqlQueryExecution
             SqlQueryScheduler scheduler = queryScheduler.get();
             if (scheduler != null) {
                 scheduler.cancelStage(stageId);
+            }
+        }
+    }
+
+    @Override
+    public void failTask(TaskId taskId, Exception reason)
+    {
+        requireNonNull(taskId, "stageId is null");
+
+        try (SetThreadName ignored = new SetThreadName("Query-%s", stateMachine.getQueryId())) {
+            SqlQueryScheduler scheduler = queryScheduler.get();
+            if (scheduler != null) {
+                scheduler.failTask(taskId, reason);
             }
         }
     }
@@ -683,6 +713,9 @@ public class SqlQueryExecution
         private final SplitSourceFactory splitSourceFactory;
         private final NodePartitioningManager nodePartitioningManager;
         private final NodeScheduler nodeScheduler;
+        private final NodeAllocatorService nodeAllocatorService;
+        private final PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory;
+        private final TaskExecutionStats taskExecutionStats;
         private final List<PlanOptimizer> planOptimizers;
         private final PlanFragmenter planFragmenter;
         private final RemoteTaskFactory remoteTaskFactory;
@@ -696,7 +729,10 @@ public class SqlQueryExecution
         private final DynamicFilterService dynamicFilterService;
         private final TableExecuteContextManager tableExecuteContextManager;
         private final TypeAnalyzer typeAnalyzer;
-        private final TaskManager coordinatorTaskManager;
+        private final SqlTaskManager coordinatorTaskManager;
+        private final ExchangeManagerRegistry exchangeManagerRegistry;
+        private final TaskSourceFactory taskSourceFactory;
+        private final TaskDescriptorStorage taskDescriptorStorage;
 
         @Inject
         SqlQueryExecutionFactory(
@@ -706,6 +742,9 @@ public class SqlQueryExecution
                 SplitSourceFactory splitSourceFactory,
                 NodePartitioningManager nodePartitioningManager,
                 NodeScheduler nodeScheduler,
+                NodeAllocatorService nodeAllocatorService,
+                PartitionMemoryEstimatorFactory partitionMemoryEstimatorFactory,
+                TaskExecutionStats taskExecutionStats,
                 PlanOptimizersFactory planOptimizersFactory,
                 PlanFragmenter planFragmenter,
                 RemoteTaskFactory remoteTaskFactory,
@@ -720,7 +759,10 @@ public class SqlQueryExecution
                 DynamicFilterService dynamicFilterService,
                 TableExecuteContextManager tableExecuteContextManager,
                 TypeAnalyzer typeAnalyzer,
-                TaskManager coordinatorTaskManager)
+                SqlTaskManager coordinatorTaskManager,
+                ExchangeManagerRegistry exchangeManagerRegistry,
+                TaskSourceFactory taskSourceFactory,
+                TaskDescriptorStorage taskDescriptorStorage)
         {
             requireNonNull(config, "config is null");
             this.schedulerStats = requireNonNull(schedulerStats, "schedulerStats is null");
@@ -730,6 +772,9 @@ public class SqlQueryExecution
             this.splitSourceFactory = requireNonNull(splitSourceFactory, "splitSourceFactory is null");
             this.nodePartitioningManager = requireNonNull(nodePartitioningManager, "nodePartitioningManager is null");
             this.nodeScheduler = requireNonNull(nodeScheduler, "nodeScheduler is null");
+            this.nodeAllocatorService = requireNonNull(nodeAllocatorService, "nodeAllocatorService is null");
+            this.partitionMemoryEstimatorFactory = requireNonNull(partitionMemoryEstimatorFactory, "partitionMemoryEstimatorFactory is null");
+            this.taskExecutionStats = requireNonNull(taskExecutionStats, "taskExecutionStats is null");
             this.planFragmenter = requireNonNull(planFragmenter, "planFragmenter is null");
             this.remoteTaskFactory = requireNonNull(remoteTaskFactory, "remoteTaskFactory is null");
             this.queryExecutor = requireNonNull(queryExecutor, "queryExecutor is null");
@@ -744,6 +789,9 @@ public class SqlQueryExecution
             this.tableExecuteContextManager = requireNonNull(tableExecuteContextManager, "tableExecuteContextManager is null");
             this.typeAnalyzer = requireNonNull(typeAnalyzer, "typeAnalyzer is null");
             this.coordinatorTaskManager = requireNonNull(coordinatorTaskManager, "coordinatorTaskManager is null");
+            this.exchangeManagerRegistry = requireNonNull(exchangeManagerRegistry, "exchangeManagerRegistry is null");
+            this.taskSourceFactory = requireNonNull(taskSourceFactory, "taskSourceFactory is null");
+            this.taskDescriptorStorage = requireNonNull(taskDescriptorStorage, "taskDescriptorStorage is null");
         }
 
         @Override
@@ -766,6 +814,9 @@ public class SqlQueryExecution
                     splitSourceFactory,
                     nodePartitioningManager,
                     nodeScheduler,
+                    nodeAllocatorService,
+                    partitionMemoryEstimatorFactory,
+                    taskExecutionStats,
                     planOptimizers,
                     planFragmenter,
                     remoteTaskFactory,
@@ -782,7 +833,10 @@ public class SqlQueryExecution
                     warningCollector,
                     tableExecuteContextManager,
                     typeAnalyzer,
-                    coordinatorTaskManager);
+                    coordinatorTaskManager,
+                    exchangeManagerRegistry,
+                    taskSourceFactory,
+                    taskDescriptorStorage);
         }
     }
 }

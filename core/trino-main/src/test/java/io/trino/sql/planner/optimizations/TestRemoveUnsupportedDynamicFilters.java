@@ -87,16 +87,14 @@ public class TestRemoveUnsupportedDynamicFilters
         lineitemTableHandle = new TableHandle(
                 catalogName,
                 new TpchTableHandle("sf1", "lineitem", 1.0),
-                TestingTransactionHandle.create(),
-                Optional.empty());
+                TestingTransactionHandle.create());
         lineitemOrderKeySymbol = builder.symbol("LINEITEM_OK", BIGINT);
         lineitemTableScanNode = builder.tableScan(lineitemTableHandle, ImmutableList.of(lineitemOrderKeySymbol), ImmutableMap.of(lineitemOrderKeySymbol, new TpchColumnHandle("orderkey", BIGINT)));
 
         TableHandle ordersTableHandle = new TableHandle(
                 catalogName,
                 new TpchTableHandle("sf1", "orders", 1.0),
-                TestingTransactionHandle.create(),
-                Optional.empty());
+                TestingTransactionHandle.create());
         ordersOrderKeySymbol = builder.symbol("ORDERS_OK", BIGINT);
         ordersTableScanNode = builder.tableScan(ordersTableHandle, ImmutableList.of(ordersOrderKeySymbol), ImmutableMap.of(ordersOrderKeySymbol, new TpchColumnHandle("orderkey", BIGINT)));
     }
@@ -494,7 +492,13 @@ public class TestRemoveUnsupportedDynamicFilters
         getQueryRunner().inTransaction(session -> {
             // metadata.getCatalogHandle() registers the catalog for the transaction
             session.getCatalog().ifPresent(catalog -> metadata.getCatalogHandle(session, catalog));
-            PlanAssert.assertPlan(session, metadata, getQueryRunner().getStatsCalculator(), new Plan(actual, builder.getTypes(), StatsAndCosts.empty()), pattern);
+            PlanAssert.assertPlan(
+                    session,
+                    metadata,
+                    getQueryRunner().getFunctionManager(),
+                    getQueryRunner().getStatsCalculator(),
+                    new Plan(actual, builder.getTypes(), StatsAndCosts.empty()),
+                    pattern);
             return null;
         });
     }

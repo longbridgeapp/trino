@@ -19,7 +19,7 @@ import org.openjdk.jol.info.ClassLayout;
 import javax.annotation.Nullable;
 
 import java.util.Arrays;
-import java.util.function.BiConsumer;
+import java.util.function.ObjLongConsumer;
 
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.spi.block.ArrayBlock.createArrayBlockInternal;
@@ -107,7 +107,7 @@ public class ArrayBlockBuilder
     }
 
     @Override
-    public void retainedBytesForEachPart(BiConsumer<Object, Long> consumer)
+    public void retainedBytesForEachPart(ObjLongConsumer<Object> consumer)
     {
         consumer.accept(values, values.getRetainedSizeInBytes());
         consumer.accept(offsets, sizeOf(offsets));
@@ -147,56 +147,10 @@ public class ArrayBlockBuilder
     }
 
     @Override
-    public BlockBuilder appendStructure(Block block)
-    {
-        if (currentEntryOpened) {
-            throw new IllegalStateException("Expected current entry to be closed but was opened");
-        }
-        currentEntryOpened = true;
-
-        for (int i = 0; i < block.getPositionCount(); i++) {
-            if (block.isNull(i)) {
-                values.appendNull();
-            }
-            else {
-                block.writePositionTo(i, values);
-            }
-        }
-
-        closeEntry();
-        return this;
-    }
-
-    @Override
-    public BlockBuilder appendStructureInternal(Block block, int position)
-    {
-        if (!(block instanceof AbstractArrayBlock)) {
-            throw new IllegalArgumentException();
-        }
-
-        AbstractArrayBlock arrayBlock = (AbstractArrayBlock) block;
-        BlockBuilder entryBuilder = beginBlockEntry();
-
-        int startValueOffset = arrayBlock.getOffset(position);
-        int endValueOffset = arrayBlock.getOffset(position + 1);
-        for (int i = startValueOffset; i < endValueOffset; i++) {
-            if (arrayBlock.getRawElementBlock().isNull(i)) {
-                entryBuilder.appendNull();
-            }
-            else {
-                arrayBlock.getRawElementBlock().writePositionTo(i, entryBuilder);
-            }
-        }
-
-        closeEntry();
-        return this;
-    }
-
-    @Override
     public SingleArrayBlockWriter beginBlockEntry()
     {
         if (currentEntryOpened) {
-            throw new IllegalStateException("Expected current entry to be closed but was closed");
+            throw new IllegalStateException("Expected current entry to be closed but was opened");
         }
         currentEntryOpened = true;
         return new SingleArrayBlockWriter(values, values.getPositionCount());

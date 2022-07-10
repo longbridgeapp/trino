@@ -87,7 +87,7 @@ public class BenchmarkGroupByHash
         PageBuilder pageBuilder = new PageBuilder(groupByHash.getTypes());
         for (int groupId = 0; groupId < groupByHash.getGroupCount(); groupId++) {
             pageBuilder.declarePosition();
-            groupByHash.appendValuesTo(groupId, pageBuilder, 0);
+            groupByHash.appendValuesTo(groupId, pageBuilder);
             if (pageBuilder.isFull()) {
                 pages.add(pageBuilder.build());
                 pageBuilder.reset();
@@ -124,7 +124,7 @@ public class BenchmarkGroupByHash
         PageBuilder pageBuilder = new PageBuilder(groupByHash.getTypes());
         for (int groupId = 0; groupId < groupByHash.getGroupCount(); groupId++) {
             pageBuilder.declarePosition();
-            groupByHash.appendValuesTo(groupId, pageBuilder, 0);
+            groupByHash.appendValuesTo(groupId, pageBuilder);
             if (pageBuilder.isFull()) {
                 pages.add(pageBuilder.build());
                 pageBuilder.reset();
@@ -145,7 +145,7 @@ public class BenchmarkGroupByHash
         PageBuilder pageBuilder = new PageBuilder(groupByHash.getTypes());
         for (int groupId = 0; groupId < groupByHash.getGroupCount(); groupId++) {
             pageBuilder.declarePosition();
-            groupByHash.appendValuesTo(groupId, pageBuilder, 0);
+            groupByHash.appendValuesTo(groupId, pageBuilder);
             if (pageBuilder.isFull()) {
                 pages.add(pageBuilder.build());
                 pageBuilder.reset();
@@ -290,7 +290,7 @@ public class BenchmarkGroupByHash
         PageBuilder pageBuilder = new PageBuilder(types);
         for (int position = 0; position < positionCount; position++) {
             int rand = ThreadLocalRandom.current().nextInt(groupCount);
-            Slice value = Slices.wrappedBuffer(ByteBuffer.allocate(4).putInt(rand));
+            Slice value = Slices.wrappedBuffer(ByteBuffer.allocate(4).putInt(rand).flip());
             pageBuilder.declarePosition();
             for (int channel = 0; channel < channelCount; channel++) {
                 VARCHAR.writeSlice(pageBuilder.getBlockBuilder(channel), value);

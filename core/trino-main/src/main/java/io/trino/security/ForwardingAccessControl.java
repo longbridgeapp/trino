@@ -17,6 +17,7 @@ import io.trino.metadata.QualifiedObjectName;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.FunctionKind;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.TrinoPrincipal;
@@ -101,9 +102,9 @@ public abstract class ForwardingAccessControl
     }
 
     @Override
-    public Set<String> filterCatalogs(Identity identity, Set<String> catalogs)
+    public Set<String> filterCatalogs(SecurityContext context, Set<String> catalogs)
     {
-        return delegate().filterCatalogs(identity, catalogs);
+        return delegate().filterCatalogs(context, catalogs);
     }
 
     @Override
@@ -155,12 +156,6 @@ public abstract class ForwardingAccessControl
     }
 
     @Override
-    public void checkCanCreateTable(SecurityContext context, QualifiedObjectName tableName)
-    {
-        delegate().checkCanCreateTable(context, tableName);
-    }
-
-    @Override
     public void checkCanCreateTable(SecurityContext context, QualifiedObjectName tableName, Map<String, Object> properties)
     {
         delegate().checkCanCreateTable(context, tableName, properties);
@@ -185,7 +180,7 @@ public abstract class ForwardingAccessControl
     }
 
     @Override
-    public void checkCanSetTableProperties(SecurityContext context, QualifiedObjectName tableName, Map<String, Object> properties)
+    public void checkCanSetTableProperties(SecurityContext context, QualifiedObjectName tableName, Map<String, Optional<Object>> properties)
     {
         delegate().checkCanSetTableProperties(context, tableName, properties);
     }
@@ -299,9 +294,9 @@ public abstract class ForwardingAccessControl
     }
 
     @Override
-    public void checkCanCreateMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName)
+    public void checkCanCreateMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName, Map<String, Object> properties)
     {
-        delegate().checkCanCreateMaterializedView(context, materializedViewName);
+        delegate().checkCanCreateMaterializedView(context, materializedViewName, properties);
     }
 
     @Override
@@ -320,6 +315,12 @@ public abstract class ForwardingAccessControl
     public void checkCanRenameMaterializedView(SecurityContext context, QualifiedObjectName viewName, QualifiedObjectName newViewName)
     {
         delegate().checkCanRenameMaterializedView(context, viewName, newViewName);
+    }
+
+    @Override
+    public void checkCanSetMaterializedViewProperties(SecurityContext context, QualifiedObjectName materializedViewName, Map<String, Optional<Object>> properties)
+    {
+        delegate().checkCanSetMaterializedViewProperties(context, materializedViewName, properties);
     }
 
     @Override
@@ -446,6 +447,12 @@ public abstract class ForwardingAccessControl
     public void checkCanExecuteFunction(SecurityContext context, String functionName)
     {
         delegate().checkCanExecuteFunction(context, functionName);
+    }
+
+    @Override
+    public void checkCanExecuteFunction(SecurityContext context, FunctionKind functionKind, QualifiedObjectName functionName)
+    {
+        delegate().checkCanExecuteFunction(context, functionKind, functionName);
     }
 
     @Override

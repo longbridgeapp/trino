@@ -134,7 +134,7 @@ public class TestUnaliasSymbolReferences
                     WarningCollector.NOOP);
 
             Plan actual = new Plan(optimized, planBuilder.getTypes(), StatsAndCosts.empty());
-            PlanAssert.assertPlan(session, queryRunner.getMetadata(), queryRunner.getStatsCalculator(), actual, pattern);
+            PlanAssert.assertPlan(session, queryRunner.getMetadata(), queryRunner.getFunctionManager(), queryRunner.getStatsCalculator(), actual, pattern);
             return null;
         });
     }
@@ -149,8 +149,7 @@ public class TestUnaliasSymbolReferences
         return new TableHandle(
                 new CatalogName(session.getCatalog().get()),
                 new TpchTableHandle(TINY_SCHEMA_NAME, tableName, TINY_SCALE_FACTOR),
-                TestingTransactionHandle.create(),
-                Optional.empty());
+                TestingTransactionHandle.create());
     }
 
     interface PlanCreator

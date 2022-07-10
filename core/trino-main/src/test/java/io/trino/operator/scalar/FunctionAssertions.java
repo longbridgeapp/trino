@@ -15,6 +15,7 @@ package io.trino.operator.scalar;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import com.google.common.util.concurrent.UncheckedExecutionException;
@@ -24,7 +25,8 @@ import io.airlift.units.DataSize;
 import io.trino.FeaturesConfig;
 import io.trino.Session;
 import io.trino.connector.CatalogName;
-import io.trino.execution.Lifespan;
+import io.trino.metadata.FunctionBundle;
+import io.trino.metadata.FunctionManager;
 import io.trino.metadata.Metadata;
 import io.trino.metadata.Split;
 import io.trino.metadata.TableHandle;
@@ -66,6 +68,7 @@ import io.trino.spi.type.TypeOperators;
 import io.trino.split.PageSourceProvider;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.gen.ExpressionCompiler;
+import io.trino.sql.gen.PageFunctionCompiler;
 import io.trino.sql.planner.ExpressionInterpreter;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TypeProvider;
@@ -95,11 +98,13 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.airlift.testing.Assertions.assertInstanceOf;
@@ -192,7 +197,7 @@ public final class FunctionAssertions
             .put(new Symbol("bound_row"), TEST_ROW_TYPE)
             .put(new Symbol("bound_short_decimal"), SHORT_DECIMAL_TYPE)
             .put(new Symbol("bound_long_decimal"), LONG_DECIMAL_TYPE)
-            .build());
+            .buildOrThrow());
 
     private static final Map<Symbol, Integer> INPUT_MAPPING = ImmutableMap.<Symbol, Integer>builder()
             .put(new Symbol("bound_long"), 0)
@@ -208,7 +213,7 @@ public final class FunctionAssertions
             .put(new Symbol("bound_row"), 10)
             .put(new Symbol("bound_short_decimal"), 11)
             .put(new Symbol("bound_long_decimal"), 12)
-            .build();
+            .buildOrThrow();
 
     private static final PageSourceProvider PAGE_SOURCE_PROVIDER = new TestPageSourceProvider();
     private static final PlanNodeId SOURCE_ID = new PlanNodeId("scan");
@@ -233,7 +238,12 @@ public final class FunctionAssertions
         runner = LocalQueryRunner.builder(session)
                 .withFeaturesConfig(featuresConfig)
                 .build();
-        testingFunctionResolution = new TestingFunctionResolution(runner.getTransactionManager(), runner.getMetadata());
+        testingFunctionResolution = new TestingFunctionResolution(runner);
+    }
+
+    public void addFunctions(FunctionBundle functionBundle)
+    {
+        runner.addFunctions(functionBundle);
     }
 
     public Metadata getMetadata()
@@ -251,6 +261,11 @@ public final class FunctionAssertions
         return testingFunctionResolution;
     }
 
+    public FunctionManager getFunctionManager()
+    {
+        return runner.getFunctionManager();
+    }
+
     public TypeOperators getTypeOperators()
     {
         return runner.getTypeOperators();
@@ -259,6 +274,16 @@ public final class FunctionAssertions
     public BlockTypeOperators getBlockTypeOperators()
     {
         return runner.getBlockTypeOperators();
+    }
+
+    public TestingFunctionResolution getTestingFunctionResolution()
+    {
+        return new TestingFunctionResolution(runner);
+    }
+
+    public ExpressionCompiler getExpressionCompiler()
+    {
+        return new ExpressionCompiler(getFunctionManager(), new PageFunctionCompiler(getFunctionManager(), 0));
     }
 
     public void installPlugin(Plugin plugin)
@@ -321,6 +346,19 @@ public final class FunctionAssertions
         assertEquals(resultSet.size(), 1, "Expected only one result unique result, but got " + resultSet);
 
         return Iterables.getOnlyElement(resultSet);
+    }
+
+    public void assertAmbiguousFunction(String projection, Type expectedType, Set<Object> expected)
+    {
+        expected = expected.stream()
+                .map(expectedValue -> expectedValue instanceof Slice ? ((Slice) expectedValue).toStringUtf8() : expectedValue)
+                .collect(toImmutableSet());
+
+        Set<Object> actual = ImmutableSet.copyOf(executeProjectionWithAll(projection, expectedType, session, runner.getExpressionCompiler()));
+
+        for (Object actualValue : actual) {
+            assertTrue(expected.contains(actualValue));
+        }
     }
 
     public void assertInvalidFunction(String projection, ErrorCodeSupplier errorCode, String message)
@@ -843,7 +881,7 @@ public final class FunctionAssertions
 
     private RowExpression toRowExpression(Session session, Expression projection, Map<NodeRef<Expression>, Type> expressionTypes, Map<Symbol, Integer> layout)
     {
-        return translate(projection, expressionTypes, layout, getMetadata(), session, false);
+        return translate(projection, expressionTypes, layout, getMetadata(), getFunctionManager(), session, false);
     }
 
     private static Page getAtMostOnePage(Operator operator, Page sourcePage)
@@ -934,12 +972,12 @@ public final class FunctionAssertions
 
     private static Split createRecordSetSplit()
     {
-        return new Split(new CatalogName("test"), new TestSplit(true), Lifespan.taskWide());
+        return new Split(new CatalogName("test"), new TestSplit(true));
     }
 
     private static Split createNormalSplit()
     {
-        return new Split(new CatalogName("test"), new TestSplit(false), Lifespan.taskWide());
+        return new Split(new CatalogName("test"), new TestSplit(false));
     }
 
     private static RowType createTestRowType(int numberOfFields)
@@ -984,6 +1022,8 @@ public final class FunctionAssertions
     private static class TestSplit
             implements ConnectorSplit
     {
+        private static final int INSTANCE_SIZE = ClassLayout.parseClass(TestSplit.class).instanceSize();
+
         private final boolean recordSet;
 
         private TestSplit(boolean recordSet)
@@ -1012,6 +1052,12 @@ public final class FunctionAssertions
         public Object getInfo()
         {
             return this;
+        }
+
+        @Override
+        public long getRetainedSizeInBytes()
+        {
+            return INSTANCE_SIZE;
         }
     }
 }

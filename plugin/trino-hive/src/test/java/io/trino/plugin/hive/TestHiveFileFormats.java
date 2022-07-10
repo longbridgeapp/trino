@@ -69,6 +69,7 @@ import java.util.stream.Collectors;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.slice.Slices.utf8Slice;
+import static io.trino.hadoop.ConfigurationInstantiator.newEmptyConfiguration;
 import static io.trino.plugin.hive.HivePageSourceProvider.ColumnMapping.buildColumnMappings;
 import static io.trino.plugin.hive.HiveStorageFormat.AVRO;
 import static io.trino.plugin.hive.HiveStorageFormat.CSV;
@@ -387,7 +388,7 @@ public class TestHiveFileFormats
             FileSplit split = createTestFileHive(file.getAbsolutePath(), AVRO, HiveCompressionCodec.NONE, getTestColumnsSupportedByAvro(), rowCount);
             Properties splitProperties = new Properties();
             splitProperties.setProperty(FILE_INPUT_FORMAT, SymlinkTextInputFormat.class.getName());
-            splitProperties.setProperty(SERIALIZATION_LIB, AVRO.getSerDe());
+            splitProperties.setProperty(SERIALIZATION_LIB, AVRO.getSerde());
             testCursorProvider(createGenericHiveRecordCursorProvider(HDFS_ENVIRONMENT), split, splitProperties, getTestColumnsSupportedByAvro(), SESSION, file.length(), rowCount);
         }
         finally {
@@ -445,7 +446,7 @@ public class TestHiveFileFormats
                 .withSession(session)
                 .withColumns(testColumns)
                 .withRowsCount(rowCount)
-                .withFileWriterFactory(new ParquetFileWriterFactory(HDFS_ENVIRONMENT, new NodeVersion("test-version"), TESTING_TYPE_MANAGER))
+                .withFileWriterFactory(new ParquetFileWriterFactory(HDFS_ENVIRONMENT, new NodeVersion("test-version"), TESTING_TYPE_MANAGER, new HiveConfig()))
                 .isReadableByPageSource(new ParquetPageSourceFactory(HDFS_ENVIRONMENT, STATS, new ParquetReaderConfig(), new HiveConfig()));
     }
 
@@ -846,7 +847,7 @@ public class TestHiveFileFormats
     {
         Properties splitProperties = new Properties();
         splitProperties.setProperty(FILE_INPUT_FORMAT, storageFormat.getInputFormat());
-        splitProperties.setProperty(SERIALIZATION_LIB, storageFormat.getSerDe());
+        splitProperties.setProperty(SERIALIZATION_LIB, storageFormat.getSerde());
         ConnectorPageSource pageSource = createPageSourceFromCursorProvider(cursorProvider, split, splitProperties, fileSize, testReadColumns, session);
         checkPageSource(pageSource, testReadColumns, getTypes(getColumnHandles(testReadColumns)), rowCount);
     }
@@ -862,7 +863,7 @@ public class TestHiveFileFormats
     {
         Properties splitProperties = new Properties();
         splitProperties.setProperty(FILE_INPUT_FORMAT, storageFormat.getInputFormat());
-        splitProperties.setProperty(SERIALIZATION_LIB, storageFormat.getSerDe());
+        splitProperties.setProperty(SERIALIZATION_LIB, storageFormat.getSerde());
         testCursorProvider(cursorProvider, split, splitProperties, testReadColumns, session, fileSize, rowCount);
     }
 
@@ -921,7 +922,7 @@ public class TestHiveFileFormats
                 .map(partitionKey -> format("%s=%s", partitionKey.getName(), partitionKey.getValue()))
                 .collect(toImmutableList()));
 
-        Configuration configuration = new Configuration(false);
+        Configuration configuration = newEmptyConfiguration();
         configuration.set("io.compression.codecs", LzoCodec.class.getName() + "," + LzopCodec.class.getName());
 
         List<HiveColumnHandle> columnHandles = getColumnHandles(testReadColumns);
@@ -973,7 +974,7 @@ public class TestHiveFileFormats
     {
         Properties splitProperties = new Properties();
         splitProperties.setProperty(FILE_INPUT_FORMAT, storageFormat.getInputFormat());
-        splitProperties.setProperty(SERIALIZATION_LIB, storageFormat.getSerDe());
+        splitProperties.setProperty(SERIALIZATION_LIB, storageFormat.getSerde());
 
         // Use full columns in split properties
         ImmutableList.Builder<String> splitPropertiesColumnNames = ImmutableList.builder();
@@ -1017,7 +1018,7 @@ public class TestHiveFileFormats
         Optional<ConnectorPageSource> pageSource = HivePageSourceProvider.createHivePageSource(
                 ImmutableSet.of(sourceFactory),
                 ImmutableSet.of(),
-                new Configuration(false),
+                newEmptyConfiguration(),
                 session,
                 split.getPath(),
                 OptionalInt.empty(),
@@ -1132,14 +1133,14 @@ public class TestHiveFileFormats
         }
     }
 
-    private final List<TestColumn> getRegularColumns(List<TestColumn> columns)
+    private List<TestColumn> getRegularColumns(List<TestColumn> columns)
     {
         return columns.stream()
                 .filter(column -> !column.isPartitionKey())
                 .collect(toImmutableList());
     }
 
-    private final List<TestColumn> getPartitionColumns(List<TestColumn> columns)
+    private List<TestColumn> getPartitionColumns(List<TestColumn> columns)
     {
         return columns.stream()
                 .filter(TestColumn::isPartitionKey)

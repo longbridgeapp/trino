@@ -2,6 +2,10 @@
 PostgreSQL connector
 ====================
 
+.. raw:: html
+
+  <img src="../_static/img/postgresql.png" class="connector-logo">
+
 The PostgreSQL connector allows querying and creating tables in an
 external `PostgreSQL <https://www.postgresql.org/>`_ database. This can be used to join data between
 different systems like PostgreSQL and Hive, or between different
@@ -12,7 +16,7 @@ Requirements
 
 To connect to PostgreSQL, you need:
 
-* PostgreSQL 9.6 or higher.
+* PostgreSQL 10.x or higher.
 * Network access from the Trino coordinator and workers to PostgreSQL.
   Port 5432 is the default port.
 
@@ -46,6 +50,27 @@ determine the user credentials for the connection, often a service user. You can
 use :doc:`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
 
+.. _postgresql-tls:
+
+Connection security
+^^^^^^^^^^^^^^^^^^^
+
+If you have TLS configured with a globally-trusted certificate installed on your
+data source, you can enable TLS between your cluster and the data
+source by appending a parameter to the JDBC connection string set in the
+``connection-url`` catalog configuration property.
+
+For example, with version 42 of the PostgreSQL JDBC driver, enable TLS by
+appending the ``ssl=true`` parameter to the ``connection-url`` configuration
+property:
+
+.. code-block:: properties
+
+  connection-url=jdbc:postgresql://example.net:5432/database?ssl=true
+
+For more information on TLS configuration options, see the `PostgreSQL JDBC
+driver documentation <https://jdbc.postgresql.org/documentation/head/connect.html>`_.
+
 Multiple PostgreSQL databases or servers
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -72,6 +97,38 @@ catalog named ``sales`` using the configured connector.
 Type mapping
 ------------
 
+The data type mappings are as follows:
+
+=================== ================================ =======================================================================
+PostgreSQL          Trino                            Notes
+=================== ================================ =======================================================================
+``BIT``             ``BOOLEAN``
+``BOOLEAN``         ``BOOLEAN``
+``SMALLINT``        ``SMALLINT``
+``INTEGER``         ``INTEGER``
+``BIGINT``          ``BIGINT``
+``REAL``            ``DATE``
+``DOUBLE``          ``DOUBLE``
+``NUMERIC(p, s)``   ``DECIMAL(p, s)``                ``DECIMAL(p, s)`` is an alias of  ``NUMERIC(p, s)``.
+                                                     See :ref:`postgresql-decimal-type-handling` for more information.
+``CHAR(n)``         ``CHAR(n)``
+``VARCHAR(n)``      ``VARCHAR(n)``
+``ENUM``            ``VARCHAR``
+``BINARY``          ``VARBINARY``
+``DATE``            ``DATE``
+``TIME(n)``         ``TIME(n)``
+``TIMESTAMP(n)``    ``TIMESTAMP(n)``
+``TIMESTAMPTZ(n)``  ``TIMESTAMP(n) WITH TIME ZONE``
+``MONEY``           ``VARCHAR``
+``UUID``            ``UUID``
+``JSON``            ``JSON``
+``JSONB``           ``JSON``
+``HSTORE``          ``MAP(VARCHAR, VARCHAR)``
+``ARRAY``           Disabled, ``ARRAY`` or ``JSON``  See :ref:`postgresql-array-type-handling` for more information.
+=================== ================================ =======================================================================
+
+.. _postgresql-decimal-type-handling:
+
 Decimal type handling
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -85,6 +142,8 @@ is controlled via the ``decimal-rounding-mode`` configuration property or the ``
 property, which can be set to ``UNNECESSARY`` (the default),
 ``UP``, ``DOWN``, ``CEILING``, ``FLOOR``, ``HALF_UP``, ``HALF_DOWN``, or ``HALF_EVEN``
 (see `RoundingMode <https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/math/RoundingMode.html#enum.constant.summary>`_).
+
+.. _postgresql-array-type-handling:
 
 Array type handling
 ^^^^^^^^^^^^^^^^^^^
@@ -146,10 +205,103 @@ statements, the connector supports the following features:
 
 .. include:: alter-table-limitation.fragment
 
+.. include:: alter-schema-limitation.fragment
+
+Table functions
+---------------
+
+The connector provides specific :doc:`table functions </functions/table>` to
+access PostgreSQL.
+
+.. _postgresql-query-function:
+
+``query(varchar) -> table``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``query`` function allows you to query the underlying database directly. It
+requires syntax native to PostgreSQL, because the full query is pushed down and
+processed in PostgreSQL. This can be useful for accessing native features which
+are not available in Trino or for improving query performance in situations
+where running a query natively may be faster.
+
+As a simple example, to select an entire table::
+
+    SELECT
+      *
+    FROM
+      TABLE(
+        postgresql.system.query(
+          query => 'SELECT
+            *
+          FROM
+            tpch.nation'
+        )
+      );
+
+As a practical example, you can leverage
+`frame exclusion from PostgresQL <https://www.postgresql.org/docs/current/sql-expressions.html#SYNTAX-WINDOW-FUNCTIONS>`_
+when using window functions::
+
+    SELECT
+      *
+    FROM
+      TABLE(
+        postgresql.system.query(
+          query => 'SELECT
+            *,
+            array_agg(week) OVER (
+              ORDER BY
+                week
+              ROWS
+                BETWEEN 2 PRECEDING
+                AND 2 FOLLOWING
+                EXCLUDE GROUP
+            ) AS week,
+            array_agg(week) OVER (
+              ORDER BY
+                day
+              ROWS
+                BETWEEN 2 PRECEDING
+                AND 2 FOLLOWING
+                EXCLUDE GROUP
+            ) AS all
+          FROM
+            test.time_data'
+        )
+      );
+
+
+Performance
+-----------
+
+The connector includes a number of performance improvements, detailed in the
+following sections.
+
+.. _postgresql-table-statistics:
+
+Table statistics
+^^^^^^^^^^^^^^^^
+
+The PostgreSQL connector can use :doc:`table and column statistics
+</optimizer/statistics>` for :doc:`cost based optimizations
+</optimizer/cost-based-optimizations>`, to improve query processing performance
+based on the actual data in the data source.
+
+The statistics are collected by PostgreSQL and retrieved by the connector.
+
+To collect statistics for a table, execute the following statement in
+PostgreSQL.
+
+.. code-block:: text
+
+    ANALYZE table_schema.table_name;
+
+Refer to PostgreSQL documentation for additional ``ANALYZE`` options.
+
 .. _postgresql-pushdown:
 
 Pushdown
---------
+^^^^^^^^
 
 The connector supports pushdown for a number of operations:
 
@@ -175,6 +327,8 @@ The connector supports pushdown for a number of operations:
 * :func:`corr`
 * :func:`regr_intercept`
 * :func:`regr_slope`
+
+.. include:: join-pushdown-enabled-true.fragment
 
 Predicate pushdown support
 ^^^^^^^^^^^^^^^^^^^^^^^^^^

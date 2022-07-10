@@ -25,18 +25,13 @@ import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import io.trino.spi.type.TypeManager;
-import org.apache.iceberg.PartitionField;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableScan;
 
 import javax.inject.Inject;
 
-import java.util.Set;
-
-import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.plugin.iceberg.IcebergSessionProperties.getDynamicFilteringWaitTimeout;
-import static io.trino.plugin.iceberg.IcebergUtil.getColumns;
-import static io.trino.plugin.iceberg.IcebergUtil.getIdentityPartitions;
+import static io.trino.plugin.iceberg.IcebergSessionProperties.getMinimumAssignedSplitWeight;
 import static java.util.Objects.requireNonNull;
 
 public class IcebergSplitManager
@@ -59,36 +54,34 @@ public class IcebergSplitManager
             ConnectorTransactionHandle transaction,
             ConnectorSession session,
             ConnectorTableHandle handle,
-            SplitSchedulingStrategy splitSchedulingStrategy,
             DynamicFilter dynamicFilter,
             Constraint constraint)
     {
         IcebergTableHandle table = (IcebergTableHandle) handle;
 
         if (table.getSnapshotId().isEmpty()) {
+            if (table.isRecordScannedFiles()) {
+                return new FixedSplitSource(ImmutableList.of(), ImmutableList.of());
+            }
             return new FixedSplitSource(ImmutableList.of());
         }
 
-        Table icebergTable = transactionManager.get(transaction).getIcebergTable(session, table.getSchemaTableName());
+        Table icebergTable = transactionManager.get(transaction, session.getIdentity()).getIcebergTable(session, table.getSchemaTableName());
         Duration dynamicFilteringWaitTimeout = getDynamicFilteringWaitTimeout(session);
-
-        Set<Integer> identityPartitionFieldIds = getIdentityPartitions(icebergTable.spec()).keySet().stream()
-                .map(PartitionField::sourceId)
-                .collect(toImmutableSet());
-        Set<IcebergColumnHandle> identityPartitionColumns = getColumns(icebergTable.schema(), typeManager).stream()
-                .filter(column -> identityPartitionFieldIds.contains(column.getId()))
-                .collect(toImmutableSet());
 
         TableScan tableScan = icebergTable.newScan()
                 .useSnapshot(table.getSnapshotId().get());
         IcebergSplitSource splitSource = new IcebergSplitSource(
                 table,
-                identityPartitionColumns,
                 tableScan,
+                table.getMaxScannedFileSize(),
                 dynamicFilter,
                 dynamicFilteringWaitTimeout,
-                constraint);
+                constraint,
+                typeManager,
+                table.isRecordScannedFiles(),
+                getMinimumAssignedSplitWeight(session));
 
-        return new ClassLoaderSafeConnectorSplitSource(splitSource, Thread.currentThread().getContextClassLoader());
+        return new ClassLoaderSafeConnectorSplitSource(splitSource, IcebergSplitManager.class.getClassLoader());
     }
 }

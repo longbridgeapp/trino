@@ -63,6 +63,7 @@ import io.trino.sql.planner.plan.RefreshMaterializedViewNode;
 import io.trino.sql.planner.plan.RowNumberNode;
 import io.trino.sql.planner.plan.SampleNode;
 import io.trino.sql.planner.plan.SemiJoinNode;
+import io.trino.sql.planner.plan.SimpleTableExecuteNode;
 import io.trino.sql.planner.plan.SortNode;
 import io.trino.sql.planner.plan.SpatialJoinNode;
 import io.trino.sql.planner.plan.StatisticsWriterNode;
@@ -482,6 +483,15 @@ public final class PropertyDerivations
         }
 
         @Override
+        public ActualProperties visitSimpleTableExecuteNode(SimpleTableExecuteNode node, List<ActualProperties> inputProperties)
+        {
+            // metadata operations always run on the coordinator
+            return ActualProperties.builder()
+                    .global(coordinatorSingleStreamPartition())
+                    .build();
+        }
+
+        @Override
         public ActualProperties visitJoin(JoinNode node, List<ActualProperties> inputProperties)
         {
             ActualProperties probeProperties = inputProperties.get(0);
@@ -577,7 +587,7 @@ public final class PropertyDerivations
                             .constants(ImmutableMap.<Symbol, NullableValue>builder()
                                     .putAll(probeProperties.getConstants())
                                     .putAll(indexProperties.getConstants())
-                                    .build())
+                                    .buildOrThrow())
                             .build();
                 case SOURCE_OUTER:
                     return ActualProperties.builderFrom(probeProperties)

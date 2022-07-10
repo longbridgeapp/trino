@@ -98,7 +98,7 @@ public class CallTask
             List<Expression> parameters,
             WarningCollector warningCollector)
     {
-        if (!transactionManager.isAutoCommit(stateMachine.getSession().getRequiredTransactionId())) {
+        if (!transactionManager.getTransactionInfo(stateMachine.getSession().getRequiredTransactionId()).isAutoCommitContext()) {
             throw new TrinoException(NOT_SUPPORTED, "Procedures cannot be called within a transaction (use autocommit mode)");
         }
 
@@ -127,7 +127,7 @@ public class CallTask
         for (int i = 0; i < call.getArguments().size(); i++) {
             CallArgument argument = call.getArguments().get(i);
             if (argument.getName().isPresent()) {
-                String name = argument.getName().get();
+                String name = argument.getName().get().getCanonicalValue();
                 if (names.put(name, argument) != null) {
                     throw semanticException(INVALID_ARGUMENTS, argument, "Duplicate procedure argument: %s", name);
                 }

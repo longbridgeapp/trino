@@ -72,6 +72,7 @@ import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.Row;
 import io.trino.sql.tree.SortItem;
 import io.trino.sql.tree.WindowFrame;
+import org.intellij.lang.annotations.Language;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -124,7 +125,7 @@ public final class PlanMatchPattern
 
     /**
      * Matches to any tree of nodes with children matching to given source matchers.
-     * anyNodeTree(tableScanNode("nation")) - will match to any plan which all leafs contain
+     * anyTree(tableScan("nation")) - will match to any plan which all leafs contain
      * any node containing table scan from nation table.
      *
      * @note anyTree does not match zero nodes. E.g. output(anyTree(tableScan)) will NOT match TableScan node followed by OutputNode.
@@ -1015,7 +1016,7 @@ public final class PlanMatchPattern
         return new ColumnReference(tableName, columnName);
     }
 
-    public static ExpressionMatcher expression(String expression)
+    public static ExpressionMatcher expression(@Language("SQL") String expression)
     {
         return new ExpressionMatcher(expression);
     }

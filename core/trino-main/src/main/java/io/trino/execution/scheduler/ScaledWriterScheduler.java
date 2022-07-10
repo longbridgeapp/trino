@@ -39,7 +39,7 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class ScaledWriterScheduler
         implements StageScheduler
 {
-    private final PipelinedStageExecution stage;
+    private final StageExecution stage;
     private final Supplier<Collection<TaskStatus>> sourceTasksProvider;
     private final Supplier<Collection<TaskStatus>> writerTasksProvider;
     private final NodeSelector nodeSelector;
@@ -50,7 +50,7 @@ public class ScaledWriterScheduler
     private volatile SettableFuture<Void> future = SettableFuture.create();
 
     public ScaledWriterScheduler(
-            PipelinedStageExecution stage,
+            StageExecution stage,
             Supplier<Collection<TaskStatus>> sourceTasksProvider,
             Supplier<Collection<TaskStatus>> writerTasksProvider,
             NodeSelector nodeSelector,
@@ -119,7 +119,7 @@ public class ScaledWriterScheduler
 
         ImmutableList.Builder<RemoteTask> tasks = ImmutableList.builder();
         for (InternalNode node : nodes) {
-            Optional<RemoteTask> remoteTask = stage.scheduleTask(node, scheduledNodes.size(), ImmutableMultimap.of(), ImmutableMultimap.of());
+            Optional<RemoteTask> remoteTask = stage.scheduleTask(node, scheduledNodes.size(), ImmutableMultimap.of());
             remoteTask.ifPresent(task -> {
                 tasks.add(task);
                 scheduledNodes.add(node);

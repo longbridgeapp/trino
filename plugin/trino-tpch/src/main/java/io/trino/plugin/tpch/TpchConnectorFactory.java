@@ -17,11 +17,11 @@ import io.trino.spi.NodeManager;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
-import io.trino.spi.connector.ConnectorHandleResolver;
 import io.trino.spi.connector.ConnectorMetadata;
 import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPageSourceProvider;
 import io.trino.spi.connector.ConnectorRecordSetProvider;
+import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.transaction.IsolationLevel;
@@ -30,6 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
+import static io.trino.plugin.base.Versions.checkSpiVersion;
 import static java.lang.Boolean.FALSE;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
@@ -74,14 +75,10 @@ public class TpchConnectorFactory
     }
 
     @Override
-    public ConnectorHandleResolver getHandleResolver()
-    {
-        return new TpchHandleResolver();
-    }
-
-    @Override
     public Connector create(String catalogName, Map<String, String> properties, ConnectorContext context)
     {
+        checkSpiVersion(context, this);
+
         int splitsPerNode = getSplitsPerNode(properties);
         ColumnNaming columnNaming = ColumnNaming.valueOf(properties.getOrDefault(TPCH_COLUMN_NAMING_PROPERTY, ColumnNaming.SIMPLIFIED.name()).toUpperCase(ENGLISH));
         DecimalTypeMapping decimalTypeMapping = DecimalTypeMapping.valueOf(properties.getOrDefault(TPCH_DOUBLE_TYPE_MAPPING_PROPERTY, DecimalTypeMapping.DOUBLE.name()).toUpperCase(ENGLISH));
@@ -96,7 +93,7 @@ public class TpchConnectorFactory
             }
 
             @Override
-            public ConnectorMetadata getMetadata(ConnectorTransactionHandle transaction)
+            public ConnectorMetadata getMetadata(ConnectorSession session, ConnectorTransactionHandle transaction)
             {
                 return new TpchMetadata(
                         columnNaming,

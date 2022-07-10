@@ -25,6 +25,8 @@ import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.HiveColumnHandle.ColumnType;
 import io.trino.plugin.hive.authentication.NoHdfsAuthentication;
+import io.trino.plugin.hive.fs.CachingDirectoryLister;
+import io.trino.plugin.hive.fs.DirectoryLister;
 import io.trino.plugin.hive.metastore.Column;
 import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.plugin.hive.metastore.Table;
@@ -116,7 +118,6 @@ import static io.trino.plugin.hive.HiveType.HIVE_STRING;
 import static io.trino.plugin.hive.acid.AcidTransaction.NO_ACID_TRANSACTION;
 import static io.trino.plugin.hive.util.HiveBucketing.BucketingVersion.BUCKETING_V1;
 import static io.trino.plugin.hive.util.HiveUtil.getRegularColumnHandles;
-import static io.trino.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static io.trino.spi.predicate.TupleDomain.withColumnDomains;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -859,10 +860,10 @@ public class TestBackgroundHiveSplitLoader
     public void testBuildManifestFileIterator()
             throws Exception
     {
-        CachingDirectoryLister directoryLister = new CachingDirectoryLister(new Duration(5, TimeUnit.MINUTES), 1000, ImmutableList.of());
+        CachingDirectoryLister directoryLister = new CachingDirectoryLister(new Duration(0, TimeUnit.MINUTES), 0, ImmutableList.of());
         Properties schema = new Properties();
         schema.setProperty(FILE_INPUT_FORMAT, SymlinkTextInputFormat.class.getName());
-        schema.setProperty(SERIALIZATION_LIB, AVRO.getSerDe());
+        schema.setProperty(SERIALIZATION_LIB, AVRO.getSerde());
 
         Path firstFilePath = new Path("hdfs://VOL1:9000/db_name/table_name/file1");
         Path secondFilePath = new Path("hdfs://VOL1:9000/db_name/table_name/file2");
@@ -900,7 +901,7 @@ public class TestBackgroundHiveSplitLoader
         CachingDirectoryLister directoryLister = new CachingDirectoryLister(new Duration(5, TimeUnit.MINUTES), 1000, ImmutableList.of());
         Properties schema = new Properties();
         schema.setProperty(FILE_INPUT_FORMAT, SymlinkTextInputFormat.class.getName());
-        schema.setProperty(SERIALIZATION_LIB, AVRO.getSerDe());
+        schema.setProperty(SERIALIZATION_LIB, AVRO.getSerde());
 
         Path filePath = new Path("hdfs://VOL1:9000/db_name/table_name/file1");
         Path directoryPath = new Path("hdfs://VOL1:9000/db_name/table_name/dir");
@@ -958,7 +959,7 @@ public class TestBackgroundHiveSplitLoader
         while (!source.isFinished()) {
             ConnectorSplitBatch batch;
             try {
-                batch = source.getNextBatch(NOT_PARTITIONED, 100).get();
+                batch = source.getNextBatch(100).get();
             }
             catch (ExecutionException e) {
                 throwIfUnchecked(e.getCause());

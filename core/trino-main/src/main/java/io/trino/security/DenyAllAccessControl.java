@@ -19,6 +19,7 @@ import io.trino.metadata.QualifiedObjectName;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.FunctionKind;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.TrinoPrincipal;
@@ -70,6 +71,7 @@ import static io.trino.spi.security.AccessDeniedException.denyRevokeSchemaPrivil
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denySelectColumns;
 import static io.trino.spi.security.AccessDeniedException.denySetCatalogSessionProperty;
+import static io.trino.spi.security.AccessDeniedException.denySetMaterializedViewProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetRole;
 import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetSystemSessionProperty;
@@ -143,7 +145,7 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public Set<String> filterCatalogs(Identity identity, Set<String> catalogs)
+    public Set<String> filterCatalogs(SecurityContext context, Set<String> catalogs)
     {
         return ImmutableSet.of();
     }
@@ -185,12 +187,6 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanCreateTable(SecurityContext context, QualifiedObjectName tableName)
-    {
-        denyCreateTable(tableName.toString());
-    }
-
-    @Override
     public void checkCanCreateTable(SecurityContext context, QualifiedObjectName tableName, Map<String, Object> properties)
     {
         denyCreateTable(tableName.toString());
@@ -209,7 +205,7 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanSetTableProperties(SecurityContext context, QualifiedObjectName tableName, Map<String, Object> properties)
+    public void checkCanSetTableProperties(SecurityContext context, QualifiedObjectName tableName, Map<String, Optional<Object>> properties)
     {
         denySetTableProperties(tableName.toString());
     }
@@ -341,7 +337,7 @@ public class DenyAllAccessControl
     }
 
     @Override
-    public void checkCanCreateMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName)
+    public void checkCanCreateMaterializedView(SecurityContext context, QualifiedObjectName materializedViewName, Map<String, Object> properties)
     {
         denyCreateMaterializedView(materializedViewName.toString());
     }
@@ -362,6 +358,12 @@ public class DenyAllAccessControl
     public void checkCanRenameMaterializedView(SecurityContext context, QualifiedObjectName viewName, QualifiedObjectName newViewName)
     {
         denyRenameMaterializedView(viewName.toString(), newViewName.toString());
+    }
+
+    @Override
+    public void checkCanSetMaterializedViewProperties(SecurityContext context, QualifiedObjectName materializedViewName, Map<String, Optional<Object>> properties)
+    {
+        denySetMaterializedViewProperties(materializedViewName.toString());
     }
 
     @Override
@@ -491,8 +493,14 @@ public class DenyAllAccessControl
     }
 
     @Override
+    public void checkCanExecuteFunction(SecurityContext context, FunctionKind functionKind, QualifiedObjectName functionName)
+    {
+        denyExecuteFunction(functionName.toString());
+    }
+
+    @Override
     public void checkCanExecuteTableProcedure(SecurityContext context, QualifiedObjectName tableName, String procedureName)
     {
-        denyExecuteTableProcedure(tableName.toString(), procedureName.toString());
+        denyExecuteTableProcedure(tableName.toString(), procedureName);
     }
 }

@@ -33,8 +33,6 @@ import io.trino.testing.TestingTransactionHandle;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import java.util.Optional;
-
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.planner.TypeAnalyzer.createTestingTypeAnalyzer;
@@ -64,8 +62,7 @@ public class TestValidateAggregationsWithDefaultValues
         TableHandle nationTableHandle = new TableHandle(
                 catalogName,
                 new TpchTableHandle("sf1", "nation", 1.0),
-                TestingTransactionHandle.create(),
-                Optional.empty());
+                TestingTransactionHandle.create());
         TpchColumnHandle nationkeyColumnHandle = new TpchColumnHandle("nationkey", BIGINT);
         symbol = new Symbol("nationkey");
         tableScanNode = builder.tableScan(nationTableHandle, ImmutableList.of(symbol), ImmutableMap.of(symbol, nationkeyColumnHandle));
@@ -124,7 +121,7 @@ public class TestValidateAggregationsWithDefaultValues
                         .source(builder.exchange(e -> e
                                 .type(REPARTITION)
                                 .scope(REMOTE)
-                                .fixedHashDistributionParitioningScheme(ImmutableList.of(symbol), ImmutableList.of(symbol))
+                                .fixedHashDistributionPartitioningScheme(ImmutableList.of(symbol), ImmutableList.of(symbol))
                                 .addInputsSet(symbol)
                                 .addSource(builder.aggregation(ap -> ap
                                         .step(PARTIAL)
@@ -143,7 +140,7 @@ public class TestValidateAggregationsWithDefaultValues
                         .source(builder.exchange(e -> e
                                 .type(REPARTITION)
                                 .scope(LOCAL)
-                                .fixedHashDistributionParitioningScheme(ImmutableList.of(symbol), ImmutableList.of(symbol))
+                                .fixedHashDistributionPartitioningScheme(ImmutableList.of(symbol), ImmutableList.of(symbol))
                                 .addInputsSet(symbol)
                                 .addSource(builder.aggregation(ap -> ap
                                         .step(PARTIAL)
@@ -164,7 +161,7 @@ public class TestValidateAggregationsWithDefaultValues
                                 builder.exchange(e -> e
                                         .type(REPARTITION)
                                         .scope(LOCAL)
-                                        .fixedHashDistributionParitioningScheme(ImmutableList.of(symbol), ImmutableList.of(symbol))
+                                        .fixedHashDistributionPartitioningScheme(ImmutableList.of(symbol), ImmutableList.of(symbol))
                                         .addInputsSet(symbol)
                                         .addSource(builder.aggregation(ap -> ap
                                                 .step(PARTIAL)

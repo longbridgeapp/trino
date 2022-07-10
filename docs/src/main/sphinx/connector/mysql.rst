@@ -2,6 +2,10 @@
 MySQL connector
 ===============
 
+.. raw:: html
+
+  <img src="../_static/img/mysql.png" class="connector-logo">
+
 The MySQL connector allows querying and creating tables in an external
 `MySQL <https://www.mysql.com/>`_ instance. This can be used to join data between different
 systems like MySQL and Hive, or between two different MySQL instances.
@@ -49,6 +53,32 @@ The ``connection-user`` and ``connection-password`` are typically required and
 determine the user credentials for the connection, often a service user. You can
 use :doc:`secrets </security/secrets>` to avoid actual values in the catalog
 properties files.
+
+.. _mysql-tls:
+
+Connection security
+^^^^^^^^^^^^^^^^^^^
+
+If you have TLS configured with a globally-trusted certificate installed on your
+data source, you can enable TLS between your cluster and the data
+source by appending a parameter to the JDBC connection string set in the
+``connection-url`` catalog configuration property.
+
+For example, with version 8.0 of MySQL Connector/J, use the ``sslMode``
+parameter to secure the connection with TLS. By default the parameter is set to
+``PREFERRED`` which secures the connection if enabled by the server. You can
+also set this parameter to ``REQUIRED`` which causes the connection to fail if
+TLS is not established.
+
+You can set the ``sslMode`` paremeter in the catalog configuration file by
+appending it to the ``connection-url`` configuration property:
+
+.. code-block:: properties
+
+  connection-url=jdbc:mysql://example.net:3306/?sslMode=REQUIRED
+
+For more information on TLS configuration options, see the `MySQL JDBC security
+documentation <https://dev.mysql.com/doc/connector-j/8.0/en/connector-j-connp-props-security.html#cj-conn-prop_sslMode>`_.
 
 Multiple MySQL servers
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -255,10 +285,115 @@ Finally, you can access the ``clicks`` table in the ``web`` database::
 If you used a different name for your catalog properties file, use
 that catalog name instead of ``mysql`` in the above examples.
 
+.. _mysql-sql-support:
+
+SQL support
+-----------
+
+The connector provides read access and write access to data and metadata in the
+MySQL database. In addition to the :ref:`globally available <sql-globally-available>` and
+:ref:`read operation <sql-read-operations>` statements, the connector supports
+the following statements:
+
+* :doc:`/sql/insert`
+* :doc:`/sql/delete`
+* :doc:`/sql/truncate`
+* :doc:`/sql/create-table`
+* :doc:`/sql/create-table-as`
+* :doc:`/sql/drop-table`
+* :doc:`/sql/create-schema`
+* :doc:`/sql/drop-schema`
+
+.. include:: sql-delete-limitation.fragment
+
+Table functions
+---------------
+
+The connector provides specific :doc:`table functions </functions/table>` to
+access MySQL.
+
+.. _mysql-query-function:
+
+``query(varchar) -> table``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The ``query`` function allows you to query the underlying database directly. It
+requires syntax native to MySQL, because the full query is pushed down and
+processed in MySQL. This can be useful for accessing native features which are
+not available in Trino or for improving query performance in situations where
+running a query natively may be faster.
+
+For example, group and concatenate all employee IDs by manager ID::
+
+    SELECT
+      *
+    FROM
+      TABLE(
+        mysql.system.query(
+          query => 'SELECT
+            manager_id, GROUP_CONCAT(employee_id)
+          FROM
+            company.employees
+          GROUP BY
+            manager_id'
+        )
+      );
+
+Performance
+-----------
+
+The connector includes a number of performance improvements, detailed in the
+following sections.
+
+.. _mysql-table-statistics:
+
+Table statistics
+^^^^^^^^^^^^^^^^
+
+The MySQL connector can use :doc:`table and column statistics
+</optimizer/statistics>` for :doc:`cost based optimizations
+</optimizer/cost-based-optimizations>`, to improve query processing performance
+based on the actual data in the data source.
+
+The statistics are collected by MySQL and retrieved by the connector.
+
+The table-level statistics are based on MySQL's ``INFORMATION_SCHEMA.TABLES``
+table. The column-level statistics are based on MySQL's index statistics
+``INFORMATION_SCHEMA.STATISTICS`` table. The connector can return column-level
+statistics only when the column is the first column in some index.
+
+MySQL database can automatically update its table and index statistics. In some
+cases, you may want to force statistics update, for example after creating new
+index, or after changing data in the table. You can do that by executing the
+following statement in MySQL Database.
+
+.. code-block:: text
+
+    ANALYZE TABLE table_name;
+
+.. note::
+
+    MySQL and Trino may use statistics information in different ways. For this
+    reason, the accuracy of table and column statistics returned by the MySQL
+    connector might be lower than than that of others connectors.
+
+**Improving statistics accuracy**
+
+You can improve statistics accuracy with histogram statistics (available since
+MySQL 8.0). To create histogram statistics execute the following statement in
+MySQL Database.
+
+.. code-block:: text
+
+    ANALYZE TABLE table_name UPDATE HISTOGRAM ON column_name1, column_name2, ...;
+
+Refer to MySQL documentation for information about options, limitations
+and additional considerations.
+
 .. _mysql-pushdown:
 
 Pushdown
---------
+^^^^^^^^
 
 The connector supports pushdown for a number of operations:
 
@@ -280,25 +415,6 @@ The connector supports pushdown for a number of operations:
 * :func:`var_pop`
 * :func:`var_samp`
 
+.. include:: join-pushdown-enabled-true.fragment
+
 .. include:: no-pushdown-text-type.fragment
-
-.. _mysql-sql-support:
-
-SQL support
------------
-
-The connector provides read access and write access to data and metadata in the
-MySQL database. In addition to the :ref:`globally available <sql-globally-available>` and
-:ref:`read operation <sql-read-operations>` statements, the connector supports
-the following statements:
-
-* :doc:`/sql/insert`
-* :doc:`/sql/delete`
-* :doc:`/sql/truncate`
-* :doc:`/sql/create-table`
-* :doc:`/sql/create-table-as`
-* :doc:`/sql/drop-table`
-* :doc:`/sql/create-schema`
-* :doc:`/sql/drop-schema`
-
-.. include:: sql-delete-limitation.fragment

@@ -20,7 +20,6 @@ import io.trino.tests.product.launcher.env.DockerContainer;
 import io.trino.tests.product.launcher.env.Environment;
 import io.trino.tests.product.launcher.env.EnvironmentProvider;
 import io.trino.tests.product.launcher.env.common.HydraIdentityProvider;
-import io.trino.tests.product.launcher.env.common.SeleniumChrome;
 import io.trino.tests.product.launcher.env.common.Standard;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
 import io.trino.tests.product.launcher.testcontainers.PortBinder;
@@ -42,9 +41,9 @@ public class EnvSinglenodeOauth2HttpsProxy
     private final ResourceProvider configDir;
 
     @Inject
-    public EnvSinglenodeOauth2HttpsProxy(DockerFiles dockerFiles, PortBinder binder, Standard standard, HydraIdentityProvider hydraIdentityProvider, SeleniumChrome seleniumChrome)
+    public EnvSinglenodeOauth2HttpsProxy(DockerFiles dockerFiles, PortBinder binder, Standard standard, HydraIdentityProvider hydraIdentityProvider)
     {
-        super(ImmutableList.of(standard, hydraIdentityProvider, seleniumChrome));
+        super(ImmutableList.of(standard, hydraIdentityProvider));
 
         this.binder = requireNonNull(binder, "binder is null");
         this.hydraIdentityProvider = requireNonNull(hydraIdentityProvider, "hydraIdentityProvider is null");
@@ -61,8 +60,11 @@ public class EnvSinglenodeOauth2HttpsProxy
                             forHostPath(configDir.getPath("config.properties")),
                             CONTAINER_PRESTO_CONFIG_PROPERTIES)
                     .withCopyFileToContainer(
-                            forHostPath(configDir.getPath("cert")),
-                            CONTAINER_PRESTO_ETC + "/cert");
+                            forHostPath(configDir.getPath("cert/truststore.jks")),
+                            CONTAINER_PRESTO_ETC + "/cert/truststore.jks")
+                    .withCopyFileToContainer(
+                            forHostPath(configDir.getPath("log.properties")),
+                            CONTAINER_PRESTO_ETC + "/log.properties");
 
             binder.exposePort(dockerContainer, 7778);
         });
@@ -77,19 +79,14 @@ public class EnvSinglenodeOauth2HttpsProxy
 
         builder.containerDependsOn(COORDINATOR, hydraClientConfig.getLogicalName());
 
-        builder.configureContainer("hydra", dockerContainer -> dockerContainer
-                .withCopyFileToContainer(forHostPath(configDir.getPath("cert")), "/tmp/certs")
-                .withEnv("SERVE_TLS_KEY_PATH", "/tmp/certs/hydra.pem")
-                .withEnv("SERVE_TLS_CERT_PATH", "/tmp/certs/hydra.pem"));
-
         DockerContainer proxy = new DockerContainer("httpd:2.4.51", "proxy");
         proxy
                 .withCopyFileToContainer(
                         forHostPath(configDir.getPath("httpd.conf")),
                         "/usr/local/apache2/conf/httpd.conf")
-                        .withCopyFileToContainer(
-                                forHostPath(configDir.getPath("cert")),
-                                "/usr/local/apache2/conf/cert");
+                .withCopyFileToContainer(
+                        forHostPath(configDir.getPath("cert")),
+                        "/usr/local/apache2/conf/cert");
         builder.addContainer(proxy);
         builder.containerDependsOn(COORDINATOR, "proxy");
     }

@@ -455,7 +455,7 @@ public class TestMergeWindows
         leftTableScanBuilder.put(QUANTITY_ALIAS, "quantity");
         leftTableScanBuilder.put(SHIPDATE_ALIAS, "shipdate");
 
-        PlanMatchPattern leftTableScan = tableScan("lineitem", leftTableScanBuilder.build());
+        PlanMatchPattern leftTableScan = tableScan("lineitem", leftTableScanBuilder.buildOrThrow());
 
         PlanMatchPattern rightTableScan = tableScan(
                 "lineitem",
@@ -593,7 +593,7 @@ public class TestMergeWindows
         List<PlanOptimizer> optimizers = ImmutableList.of(
                 new UnaliasSymbolReferences(getQueryRunner().getMetadata()),
                 new IterativeOptimizer(
-                        getQueryRunner().getMetadata(),
+                        getQueryRunner().getPlannerContext(),
                         new RuleStatsRecorder(),
                         getQueryRunner().getStatsCalculator(),
                         getQueryRunner().getEstimatedExchangesCostCalculator(),

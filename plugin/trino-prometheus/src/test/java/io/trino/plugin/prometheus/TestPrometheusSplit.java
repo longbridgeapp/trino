@@ -21,6 +21,7 @@ import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitSource;
+import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
@@ -50,7 +51,6 @@ import static io.trino.plugin.prometheus.PrometheusClient.TIMESTAMP_COLUMN_TYPE;
 import static io.trino.plugin.prometheus.PrometheusClock.fixedClockAt;
 import static io.trino.plugin.prometheus.PrometheusSplitManager.OFFSET_MILLIS;
 import static io.trino.plugin.prometheus.PrometheusSplitManager.decimalSecondString;
-import static io.trino.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
 import static io.trino.spi.type.TimeZoneKey.UTC_KEY;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
@@ -67,7 +67,7 @@ import static org.testng.Assert.assertTrue;
 public class TestPrometheusSplit
 {
     private PrometheusHttpServer prometheusHttpServer;
-    private final PrometheusSplit split = new PrometheusSplit(URI.create("http://127.0.0.1/test.file"));
+    private final PrometheusSplit split = new PrometheusSplit("http://127.0.0.1/test.file");
     private static final int NUMBER_MORE_THAN_EXPECTED_NUMBER_SPLITS = 100;
 
     @BeforeClass
@@ -80,22 +80,22 @@ public class TestPrometheusSplit
     public void testAddresses()
     {
         // http split with default port
-        PrometheusSplit httpSplit = new PrometheusSplit(URI.create("http://prometheus.com/prometheus"));
+        PrometheusSplit httpSplit = new PrometheusSplit("http://prometheus.com/prometheus");
         assertEquals(httpSplit.getAddresses(), ImmutableList.of(HostAddress.fromString("prometheus.com")));
         assertTrue(httpSplit.isRemotelyAccessible());
 
         // http split with custom port
-        httpSplit = new PrometheusSplit(URI.create("http://prometheus.com:8080/prometheus"));
+        httpSplit = new PrometheusSplit("http://prometheus.com:8080/prometheus");
         assertEquals(httpSplit.getAddresses(), ImmutableList.of(HostAddress.fromParts("prometheus.com", 8080)));
         assertTrue(httpSplit.isRemotelyAccessible());
 
         // http split with default port
-        PrometheusSplit httpsSplit = new PrometheusSplit(URI.create("https://prometheus.com/prometheus"));
+        PrometheusSplit httpsSplit = new PrometheusSplit("https://prometheus.com/prometheus");
         assertEquals(httpsSplit.getAddresses(), ImmutableList.of(HostAddress.fromString("prometheus.com")));
         assertTrue(httpsSplit.isRemotelyAccessible());
 
         // http split with custom port
-        httpsSplit = new PrometheusSplit(URI.create("https://prometheus.com:8443/prometheus"));
+        httpsSplit = new PrometheusSplit("https://prometheus.com:8443/prometheus");
         assertEquals(httpsSplit.getAddresses(), ImmutableList.of(HostAddress.fromParts("prometheus.com", 8443)));
         assertTrue(httpsSplit.isRemotelyAccessible());
     }
@@ -125,16 +125,16 @@ public class TestPrometheusSplit
                 null,
                 null,
                 new PrometheusTableHandle("default", table.getName()),
-                null,
-                (DynamicFilter) null);
-        PrometheusSplit split = (PrometheusSplit) splits.getNextBatch(NOT_PARTITIONED, 1).getNow(null).getSplits().get(0);
-        String queryInSplit = split.getUri().getQuery();
+                (DynamicFilter) null,
+                Constraint.alwaysTrue());
+        PrometheusSplit split = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
+        String queryInSplit = URI.create(split.getUri()).getQuery();
         String timeShouldBe = decimalSecondString(now.toEpochMilli() -
                 config.getMaxQueryRangeDuration().toMillis() +
                 config.getQueryChunkSizeDuration().toMillis() -
                 OFFSET_MILLIS * 20);
         assertEquals(queryInSplit,
-                new URI("http://doesnotmatter:9090/api/v1/query?query=up+now[" + getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" + "&time=" +
+                new URI("http://doesnotmatter:9090/api/v1/query?query=up%20now[" + getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" + "&time=" +
                         timeShouldBe).getQuery());
     }
 
@@ -151,10 +151,10 @@ public class TestPrometheusSplit
                 null,
                 null,
                 new PrometheusTableHandle("default", table.getName()),
-                null,
-                (DynamicFilter) null);
-        PrometheusSplit split = (PrometheusSplit) splits.getNextBatch(NOT_PARTITIONED, 1).getNow(null).getSplits().get(0);
-        String queryInSplit = split.getUri().getQuery();
+                (DynamicFilter) null,
+                Constraint.alwaysTrue());
+        PrometheusSplit split = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
+        String queryInSplit = URI.create(split.getUri()).getQuery();
         String timeShouldBe = decimalSecondString(now.toEpochMilli() -
                 config.getMaxQueryRangeDuration().toMillis() +
                 config.getQueryChunkSizeDuration().toMillis() -
@@ -177,12 +177,12 @@ public class TestPrometheusSplit
                 null,
                 null,
                 new PrometheusTableHandle("default", table.getName()),
-                null,
-                (DynamicFilter) null);
-        List<ConnectorSplit> splits = splitsMaybe.getNextBatch(NOT_PARTITIONED, NUMBER_MORE_THAN_EXPECTED_NUMBER_SPLITS).getNow(null).getSplits();
+                (DynamicFilter) null,
+                Constraint.alwaysTrue());
+        List<ConnectorSplit> splits = splitsMaybe.getNextBatch(NUMBER_MORE_THAN_EXPECTED_NUMBER_SPLITS).getNow(null).getSplits();
         int lastSplitIndex = splits.size() - 1;
         PrometheusSplit lastSplit = (PrometheusSplit) splits.get(lastSplitIndex);
-        String queryInSplit = lastSplit.getUri().getQuery();
+        String queryInSplit = URI.create(lastSplit.getUri()).getQuery();
         String timeShouldBe = decimalSecondString(now.toEpochMilli());
         URI uriAsFormed = new URI("http://doesnotmatter:9090/api/v1/query?query=up[" +
                 getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" +
@@ -202,12 +202,12 @@ public class TestPrometheusSplit
                 null,
                 null,
                 new PrometheusTableHandle("default", table.getName()),
-                null,
-                (DynamicFilter) null);
-        PrometheusSplit split1 = (PrometheusSplit) splits.getNextBatch(NOT_PARTITIONED, 1).getNow(null).getSplits().get(0);
-        Map<String, String> paramsMap1 = parse(split1.getUri(), StandardCharsets.UTF_8).stream().collect(Collectors.toMap(NameValuePair::getName, NameValuePair::getValue));
-        PrometheusSplit split2 = (PrometheusSplit) splits.getNextBatch(NOT_PARTITIONED, 1).getNow(null).getSplits().get(0);
-        Map<String, String> paramsMap2 = parse(split2.getUri(), StandardCharsets.UTF_8).stream().collect(Collectors.toMap(NameValuePair::getName, NameValuePair::getValue));
+                (DynamicFilter) null,
+                Constraint.alwaysTrue());
+        PrometheusSplit split1 = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
+        Map<String, String> paramsMap1 = parse(URI.create(split1.getUri()), StandardCharsets.UTF_8).stream().collect(Collectors.toMap(NameValuePair::getName, NameValuePair::getValue));
+        PrometheusSplit split2 = (PrometheusSplit) splits.getNextBatch(1).getNow(null).getSplits().get(0);
+        Map<String, String> paramsMap2 = parse(URI.create(split2.getUri()), StandardCharsets.UTF_8).stream().collect(Collectors.toMap(NameValuePair::getName, NameValuePair::getValue));
         assertEquals(paramsMap1.get("query"), "up[1d]");
         assertEquals(paramsMap2.get("query"), "up[1d]");
         long diff = Double.valueOf(paramsMap2.get("time")).longValue() - Double.valueOf(paramsMap1.get("time")).longValue();
@@ -475,7 +475,7 @@ public class TestPrometheusSplit
      * $ curl "http://127.0.0.1:9090/api/v1/query?query=up[120s]&time=1568638172"
      * Just the time items from the "values" section of the response
      */
-    private static final ImmutableList<Double> promTimeValuesMock = new ImmutableList.Builder<Double>()
+    private static final ImmutableList<Double> promTimeValuesMock = ImmutableList.<Double>builder()
             .add(1568638066.999)
             .add(1568638081.996)
             .add(1568638097.0)

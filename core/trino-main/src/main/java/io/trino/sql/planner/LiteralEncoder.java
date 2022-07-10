@@ -51,6 +51,8 @@ import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.TimestampLiteral;
 
+import javax.annotation.Nullable;
+
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -99,7 +101,7 @@ public final class LiteralEncoder
         return expressions.build();
     }
 
-    public Expression toExpression(Session session, Object object, Type type)
+    public Expression toExpression(Session session, @Nullable Object object, Type type)
     {
         requireNonNull(type, "type is null");
 
@@ -138,9 +140,6 @@ public final class LiteralEncoder
 
         if (type.equals(DOUBLE)) {
             Double value = (Double) object;
-            // WARNING: the ORC predicate code depends on NaN and infinity not appearing in a tuple domain, so
-            // if you remove this, you will need to update the TupleDomainOrcPredicate
-            // When changing this, don't forget about similar code for REAL below
             if (value.isNaN()) {
                 return FunctionCallBuilder.resolve(session, plannerContext.getMetadata())
                         .setName(QualifiedName.of("nan"))
@@ -161,7 +160,6 @@ public final class LiteralEncoder
 
         if (type.equals(REAL)) {
             Float value = intBitsToFloat(((Long) object).intValue());
-            // WARNING for ORC predicate code as above (for double)
             if (value.isNaN()) {
                 return new Cast(
                         FunctionCallBuilder.resolve(session, plannerContext.getMetadata())

@@ -14,6 +14,7 @@
 package io.trino.parquet.reader;
 
 import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Multimap;
@@ -31,10 +32,12 @@ import io.trino.parquet.PrimitiveField;
 import io.trino.parquet.RichColumnDescriptor;
 import io.trino.parquet.predicate.Predicate;
 import io.trino.parquet.reader.FilteredOffsetIndex.OffsetRange;
+import io.trino.plugin.base.metrics.LongCount;
 import io.trino.spi.block.ArrayBlock;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.RowBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
+import io.trino.spi.metrics.Metric;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
@@ -84,14 +87,15 @@ public class ParquetReader
     private static final int MAX_VECTOR_LENGTH = 1024;
     private static final int INITIAL_BATCH_SIZE = 1;
     private static final int BATCH_SIZE_GROWTH_FACTOR = 2;
+    public static final String PARQUET_CODEC_METRIC_PREFIX = "ParquetReaderCompressionFormat_";
 
     private final Optional<String> fileCreatedBy;
     private final List<BlockMetaData> blocks;
-    private final Optional<List<Long>> firstRowsOfBlocks;
+    private final List<Long> firstRowsOfBlocks;
     private final List<PrimitiveColumnIO> columns;
     private final ParquetDataSource dataSource;
     private final DateTimeZone timeZone;
-    private final AggregatedMemoryContext systemMemoryContext;
+    private final AggregatedMemoryContext memoryContext;
     private final Optional<FilterPredicate> filter;
 
     private int currentRowGroup = -1;
@@ -100,7 +104,7 @@ public class ParquetReader
     /**
      * Index in the Parquet file of the first row of the current group
      */
-    private Optional<Long> firstRowIndexInGroup = Optional.empty();
+    private long firstRowIndexInGroup;
     /**
      * Index in the current group of the next row
      */
@@ -119,29 +123,30 @@ public class ParquetReader
     private final List<Optional<ColumnIndexStore>> columnIndexStore;
     private final List<RowRanges> blockRowRanges;
     private final Map<ColumnPath, ColumnDescriptor> paths = new HashMap<>();
+    private final Map<String, Metric<?>> codecMetrics;
 
     public ParquetReader(
             Optional<String> fileCreatedBy,
             MessageColumnIO messageColumnIO,
             List<BlockMetaData> blocks,
-            Optional<List<Long>> firstRowsOfBlocks,
+            List<Long> firstRowsOfBlocks,
             ParquetDataSource dataSource,
             DateTimeZone timeZone,
-            AggregatedMemoryContext systemMemoryContext,
+            AggregatedMemoryContext memoryContext,
             ParquetReaderOptions options)
             throws IOException
     {
-        this(fileCreatedBy, messageColumnIO, blocks, firstRowsOfBlocks, dataSource, timeZone, systemMemoryContext, options, null, null);
+        this(fileCreatedBy, messageColumnIO, blocks, firstRowsOfBlocks, dataSource, timeZone, memoryContext, options, null, null);
     }
 
     public ParquetReader(
             Optional<String> fileCreatedBy,
             MessageColumnIO messageColumnIO,
             List<BlockMetaData> blocks,
-            Optional<List<Long>> firstRowsOfBlocks,
+            List<Long> firstRowsOfBlocks,
             ParquetDataSource dataSource,
             DateTimeZone timeZone,
-            AggregatedMemoryContext systemMemoryContext,
+            AggregatedMemoryContext memoryContext,
             ParquetReaderOptions options,
             Predicate parquetPredicate,
             List<Optional<ColumnIndexStore>> columnIndexStore)
@@ -153,15 +158,13 @@ public class ParquetReader
         this.firstRowsOfBlocks = requireNonNull(firstRowsOfBlocks, "firstRowsOfBlocks is null");
         this.dataSource = requireNonNull(dataSource, "dataSource is null");
         this.timeZone = requireNonNull(timeZone, "timeZone is null");
-        this.systemMemoryContext = requireNonNull(systemMemoryContext, "systemMemoryContext is null");
-        this.currentRowGroupMemoryContext = systemMemoryContext.newAggregatedMemoryContext();
+        this.memoryContext = requireNonNull(memoryContext, "memoryContext is null");
+        this.currentRowGroupMemoryContext = memoryContext.newAggregatedMemoryContext();
         this.options = requireNonNull(options, "options is null");
         this.columnReaders = new PrimitiveColumnReader[columns.size()];
         this.maxBytesPerCell = new long[columns.size()];
 
-        firstRowsOfBlocks.ifPresent(firstRows -> {
-            checkArgument(blocks.size() == firstRows.size(), "elements of firstRowsOfBlocks must correspond to blocks");
-        });
+        checkArgument(blocks.size() == firstRowsOfBlocks.size(), "elements of firstRowsOfBlocks must correspond to blocks");
 
         this.columnIndexStore = columnIndexStore;
         this.blockRowRanges = listWithNulls(this.blocks.size());
@@ -176,6 +179,7 @@ public class ParquetReader
             this.filter = Optional.empty();
         }
         ListMultimap<ChunkKey, DiskRange> ranges = ArrayListMultimap.create();
+        Map<String, LongCount> codecMetrics = new HashMap<>();
         for (int rowGroup = 0; rowGroup < blocks.size(); rowGroup++) {
             BlockMetaData metadata = blocks.get(rowGroup);
             for (PrimitiveColumnIO column : columns) {
@@ -185,21 +189,29 @@ public class ParquetReader
                 long rowGroupRowCount = metadata.getRowCount();
                 long startingPosition = chunkMetadata.getStartingPos();
                 long totalLength = chunkMetadata.getTotalSize();
+                long totalDataSize = 0;
                 FilteredOffsetIndex filteredOffsetIndex = getFilteredOffsetIndex(rowGroup, rowGroupRowCount, columnPath);
                 if (filteredOffsetIndex == null) {
                     DiskRange range = new DiskRange(startingPosition, toIntExact(totalLength));
+                    totalDataSize = range.getLength();
                     ranges.put(new ChunkKey(columnId, rowGroup), range);
                 }
                 else {
                     List<OffsetRange> offsetRanges = filteredOffsetIndex.calculateOffsetRanges(startingPosition);
                     for (OffsetRange offsetRange : offsetRanges) {
                         DiskRange range = new DiskRange(offsetRange.getOffset(), toIntExact(offsetRange.getLength()));
+                        totalDataSize += range.getLength();
                         ranges.put(new ChunkKey(columnId, rowGroup), range);
                     }
                 }
+                // Update the metrics which records the codecs used along with data size
+                codecMetrics.merge(
+                        PARQUET_CODEC_METRIC_PREFIX + chunkMetadata.getCodec().name(),
+                        new LongCount(totalDataSize),
+                        LongCount::mergeWith);
             }
         }
-
+        this.codecMetrics = ImmutableMap.copyOf(codecMetrics);
         this.chunkReaders = dataSource.planRead(ranges);
     }
 
@@ -217,8 +229,7 @@ public class ParquetReader
      */
     public long lastBatchStartRow()
     {
-        long baseIndex = firstRowIndexInGroup.orElseThrow(() -> new IllegalStateException("row index unavailable"));
-        return baseIndex + nextRowInGroup - batchSize;
+        return firstRowIndexInGroup + nextRowInGroup - batchSize;
     }
 
     public int nextBatch()
@@ -240,14 +251,14 @@ public class ParquetReader
     private boolean advanceToNextRowGroup()
     {
         currentRowGroupMemoryContext.close();
-        currentRowGroupMemoryContext = systemMemoryContext.newAggregatedMemoryContext();
+        currentRowGroupMemoryContext = memoryContext.newAggregatedMemoryContext();
         freeCurrentRowGroupBuffers();
         currentRowGroup++;
         if (currentRowGroup == blocks.size()) {
             return false;
         }
         currentBlockMetadata = blocks.get(currentRowGroup);
-        firstRowIndexInGroup = firstRowsOfBlocks.map(firstRows -> firstRows.get(currentRowGroup));
+        firstRowIndexInGroup = firstRowsOfBlocks.get(currentRowGroup);
         currentGroupRowCount = currentBlockMetadata.getRowCount();
         if (filter.isPresent() && options.isUseColumnIndex()) {
             if (columnIndexStore.get(currentRowGroup).isPresent()) {
@@ -380,6 +391,11 @@ public class ParquetReader
         return columnChunk;
     }
 
+    public Map<String, Metric<?>> getCodecMetrics()
+    {
+        return codecMetrics;
+    }
+
     private PageReader createPageReader(List<Slice> slices, ColumnChunkMetaData metadata, ColumnDescriptor columnDescriptor, OffsetIndex offsetIndex)
             throws IOException
     {
@@ -451,9 +467,9 @@ public class ParquetReader
         return dataSource;
     }
 
-    public AggregatedMemoryContext getSystemMemoryContext()
+    public AggregatedMemoryContext getMemoryContext()
     {
-        return systemMemoryContext;
+        return memoryContext;
     }
 
     private static <T> List<T> listWithNulls(int size)

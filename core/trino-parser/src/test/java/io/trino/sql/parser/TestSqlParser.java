@@ -53,6 +53,8 @@ import io.trino.sql.tree.Deny;
 import io.trino.sql.tree.DereferenceExpression;
 import io.trino.sql.tree.DescribeInput;
 import io.trino.sql.tree.DescribeOutput;
+import io.trino.sql.tree.Descriptor;
+import io.trino.sql.tree.DescriptorField;
 import io.trino.sql.tree.DoubleLiteral;
 import io.trino.sql.tree.DropColumn;
 import io.trino.sql.tree.DropMaterializedView;
@@ -73,6 +75,7 @@ import io.trino.sql.tree.Format;
 import io.trino.sql.tree.FrameBound;
 import io.trino.sql.tree.FunctionCall;
 import io.trino.sql.tree.FunctionCall.NullTreatment;
+import io.trino.sql.tree.GenericDataType;
 import io.trino.sql.tree.GenericLiteral;
 import io.trino.sql.tree.Grant;
 import io.trino.sql.tree.GrantOnType;
@@ -92,6 +95,15 @@ import io.trino.sql.tree.IsNullPredicate;
 import io.trino.sql.tree.Isolation;
 import io.trino.sql.tree.Join;
 import io.trino.sql.tree.JoinOn;
+import io.trino.sql.tree.JsonArray;
+import io.trino.sql.tree.JsonArrayElement;
+import io.trino.sql.tree.JsonExists;
+import io.trino.sql.tree.JsonObject;
+import io.trino.sql.tree.JsonObjectMember;
+import io.trino.sql.tree.JsonPathInvocation;
+import io.trino.sql.tree.JsonPathParameter;
+import io.trino.sql.tree.JsonQuery;
+import io.trino.sql.tree.JsonValue;
 import io.trino.sql.tree.LambdaArgumentDeclaration;
 import io.trino.sql.tree.LambdaExpression;
 import io.trino.sql.tree.Lateral;
@@ -132,6 +144,7 @@ import io.trino.sql.tree.QueryPeriod;
 import io.trino.sql.tree.QuerySpecification;
 import io.trino.sql.tree.RangeQuantifier;
 import io.trino.sql.tree.RefreshMaterializedView;
+import io.trino.sql.tree.Relation;
 import io.trino.sql.tree.RenameColumn;
 import io.trino.sql.tree.RenameMaterializedView;
 import io.trino.sql.tree.RenameSchema;
@@ -174,11 +187,15 @@ import io.trino.sql.tree.SubqueryExpression;
 import io.trino.sql.tree.SubscriptExpression;
 import io.trino.sql.tree.SubsetDefinition;
 import io.trino.sql.tree.Table;
+import io.trino.sql.tree.TableArgument;
 import io.trino.sql.tree.TableExecute;
+import io.trino.sql.tree.TableFunctionArgument;
+import io.trino.sql.tree.TableFunctionInvocation;
 import io.trino.sql.tree.TableSubquery;
 import io.trino.sql.tree.TimeLiteral;
 import io.trino.sql.tree.TimestampLiteral;
 import io.trino.sql.tree.TransactionAccessMode;
+import io.trino.sql.tree.Trim;
 import io.trino.sql.tree.TruncateTable;
 import io.trino.sql.tree.Union;
 import io.trino.sql.tree.Unnest;
@@ -196,7 +213,8 @@ import io.trino.sql.tree.With;
 import io.trino.sql.tree.WithQuery;
 import io.trino.sql.tree.ZeroOrMoreQuantifier;
 import io.trino.sql.tree.ZeroOrOneQuantifier;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -238,25 +256,36 @@ import static io.trino.sql.tree.ArithmeticUnaryExpression.negative;
 import static io.trino.sql.tree.ArithmeticUnaryExpression.positive;
 import static io.trino.sql.tree.ComparisonExpression.Operator.EQUAL;
 import static io.trino.sql.tree.DateTimeDataType.Type.TIMESTAMP;
+import static io.trino.sql.tree.DescriptorArgument.descriptorArgument;
+import static io.trino.sql.tree.DescriptorArgument.nullDescriptorArgument;
 import static io.trino.sql.tree.FrameBound.Type.CURRENT_ROW;
 import static io.trino.sql.tree.FrameBound.Type.FOLLOWING;
+import static io.trino.sql.tree.JsonPathParameter.JsonFormat.JSON;
+import static io.trino.sql.tree.JsonPathParameter.JsonFormat.UTF16;
+import static io.trino.sql.tree.JsonPathParameter.JsonFormat.UTF32;
+import static io.trino.sql.tree.JsonPathParameter.JsonFormat.UTF8;
 import static io.trino.sql.tree.PatternSearchMode.Mode.SEEK;
 import static io.trino.sql.tree.ProcessingMode.Mode.FINAL;
 import static io.trino.sql.tree.ProcessingMode.Mode.RUNNING;
+import static io.trino.sql.tree.SetProperties.Type.MATERIALIZED_VIEW;
 import static io.trino.sql.tree.SkipTo.skipToNextRow;
+import static io.trino.sql.tree.SortItem.NullOrdering.LAST;
 import static io.trino.sql.tree.SortItem.NullOrdering.UNDEFINED;
 import static io.trino.sql.tree.SortItem.Ordering.ASCENDING;
 import static io.trino.sql.tree.SortItem.Ordering.DESCENDING;
+import static io.trino.sql.tree.Trim.Specification.BOTH;
+import static io.trino.sql.tree.Trim.Specification.LEADING;
+import static io.trino.sql.tree.Trim.Specification.TRAILING;
 import static io.trino.sql.tree.WindowFrame.Type.ROWS;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
-import static org.testng.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestSqlParser
 {
@@ -282,7 +311,8 @@ public class TestSqlParser
         createExpression("(((((((((((((((((((((((((((true)))))))))))))))))))))))))))");
     }
 
-    @Test(timeOut = 2_000)
+    @Test
+    @Timeout(value = 2, unit = SECONDS)
     public void testPotentialUnboundedLookahead()
     {
         createExpression("(\n" +
@@ -304,13 +334,16 @@ public class TestSqlParser
     @Test
     public void testQualifiedName()
     {
-        assertEquals(QualifiedName.of("a", "b", "c", "d").toString(), "a.b.c.d");
-        assertEquals(QualifiedName.of("A", "b", "C", "d").toString(), "a.b.c.d");
+        assertThat(QualifiedName.of("a", "b", "c", "d").toString())
+                .isEqualTo("a.b.c.d");
+        assertThat(QualifiedName.of("A", "b", "C", "d").toString())
+                .isEqualTo("a.b.c.d");
         assertTrue(QualifiedName.of("a", "b", "c", "d").hasSuffix(QualifiedName.of("b", "c", "d")));
         assertTrue(QualifiedName.of("a", "b", "c", "d").hasSuffix(QualifiedName.of("a", "b", "c", "d")));
         assertFalse(QualifiedName.of("a", "b", "c", "d").hasSuffix(QualifiedName.of("a", "c", "d")));
         assertFalse(QualifiedName.of("a", "b", "c", "d").hasSuffix(QualifiedName.of("z", "a", "b", "c", "d")));
-        assertEquals(QualifiedName.of("a", "b", "c", "d"), QualifiedName.of("a", "b", "c", "d"));
+        assertThat(QualifiedName.of("a", "b", "c", "d"))
+                .isEqualTo(QualifiedName.of("a", "b", "c", "d"));
     }
 
     @Test
@@ -358,7 +391,10 @@ public class TestSqlParser
     public void testNumbers()
     {
         assertExpression("9223372036854775807", new LongLiteral("9223372036854775807"));
+        assertInvalidExpression("9223372036854775808", "Invalid numeric literal: 9223372036854775808");
+
         assertExpression("-9223372036854775808", new LongLiteral("-9223372036854775808"));
+        assertInvalidExpression("-9223372036854775809", "Invalid numeric literal: -9223372036854775809");
 
         assertExpression("1E5", new DoubleLiteral("1E5"));
         assertExpression("1E-5", new DoubleLiteral("1E-5"));
@@ -940,6 +976,26 @@ public class TestSqlParser
     }
 
     @Test
+    public void testTrim()
+    {
+        assertThat(expression("trim(BOTH FROM ' abc ')"))
+                .isEqualTo(new Trim(location(1, 1), BOTH, new StringLiteral(location(1, 16), " abc "), Optional.empty()));
+        assertThat(expression("trim(LEADING FROM ' abc ')"))
+                .isEqualTo(new Trim(location(1, 1), LEADING, new StringLiteral(location(1, 19), " abc "), Optional.empty()));
+        assertThat(expression("trim(TRAILING FROM ' abc ')"))
+                .isEqualTo(new Trim(location(1, 1), TRAILING, new StringLiteral(location(1, 20), " abc "), Optional.empty()));
+
+        assertThat(expression("trim(BOTH ' ' FROM ' abc ')"))
+                .isEqualTo(new Trim(location(1, 1), BOTH, new StringLiteral(location(1, 20), " abc "), Optional.of(new StringLiteral(location(1, 11), " "))));
+        assertThat(expression("trim(LEADING ' ' FROM ' abc ')"))
+                .isEqualTo(new Trim(location(1, 1), LEADING, new StringLiteral(location(1, 23), " abc "), Optional.of(new StringLiteral(location(1, 14), " "))));
+        assertThat(expression("trim(TRAILING ' ' FROM ' abc ')"))
+                .isEqualTo(new Trim(location(1, 1), TRAILING, new StringLiteral(location(1, 24), " abc "), Optional.of(new StringLiteral(location(1, 15), " "))));
+
+        assertInvalidExpression("trim(FROM ' abc ')", "The 'trim' function must have specification, char or both arguments when it takes FROM");
+    }
+
+    @Test
     public void testFormat()
     {
         assertExpression("format('%s', 'abc')", new Format(ImmutableList.of(new StringLiteral("%s"), new StringLiteral("abc"))));
@@ -998,6 +1054,20 @@ public class TestSqlParser
     {
         assertStatement("RESET SESSION foo.bar", new ResetSession(QualifiedName.of("foo", "bar")));
         assertStatement("RESET SESSION foo", new ResetSession(QualifiedName.of("foo")));
+    }
+
+    @Test
+    public void testSessionIdentifiers()
+    {
+        assertStatement("SET SESSION \"foo-bar\".baz = 'x'",
+                new SetSession(QualifiedName.of("foo-bar", "baz"), new StringLiteral("x")));
+        assertStatementIsInvalid("SET SESSION foo-bar.name = 'value'")
+                .withMessage("line 1:16: mismatched input '-'. Expecting: '.', '='");
+
+        assertStatement("RESET SESSION \"foo-bar\".baz",
+                new ResetSession(QualifiedName.of("foo-bar", "baz")));
+        assertStatementIsInvalid("RESET SESSION foo-bar.name")
+                .withMessage("line 1:18: mismatched input '-'. Expecting: '.', <EOF>");
     }
 
     @Test
@@ -1828,6 +1898,7 @@ public class TestSqlParser
         assertStatement("ALTER TABLE a SET PROPERTIES foo=123", new SetProperties(SetProperties.Type.TABLE, QualifiedName.of("a"), ImmutableList.of(new Property(new Identifier("foo"), new LongLiteral("123")))));
         assertStatement("ALTER TABLE a SET PROPERTIES foo=123, bar=456", new SetProperties(SetProperties.Type.TABLE, QualifiedName.of("a"), ImmutableList.of(new Property(new Identifier("foo"), new LongLiteral("123")), new Property(new Identifier("bar"), new LongLiteral("456")))));
         assertStatement("ALTER TABLE a SET PROPERTIES \" s p a c e \"='bar'", new SetProperties(SetProperties.Type.TABLE, QualifiedName.of("a"), ImmutableList.of(new Property(new Identifier(" s p a c e "), new StringLiteral("bar")))));
+        assertStatement("ALTER TABLE a SET PROPERTIES foo=123, bar=DEFAULT", new SetProperties(SetProperties.Type.TABLE, QualifiedName.of("a"), ImmutableList.of(new Property(new Identifier("foo"), new LongLiteral("123")), new Property(new Identifier("bar")))));
 
         assertStatementIsInvalid("ALTER TABLE a SET PROPERTIES")
                 .withMessage("line 1:29: mismatched input '<EOF>'. Expecting: <identifier>");
@@ -1892,15 +1963,16 @@ public class TestSqlParser
         Table table = new Table(QualifiedName.of("foo"));
         Identifier procedure = new Identifier("bar");
 
-        assertStatement("ALTER TABLE foo EXECUTE bar", new TableExecute(table, procedure, ImmutableList.of(), Optional.empty()));
+        assertStatement("ALTER TABLE foo EXECUTE bar", new TableExecute(location(1, 1), table, procedure, ImmutableList.of(), Optional.empty()));
         assertStatement(
                 "ALTER TABLE foo EXECUTE bar(bah => 1, wuh => 'clap') WHERE age > 17",
                 new TableExecute(
+                        location(1, 1),
                         table,
                         procedure,
                         ImmutableList.of(
-                                new CallArgument("bah", new LongLiteral("1")),
-                                new CallArgument("wuh", new StringLiteral("clap"))),
+                                new CallArgument(identifier("bah"), new LongLiteral("1")),
+                                new CallArgument(identifier("wuh"), new StringLiteral("clap"))),
                         Optional.of(
                                 new ComparisonExpression(ComparisonExpression.Operator.GREATER_THAN,
                                         new Identifier("age"),
@@ -1909,6 +1981,7 @@ public class TestSqlParser
         assertStatement(
                 "ALTER TABLE foo EXECUTE bar(1, 'clap') WHERE age > 17",
                 new TableExecute(
+                        location(1, 1),
                         table,
                         procedure,
                         ImmutableList.of(
@@ -2557,7 +2630,8 @@ public class TestSqlParser
     public void testBinaryLiteralToHex()
     {
         // note that toHexString() always outputs in upper case
-        assertEquals(new BinaryLiteral("ab 01").toHexString(), "AB01");
+        assertThat(new BinaryLiteral("ab 01").toHexString())
+                .isEqualTo("AB01");
     }
 
     @Test
@@ -2566,8 +2640,8 @@ public class TestSqlParser
         assertStatement("CALL foo()", new Call(QualifiedName.of("foo"), ImmutableList.of()));
         assertStatement("CALL foo(123, a => 1, b => 'go', 456)", new Call(QualifiedName.of("foo"), ImmutableList.of(
                 new CallArgument(new LongLiteral("123")),
-                new CallArgument("a", new LongLiteral("1")),
-                new CallArgument("b", new StringLiteral("go")),
+                new CallArgument(identifier("a"), new LongLiteral("1")),
+                new CallArgument(identifier("b"), new StringLiteral("go")),
                 new CallArgument(new LongLiteral("456")))));
     }
 
@@ -3286,6 +3360,58 @@ public class TestSqlParser
     }
 
     @Test
+    public void testSetMaterializedViewProperties()
+    {
+        assertStatement(
+                "ALTER MATERIALIZED VIEW a SET PROPERTIES foo='bar'",
+                new SetProperties(
+                        MATERIALIZED_VIEW,
+                        QualifiedName.of("a"),
+                        ImmutableList.of(new Property(new Identifier("foo"), new StringLiteral("bar")))));
+        assertStatement(
+                "ALTER MATERIALIZED VIEW a SET PROPERTIES foo=true",
+                new SetProperties(
+                        MATERIALIZED_VIEW,
+                        QualifiedName.of("a"),
+                        ImmutableList.of(new Property(new Identifier("foo"), new BooleanLiteral("true")))));
+        assertStatement(
+                "ALTER MATERIALIZED VIEW a SET PROPERTIES foo=123",
+                new SetProperties(
+                        MATERIALIZED_VIEW,
+                        QualifiedName.of("a"),
+                        ImmutableList.of(new Property(new Identifier("foo"), new LongLiteral("123")))));
+        assertStatement(
+                "ALTER MATERIALIZED VIEW a SET PROPERTIES foo=123, bar=456",
+                new SetProperties(
+                        MATERIALIZED_VIEW,
+                        QualifiedName.of("a"),
+                        ImmutableList.of(
+                                new Property(new Identifier("foo"), new LongLiteral("123")),
+                                new Property(new Identifier("bar"), new LongLiteral("456")))));
+        assertStatement(
+                "ALTER MATERIALIZED VIEW a SET PROPERTIES \" s p a c e \"='bar'",
+                new SetProperties(
+                        MATERIALIZED_VIEW,
+                        QualifiedName.of("a"),
+                        ImmutableList.of(new Property(new Identifier(" s p a c e "), new StringLiteral("bar")))));
+        assertStatement(
+                "ALTER MATERIALIZED VIEW a SET PROPERTIES foo=123, bar=DEFAULT",
+                new SetProperties(
+                        MATERIALIZED_VIEW,
+                        QualifiedName.of("a"),
+                        ImmutableList.of(
+                                new Property(new Identifier("foo"), new LongLiteral("123")),
+                                new Property(new Identifier("bar")))));
+
+        assertStatementIsInvalid("ALTER MATERIALIZED VIEW a SET PROPERTIES")
+                .withMessage("line 1:41: mismatched input '<EOF>'. Expecting: <identifier>");
+        assertStatementIsInvalid("ALTER MATERIALIZED VIEW a SET PROPERTIES ()")
+                .withMessage("line 1:42: mismatched input '('. Expecting: <identifier>");
+        assertStatementIsInvalid("ALTER MATERIALIZED VIEW a SET PROPERTIES (foo='bar')")
+                .withMessage("line 1:42: mismatched input '('. Expecting: <identifier>");
+    }
+
+    @Test
     public void testNullTreatment()
     {
         assertExpression("lead(x, 1) ignore nulls over()",
@@ -3754,6 +3880,362 @@ public class TestSqlParser
                                 new BooleanLiteral("false"),
                                 new StringLiteral("HIDDEN"),
                                 new BooleanLiteral("false"))));
+    }
+
+    @Test
+    public void testTableFunctionInvocation()
+    {
+        assertThat(statement("SELECT * FROM TABLE(some_ptf(input => 1))"))
+                .isEqualTo(selectAllFrom(new TableFunctionInvocation(
+                        location(1, 21),
+                        qualifiedName(location(1, 21), "some_ptf"),
+                        ImmutableList.of(new TableFunctionArgument(
+                                location(1, 30),
+                                Optional.of(new Identifier(location(1, 30), "input", false)),
+                                new LongLiteral(location(1, 39), "1"))),
+                        ImmutableList.of())));
+
+        assertThat(statement("SELECT * FROM TABLE(some_ptf(" +
+                "                                               arg1 => TABLE(orders) AS ord(a, b, c) " +
+                "                                                                    PARTITION BY a " +
+                "                                                                    PRUNE WHEN EMPTY " +
+                "                                                                    ORDER BY b ASC NULLS LAST, " +
+                "                                               arg2 => CAST(NULL AS DESCRIPTOR), " +
+                "                                               arg3 => DESCRIPTOR(x integer, y varchar), " +
+                "                                               arg4 => 5, " +
+                "                                               'not-named argument' " +
+                "                                               COPARTITION (ord, nation)))"))
+                .isEqualTo(selectAllFrom(new TableFunctionInvocation(
+                        location(1, 21),
+                        qualifiedName(location(1, 21), "some_ptf"),
+                        ImmutableList.of(
+                                new TableFunctionArgument(
+                                        location(1, 77),
+                                        Optional.of(new Identifier(location(1, 77), "arg1", false)),
+                                        new TableArgument(
+                                                location(1, 85),
+                                                new AliasedRelation(
+                                                        location(1, 85),
+                                                        new Table(location(1, 85), qualifiedName(location(1, 91), "orders")),
+                                                        new Identifier(location(1, 102), "ord", false),
+                                                        ImmutableList.of(
+                                                                new Identifier(location(1, 106), "a", false),
+                                                                new Identifier(location(1, 109), "b", false),
+                                                                new Identifier(location(1, 112), "c", false))),
+                                                Optional.of(ImmutableList.of(new Identifier(location(1, 196), "a", false))),
+                                                Optional.of(new OrderBy(ImmutableList.of(new SortItem(location(1, 360), new Identifier(location(1, 360), "b", false), ASCENDING, LAST)))),
+                                                true)),
+                                new TableFunctionArgument(
+                                        location(1, 425),
+                                        Optional.of(new Identifier(location(1, 425), "arg2", false)),
+                                        nullDescriptorArgument(location(1, 433))),
+                                new TableFunctionArgument(
+                                        location(1, 506),
+                                        Optional.of(new Identifier(location(1, 506), "arg3", false)),
+                                        descriptorArgument(
+                                                location(1, 514),
+                                                new Descriptor(location(1, 514), ImmutableList.of(
+                                                        new DescriptorField(
+                                                                location(1, 525),
+                                                                new Identifier(location(1, 525), "x", false),
+                                                                Optional.of(new GenericDataType(location(1, 527), new Identifier(location(1, 527), "integer", false), ImmutableList.of()))),
+                                                        new DescriptorField(
+                                                                location(1, 536),
+                                                                new Identifier(location(1, 536), "y", false),
+                                                                Optional.of(new GenericDataType(location(1, 538), new Identifier(location(1, 538), "varchar", false), ImmutableList.of()))))))),
+                                new TableFunctionArgument(
+                                        location(1, 595),
+                                        Optional.of(new Identifier(location(1, 595), "arg4", false)),
+                                        new LongLiteral(location(1, 603), "5")),
+                                new TableFunctionArgument(
+                                        location(1, 653),
+                                        Optional.empty(),
+                                        new StringLiteral(location(1, 653), "not-named argument"))),
+                        ImmutableList.of(ImmutableList.of(
+                                qualifiedName(location(1, 734), "ord"),
+                                qualifiedName(location(1, 739), "nation"))))));
+    }
+
+    private static Query selectAllFrom(Relation relation)
+    {
+        return new Query(
+                location(1, 1),
+                Optional.empty(),
+                new QuerySpecification(
+                        location(1, 1),
+                        new Select(location(1, 1), false, ImmutableList.of(new AllColumns(location(1, 8), Optional.empty(), ImmutableList.of()))),
+                        Optional.of(relation),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        ImmutableList.of(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty()),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
+    }
+
+    public void testJsonExists()
+    {
+        // test defaults
+        assertThat(expression("JSON_EXISTS(json_column, 'lax $[5]')"))
+                .isEqualTo(new JsonExists(
+                        Optional.of(location(1, 1)),
+                        new JsonPathInvocation(
+                                Optional.of(location(1, 13)),
+                                new Identifier(location(1, 13), "json_column", false),
+                                JSON,
+                                new StringLiteral(location(1, 26), "lax $[5]"),
+                                ImmutableList.of()),
+                        JsonExists.ErrorBehavior.FALSE));
+
+        assertThat(expression("JSON_EXISTS(" +
+                "                               json_column FORMAT JSON ENCODING UTF8, " +
+                "                               'lax $[start_parameter TO end_parameter.ceiling()]' " +
+                "                                   PASSING " +
+                "                                           start_column AS start_parameter, " +
+                "                                           end_column FORMAT JSON ENCODING UTF16 AS end_parameter " +
+                "                               UNKNOWN ON ERROR)"))
+                .isEqualTo(new JsonExists(
+                        Optional.of(location(1, 1)),
+                        new JsonPathInvocation(
+                                Optional.of(location(1, 44)),
+                                new Identifier(location(1, 44), "json_column", false),
+                                UTF8,
+                                new StringLiteral(location(1, 114), "lax $[start_parameter TO end_parameter.ceiling()]"),
+                                ImmutableList.of(
+                                        new JsonPathParameter(
+                                                Optional.of(location(1, 252)),
+                                                new Identifier(location(1, 268), "start_parameter", false),
+                                                new Identifier(location(1, 252), "start_column", false),
+                                                Optional.empty()),
+                                        new JsonPathParameter(
+                                                Optional.of(location(1, 328)),
+                                                new Identifier(location(1, 369), "end_parameter", false),
+                                                new Identifier(location(1, 328), "end_column", false),
+                                                Optional.of(UTF16)))),
+                        JsonExists.ErrorBehavior.UNKNOWN));
+    }
+
+    @Test
+    public void testJsonValue()
+    {
+        // test defaults
+        assertThat(expression("JSON_VALUE(json_column, 'lax $[5]')"))
+                .isEqualTo(new JsonValue(
+                        Optional.of(location(1, 1)),
+                        new JsonPathInvocation(
+                                Optional.of(location(1, 12)),
+                                new Identifier(location(1, 12), "json_column", false),
+                                JSON,
+                                new StringLiteral(location(1, 25), "lax $[5]"),
+                                ImmutableList.of()),
+                        Optional.empty(),
+                        JsonValue.EmptyOrErrorBehavior.NULL,
+                        Optional.empty(),
+                        JsonValue.EmptyOrErrorBehavior.NULL,
+                        Optional.empty()));
+
+        assertThat(expression("JSON_VALUE(" +
+                "                               json_column FORMAT JSON ENCODING UTF8, " +
+                "                               'lax $[start_parameter TO end_parameter.ceiling()]' " +
+                "                                   PASSING " +
+                "                                           start_column AS start_parameter, " +
+                "                                           end_column FORMAT JSON ENCODING UTF16 AS end_parameter " +
+                "                               RETURNING double " +
+                "                               DEFAULT 5e0 ON EMPTY " +
+                "                               ERROR ON ERROR)"))
+                .isEqualTo(new JsonValue(
+                        Optional.of(location(1, 1)),
+                        new JsonPathInvocation(
+                                Optional.of(location(1, 43)),
+                                new Identifier(location(1, 43), "json_column", false),
+                                UTF8,
+                                new StringLiteral(location(1, 113), "lax $[start_parameter TO end_parameter.ceiling()]"),
+                                ImmutableList.of(
+                                        new JsonPathParameter(
+                                                Optional.of(location(1, 251)),
+                                                new Identifier(location(1, 267), "start_parameter", false),
+                                                new Identifier(location(1, 251), "start_column", false),
+                                                Optional.empty()),
+                                        new JsonPathParameter(
+                                                Optional.of(location(1, 327)),
+                                                new Identifier(location(1, 368), "end_parameter", false),
+                                                new Identifier(location(1, 327), "end_column", false),
+                                                Optional.of(UTF16)))),
+                        Optional.of(new GenericDataType(location(1, 423), new Identifier(location(1, 423), "double", false), ImmutableList.of())),
+                        JsonValue.EmptyOrErrorBehavior.DEFAULT,
+                        Optional.of(new DoubleLiteral(location(1, 469), "5e0")),
+                        JsonValue.EmptyOrErrorBehavior.ERROR,
+                        Optional.empty()));
+    }
+
+    @Test
+    public void testJsonQuery()
+    {
+        // test defaults
+        assertThat(expression("JSON_QUERY(json_column, 'lax $[5]')"))
+                .isEqualTo(new JsonQuery(
+                        Optional.of(location(1, 1)),
+                        new JsonPathInvocation(
+                                Optional.of(location(1, 12)),
+                                new Identifier(location(1, 12), "json_column", false),
+                                JSON,
+                                new StringLiteral(location(1, 25), "lax $[5]"),
+                                ImmutableList.of()),
+                        Optional.empty(),
+                        Optional.empty(),
+                        JsonQuery.ArrayWrapperBehavior.WITHOUT,
+                        Optional.empty(),
+                        JsonQuery.EmptyOrErrorBehavior.NULL,
+                        JsonQuery.EmptyOrErrorBehavior.NULL));
+
+        assertThat(expression("JSON_QUERY(" +
+                "                               json_column FORMAT JSON ENCODING UTF8, " +
+                "                               'lax $[start_parameter TO end_parameter.ceiling()]' " +
+                "                                   PASSING " +
+                "                                           start_column AS start_parameter, " +
+                "                                           end_column FORMAT JSON ENCODING UTF16 AS end_parameter " +
+                "                               RETURNING varchar FORMAT JSON ENCODING UTF32 " +
+                "                               WITH ARRAY WRAPPER " +
+                "                               OMIT QUOTES " +
+                "                               EMPTY ARRAY ON EMPTY " +
+                "                               ERROR ON ERROR)"))
+                .isEqualTo(new JsonQuery(
+                        Optional.of(location(1, 1)),
+                        new JsonPathInvocation(
+                                Optional.of(location(1, 43)),
+                                new Identifier(location(1, 43), "json_column", false),
+                                UTF8,
+                                new StringLiteral(location(1, 113), "lax $[start_parameter TO end_parameter.ceiling()]"),
+                                ImmutableList.of(
+                                        new JsonPathParameter(
+                                                Optional.of(location(1, 251)),
+                                                new Identifier(location(1, 267), "start_parameter", false),
+                                                new Identifier(location(1, 251), "start_column", false),
+                                                Optional.empty()),
+                                        new JsonPathParameter(
+                                                Optional.of(location(1, 327)),
+                                                new Identifier(location(1, 368), "end_parameter", false),
+                                                new Identifier(location(1, 327), "end_column", false),
+                                                Optional.of(UTF16)))),
+                        Optional.of(new GenericDataType(location(1, 423), new Identifier(location(1, 423), "varchar", false), ImmutableList.of())),
+                        Optional.of(UTF32),
+                        JsonQuery.ArrayWrapperBehavior.UNCONDITIONAL,
+                        Optional.of(JsonQuery.QuotesBehavior.OMIT),
+                        JsonQuery.EmptyOrErrorBehavior.EMPTY_ARRAY,
+                        JsonQuery.EmptyOrErrorBehavior.ERROR));
+    }
+
+    @Test
+    public void testJsonObject()
+    {
+        // test create empty JSON object
+        assertThat(expression("JSON_OBJECT()"))
+                .isEqualTo(new JsonObject(
+                        Optional.of(location(1, 1)),
+                        ImmutableList.of(),
+                        true,
+                        false,
+                        Optional.empty(),
+                        Optional.empty()));
+
+        // test defaults
+        assertThat(expression("JSON_OBJECT(key_column : value_column)"))
+                .isEqualTo(new JsonObject(
+                        Optional.of(location(1, 1)),
+                        ImmutableList.of(new JsonObjectMember(
+                                location(1, 13),
+                                new Identifier(location(1, 13), "key_column", false),
+                                new Identifier(location(1, 26), "value_column", false),
+                                Optional.empty())),
+                        true,
+                        false,
+                        Optional.empty(),
+                        Optional.empty()));
+
+        assertThat(expression("JSON_OBJECT( " +
+                "                               key_column_1 VALUE value_column FORMAT JSON ENCODING UTF16, " +
+                "                               KEY 'key_literal' VALUE 5, " +
+                "                               key_column_2 : null " +
+                "                               ABSENT ON NULL " +
+                "                               WITH UNIQUE KEYS " +
+                "                               RETURNING varbinary FORMAT JSON ENCODING UTF32 " +
+                "                              )"))
+                .isEqualTo(new JsonObject(
+                        Optional.of(location(1, 1)),
+                        ImmutableList.of(
+                                new JsonObjectMember(
+                                        location(1, 45),
+                                        new Identifier(location(1, 45), "key_column_1", false),
+                                        new Identifier(location(1, 64), "value_column", false),
+                                        Optional.of(UTF16)),
+                                new JsonObjectMember(
+                                        location(1, 136),
+                                        new StringLiteral(location(1, 140), "key_literal"),
+                                        new LongLiteral(location(1, 160), "5"),
+                                        Optional.empty()),
+                                new JsonObjectMember(
+                                        location(1, 194),
+                                        new Identifier(location(1, 194), "key_column_2", false),
+                                        new NullLiteral(location(1, 209)),
+                                        Optional.empty())),
+                        false,
+                        true,
+                        Optional.of(new GenericDataType(location(1, 349), new Identifier(location(1, 349), "varbinary", false), ImmutableList.of())),
+                        Optional.of(UTF32)));
+    }
+
+    @Test
+    public void testJsonArray()
+    {
+        // test create empty JSON array
+        assertThat(expression("JSON_ARRAY()"))
+                .isEqualTo(new JsonArray(
+                        Optional.of(location(1, 1)),
+                        ImmutableList.of(),
+                        false,
+                        Optional.empty(),
+                        Optional.empty()));
+
+        // test defaults
+        assertThat(expression("JSON_ARRAY(value_column)"))
+                .isEqualTo(new JsonArray(
+                        Optional.of(location(1, 1)),
+                        ImmutableList.of(new JsonArrayElement(
+                                location(1, 12),
+                                new Identifier(location(1, 12), "value_column", false),
+                                Optional.empty())),
+                        false,
+                        Optional.empty(),
+                        Optional.empty()));
+
+        assertThat(expression("JSON_ARRAY(value_column FORMAT JSON ENCODING UTF16, " +
+                "                               5, " +
+                "                               null " +
+                "                               NULL ON NULL " +
+                "                               RETURNING varbinary FORMAT JSON ENCODING UTF32 " +
+                "                              )"))
+                .isEqualTo(new JsonArray(
+                        Optional.of(location(1, 1)),
+                        ImmutableList.of(
+                                new JsonArrayElement(
+                                        location(1, 12),
+                                        new Identifier(location(1, 12), "value_column", false),
+                                        Optional.of(UTF16)),
+                                new JsonArrayElement(
+                                        location(1, 84),
+                                        new LongLiteral(location(1, 84), "5"),
+                                        Optional.empty()),
+                                new JsonArrayElement(
+                                        location(1, 118),
+                                        new NullLiteral(location(1, 118)),
+                                        Optional.empty())),
+                        true,
+                        Optional.of(new GenericDataType(location(1, 208), new Identifier(location(1, 208), "varbinary", false), ImmutableList.of())),
+                        Optional.of(UTF32)));
     }
 
     private static QualifiedName makeQualifiedName(String tableName)

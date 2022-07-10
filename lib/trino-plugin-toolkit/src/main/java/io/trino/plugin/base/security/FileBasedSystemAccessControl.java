@@ -27,6 +27,7 @@ import io.trino.spi.connector.CatalogSchemaRoutineName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.eventlistener.EventListener;
+import io.trino.spi.function.FunctionKind;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.Privilege;
 import io.trino.spi.security.SystemAccessControl;
@@ -42,11 +43,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.Suppliers.memoizeWithExpiration;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.trino.plugin.base.security.CatalogAccessControlRule.AccessMode.ALL;
@@ -60,6 +61,7 @@ import static io.trino.plugin.base.security.TableAccessControlRule.TablePrivileg
 import static io.trino.plugin.base.security.TableAccessControlRule.TablePrivilege.UPDATE;
 import static io.trino.plugin.base.util.JsonUtils.parseJson;
 import static io.trino.spi.StandardErrorCode.CONFIGURATION_INVALID;
+import static io.trino.spi.function.FunctionKind.TABLE;
 import static io.trino.spi.security.AccessDeniedException.denyAddColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCatalogAccess;
 import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
@@ -79,6 +81,7 @@ import static io.trino.spi.security.AccessDeniedException.denyDropRole;
 import static io.trino.spi.security.AccessDeniedException.denyDropSchema;
 import static io.trino.spi.security.AccessDeniedException.denyDropTable;
 import static io.trino.spi.security.AccessDeniedException.denyDropView;
+import static io.trino.spi.security.AccessDeniedException.denyExecuteFunction;
 import static io.trino.spi.security.AccessDeniedException.denyGrantRoles;
 import static io.trino.spi.security.AccessDeniedException.denyGrantSchemaPrivilege;
 import static io.trino.spi.security.AccessDeniedException.denyGrantTablePrivilege;
@@ -96,6 +99,7 @@ import static io.trino.spi.security.AccessDeniedException.denyRevokeSchemaPrivil
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denySelectTable;
 import static io.trino.spi.security.AccessDeniedException.denySetCatalogSessionProperty;
+import static io.trino.spi.security.AccessDeniedException.denySetMaterializedViewProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetSystemSessionProperty;
 import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorization;
@@ -205,7 +209,7 @@ public class FileBasedSystemAccessControl
                     .setRequiredConfigurationProperties(config)
                     .initialize();
             FileBasedAccessControlConfig fileBasedAccessControlConfig = injector.getInstance(FileBasedAccessControlConfig.class);
-            String configFileName = fileBasedAccessControlConfig.getConfigFile();
+            String configFileName = fileBasedAccessControlConfig.getConfigFile().getPath();
 
             if (config.containsKey(SECURITY_REFRESH_PERIOD)) {
                 Duration refreshPeriod;
@@ -503,15 +507,6 @@ public class FileBasedSystemAccessControl
     }
 
     @Override
-    public void checkCanCreateTable(SystemSecurityContext context, CatalogSchemaTableName table)
-    {
-        // check if user will be an owner of the table after creation
-        if (!checkTablePermission(context, table, OWNERSHIP)) {
-            denyCreateTable(table.toString());
-        }
-    }
-
-    @Override
     public void checkCanCreateTable(SystemSecurityContext context, CatalogSchemaTableName table, Map<String, Object> properties)
     {
         // check if user will be an owner of the table after creation
@@ -546,7 +541,7 @@ public class FileBasedSystemAccessControl
     }
 
     @Override
-    public void checkCanSetTableProperties(SystemSecurityContext context, CatalogSchemaTableName table, Map<String, Object> properties)
+    public void checkCanSetTableProperties(SystemSecurityContext context, CatalogSchemaTableName table, Map<String, Optional<Object>> properties)
     {
         if (!checkTablePermission(context, table, OWNERSHIP)) {
             denySetTableProperties(table.toString());
@@ -762,7 +757,7 @@ public class FileBasedSystemAccessControl
     }
 
     @Override
-    public void checkCanCreateMaterializedView(SystemSecurityContext context, CatalogSchemaTableName materializedView)
+    public void checkCanCreateMaterializedView(SystemSecurityContext context, CatalogSchemaTableName materializedView, Map<String, Object> properties)
     {
         // check if user will be an owner of the materialize view after creation
         if (!checkTablePermission(context, materializedView, OWNERSHIP)) {
@@ -792,6 +787,14 @@ public class FileBasedSystemAccessControl
         // check if user owns the existing materialized view, and if they will be an owner of the materialized view after the rename
         if (!checkTablePermission(context, view, OWNERSHIP) || !checkTablePermission(context, newView, OWNERSHIP)) {
             denyRenameMaterializedView(view.toString(), newView.toString());
+        }
+    }
+
+    @Override
+    public void checkCanSetMaterializedViewProperties(SystemSecurityContext context, CatalogSchemaTableName materializedView, Map<String, Optional<Object>> properties)
+    {
+        if (!checkTablePermission(context, materializedView, OWNERSHIP)) {
+            denySetMaterializedViewProperties(materializedView.toString());
         }
     }
 
@@ -939,6 +942,14 @@ public class FileBasedSystemAccessControl
     }
 
     @Override
+    public void checkCanExecuteFunction(SystemSecurityContext systemSecurityContext, FunctionKind functionKind, CatalogSchemaRoutineName functionName)
+    {
+        if (functionKind == TABLE) {
+            denyExecuteFunction(functionName.toString());
+        }
+    }
+
+    @Override
     public void checkCanExecuteTableProcedure(SystemSecurityContext systemSecurityContext, CatalogSchemaTableName table, String procedure)
     {
     }
@@ -950,35 +961,41 @@ public class FileBasedSystemAccessControl
     }
 
     @Override
-    public Optional<ViewExpression> getRowFilter(SystemSecurityContext context, CatalogSchemaTableName table)
+    public List<ViewExpression> getRowFilters(SystemSecurityContext context, CatalogSchemaTableName table)
     {
         SchemaTableName tableName = table.getSchemaTableName();
         if (INFORMATION_SCHEMA_NAME.equals(tableName.getSchemaName())) {
-            return Optional.empty();
+            return ImmutableList.of();
         }
 
         Identity identity = context.getIdentity();
         return tableRules.stream()
                 .filter(rule -> rule.matches(identity.getUser(), identity.getEnabledRoles(), identity.getGroups(), table))
                 .map(rule -> rule.getFilter(identity.getUser(), table.getCatalogName(), tableName.getSchemaName()))
+                // we return the first one we find
                 .findFirst()
-                .flatMap(Function.identity());
+                .stream()
+                .flatMap(Optional::stream)
+                .collect(toImmutableList());
     }
 
     @Override
-    public Optional<ViewExpression> getColumnMask(SystemSecurityContext context, CatalogSchemaTableName table, String columnName, Type type)
+    public List<ViewExpression> getColumnMasks(SystemSecurityContext context, CatalogSchemaTableName table, String columnName, Type type)
     {
         SchemaTableName tableName = table.getSchemaTableName();
         if (INFORMATION_SCHEMA_NAME.equals(tableName.getSchemaName())) {
-            return Optional.empty();
+            return ImmutableList.of();
         }
 
         Identity identity = context.getIdentity();
         return tableRules.stream()
                 .filter(rule -> rule.matches(identity.getUser(), identity.getEnabledRoles(), identity.getGroups(), table))
                 .map(rule -> rule.getColumnMask(identity.getUser(), table.getCatalogName(), table.getSchemaTableName().getSchemaName(), columnName))
+                // we return the first one we find
                 .findFirst()
-                .flatMap(Function.identity());
+                .stream()
+                .flatMap(Optional::stream)
+                .collect(toImmutableList());
     }
 
     private boolean checkAnyCatalogAccess(SystemSecurityContext context, String catalogName)

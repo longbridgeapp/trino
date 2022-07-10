@@ -25,7 +25,6 @@ import io.airlift.units.Duration;
 import io.trino.Session;
 import io.trino.execution.DynamicFiltersCollector;
 import io.trino.execution.DynamicFiltersCollector.VersionedDynamicFilterDomains;
-import io.trino.execution.Lifespan;
 import io.trino.execution.TaskId;
 import io.trino.execution.TaskState;
 import io.trino.execution.TaskStateMachine;
@@ -44,7 +43,6 @@ import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
@@ -53,7 +51,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.Iterables.transform;
-import static com.google.common.collect.Sets.newConcurrentHashSet;
 import static io.airlift.units.DataSize.succinctBytes;
 import static java.lang.Math.max;
 import static java.lang.Math.toIntExact;
@@ -81,11 +78,11 @@ public class TaskContext
     private final AtomicLong endFullGcCount = new AtomicLong(-1);
     private final AtomicLong endFullGcTimeNanos = new AtomicLong(-1);
 
+    private final AtomicLong currentPeakUserMemoryReservation = new AtomicLong(0);
+
     private final AtomicReference<DateTime> executionStartTime = new AtomicReference<>();
     private final AtomicReference<DateTime> lastExecutionStartTime = new AtomicReference<>();
     private final AtomicReference<DateTime> executionEndTime = new AtomicReference<>();
-
-    private final Set<Lifespan> completedDriverGroups = newConcurrentHashSet();
 
     private final List<PipelineContext> pipelineContexts = new CopyOnWriteArrayList<>();
 
@@ -94,13 +91,9 @@ public class TaskContext
 
     private final Object cumulativeMemoryLock = new Object();
     private final AtomicDouble cumulativeUserMemory = new AtomicDouble(0.0);
-    private final AtomicDouble cumulativeSystemMemory = new AtomicDouble(0.0);
 
     @GuardedBy("cumulativeMemoryLock")
     private long lastUserMemoryReservation;
-
-    @GuardedBy("cumulativeMemoryLock")
-    private long lastSystemMemoryReservation;
 
     @GuardedBy("cumulativeMemoryLock")
     private long lastTaskStatCallNanos;
@@ -159,8 +152,9 @@ public class TaskContext
         this.yieldExecutor = requireNonNull(yieldExecutor, "yieldExecutor is null");
         this.session = session;
         this.taskMemoryContext = requireNonNull(taskMemoryContext, "taskMemoryContext is null");
+
         // Initialize the local memory contexts with the LazyOutputBuffer tag as LazyOutputBuffer will do the local memory allocations
-        taskMemoryContext.initializeLocalMemoryContexts(LazyOutputBuffer.class.getSimpleName());
+        this.taskMemoryContext.initializeLocalMemoryContexts(LazyOutputBuffer.class.getSimpleName());
         this.dynamicFiltersCollector = new DynamicFiltersCollector(notifyStatusChanged);
         this.localDynamicFiltersCollector = new LocalDynamicFiltersCollector(session);
         this.perOperatorCpuTimerEnabled = perOperatorCpuTimerEnabled;
@@ -257,30 +251,9 @@ public class TaskContext
         return DataSize.ofBytes(taskMemoryContext.getUserMemory());
     }
 
-    public DataSize getSystemMemoryReservation()
-    {
-        return DataSize.ofBytes(taskMemoryContext.getSystemMemory());
-    }
-
     public DataSize getRevocableMemoryReservation()
     {
         return DataSize.ofBytes(taskMemoryContext.getRevocableMemory());
-    }
-
-    /**
-     * Returns the completed driver groups (excluding taskWide).
-     * A driver group is considered complete if all drivers associated with it
-     * has completed, and no new drivers associated with it will be created.
-     */
-    public Set<Lifespan> getCompletedDriverGroups()
-    {
-        return completedDriverGroups;
-    }
-
-    public void addCompletedDriverGroup(Lifespan driverGroup)
-    {
-        checkArgument(!driverGroup.isTaskWide(), "driverGroup is task-wide, not a driver group.");
-        completedDriverGroups.add(driverGroup);
     }
 
     public List<PipelineContext> getPipelineContexts()
@@ -300,14 +273,9 @@ public class TaskContext
         queryContext.freeSpill(bytes);
     }
 
-    public LocalMemoryContext localSystemMemoryContext()
+    public LocalMemoryContext localMemoryContext()
     {
-        return taskMemoryContext.localSystemMemoryContext();
-    }
-
-    public void moreMemoryAvailable()
-    {
-        pipelineContexts.forEach(PipelineContext::moreMemoryAvailable);
+        return taskMemoryContext.localUserMemoryContext();
     }
 
     public boolean isPerOperatorCpuTimerEnabled()
@@ -443,8 +411,12 @@ public class TaskContext
         long processedInputDataSize = 0;
         long processedInputPositions = 0;
 
+        long inputBlockedTime = 0;
+
         long outputDataSize = 0;
         long outputPositions = 0;
+
+        long outputBlockedTime = 0;
 
         long physicalWrittenDataSize = 0;
 
@@ -490,11 +462,15 @@ public class TaskContext
 
                 processedInputDataSize += pipeline.getProcessedInputDataSize().toBytes();
                 processedInputPositions += pipeline.getProcessedInputPositions();
+
+                inputBlockedTime += pipeline.getInputBlockedTime().roundTo(NANOSECONDS);
             }
 
             if (pipeline.isOutputPipeline()) {
                 outputDataSize += pipeline.getOutputDataSize().toBytes();
                 outputPositions += pipeline.getOutputPositions();
+
+                outputBlockedTime += pipeline.getOutputBlockedTime().roundTo(NANOSECONDS);
             }
 
             physicalWrittenDataSize += pipeline.getPhysicalWrittenDataSize().toBytes();
@@ -519,19 +495,16 @@ public class TaskContext
         Duration fullGcTime = getFullGcTime();
 
         long userMemory = taskMemoryContext.getUserMemory();
-        long systemMemory = taskMemoryContext.getSystemMemory();
+        currentPeakUserMemoryReservation.updateAndGet(oldValue -> max(oldValue, userMemory));
 
         synchronized (cumulativeMemoryLock) {
             long currentTimeNanos = System.nanoTime();
             double sinceLastPeriodMillis = (currentTimeNanos - lastTaskStatCallNanos) / 1_000_000.0;
             long averageUserMemoryForLastPeriod = (userMemory + lastUserMemoryReservation) / 2;
             cumulativeUserMemory.addAndGet(averageUserMemoryForLastPeriod * sinceLastPeriodMillis);
-            long averageSystemMemoryForLastPeriod = (systemMemory + lastSystemMemoryReservation) / 2;
-            cumulativeSystemMemory.addAndGet(averageSystemMemoryForLastPeriod * sinceLastPeriodMillis);
 
             lastTaskStatCallNanos = currentTimeNanos;
             lastUserMemoryReservation = userMemory;
-            lastSystemMemoryReservation = systemMemory;
         }
 
         boolean fullyBlocked = hasRunningPipelines && runningPipelinesFullyBlocked;
@@ -554,10 +527,9 @@ public class TaskContext
                 blockedDrivers,
                 completedDrivers,
                 cumulativeUserMemory.get(),
-                cumulativeSystemMemory.get(),
                 succinctBytes(userMemory),
+                succinctBytes(currentPeakUserMemoryReservation.get()),
                 succinctBytes(taskMemoryContext.getRevocableMemory()),
-                succinctBytes(systemMemory),
                 new Duration(totalScheduledTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
                 new Duration(totalCpuTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
                 new Duration(totalBlockedTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
@@ -572,8 +544,10 @@ public class TaskContext
                 rawInputPositions,
                 succinctBytes(processedInputDataSize),
                 processedInputPositions,
+                new Duration(inputBlockedTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
                 succinctBytes(outputDataSize),
                 outputPositions,
+                new Duration(outputBlockedTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
                 succinctBytes(physicalWrittenDataSize),
                 fullGcCount,
                 fullGcTime,

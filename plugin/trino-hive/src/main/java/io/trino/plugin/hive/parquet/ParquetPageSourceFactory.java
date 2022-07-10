@@ -255,7 +255,7 @@ public class ParquetPageSourceFactory
                     Optional.ofNullable(fileMetaData.getCreatedBy()),
                     messageColumn,
                     blocks.build(),
-                    Optional.of(blockStarts.build()),
+                    blockStarts.build(),
                     dataSource,
                     timeZone,
                     newSimpleAggregatedMemoryContext(),
@@ -437,7 +437,7 @@ public class ParquetPageSourceFactory
                 predicate.put(descriptor, entry.getValue());
             }
         }
-        return TupleDomain.withColumnDomains(predicate.build());
+        return TupleDomain.withColumnDomains(predicate.buildOrThrow());
     }
 
     private static org.apache.parquet.schema.Type getParquetType(HiveColumnHandle column, MessageType messageType, boolean useParquetColumnNames)

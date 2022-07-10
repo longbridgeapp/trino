@@ -26,7 +26,6 @@ import io.trino.metadata.TestingFunctionResolution;
 import io.trino.plugin.tpch.TpchColumnHandle;
 import io.trino.plugin.tpch.TpchConnectorFactory;
 import io.trino.plugin.tpch.TpchTableHandle;
-import io.trino.plugin.tpch.TpchTableLayoutHandle;
 import io.trino.security.AllowAllAccessControl;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.predicate.TupleDomain;
@@ -72,6 +71,7 @@ import static io.trino.plugin.tpch.TpchTransactionHandle.INSTANCE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.toSqlType;
+import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.LOCAL;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.REMOTE;
@@ -108,7 +108,10 @@ public class TestCostCalculator
         localQueryRunner = LocalQueryRunner.create(session);
         localQueryRunner.createCatalog("tpch", new TpchConnectorFactory(), ImmutableMap.of());
 
-        planFragmenter = new PlanFragmenter(localQueryRunner.getMetadata(), localQueryRunner.getNodePartitioningManager(), new QueryManagerConfig());
+        planFragmenter = new PlanFragmenter(
+                localQueryRunner.getMetadata(),
+                localQueryRunner.getFunctionManager(),
+                new QueryManagerConfig());
     }
 
     @AfterClass(alwaysRun = true)
@@ -441,7 +444,7 @@ public class TestCostCalculator
                 .put("le", statsEstimate(localExchange, 6000))
                 .put("ts1", statsEstimate(ts1, 6000))
                 .put("ts2", statsEstimate(ts2, 1000))
-                .build();
+                .buildOrThrow();
         Map<String, Type> types = ImmutableMap.of(
                 "orderkey", BIGINT,
                 "orderkey_0", BIGINT);
@@ -470,7 +473,7 @@ public class TestCostCalculator
                 .put("le", statsEstimate(localExchange, 6000))
                 .put("ts1", statsEstimate(ts1, 6000))
                 .put("ts2", statsEstimate(ts2, 1000))
-                .build();
+                .buildOrThrow();
         Map<String, Type> types = ImmutableMap.of(
                 "orderkey", BIGINT,
                 "orderkey_0", BIGINT);
@@ -794,9 +797,9 @@ public class TestCostCalculator
         TpchTableHandle tableHandle = new TpchTableHandle("sf1", "orders", 1.0);
         return new TableScanNode(
                 new PlanNodeId(id),
-                new TableHandle(new CatalogName("tpch"), tableHandle, INSTANCE, Optional.of(new TpchTableLayoutHandle(tableHandle, TupleDomain.all()))),
+                new TableHandle(new CatalogName("tpch"), tableHandle, INSTANCE),
                 symbolsList,
-                assignments.build(),
+                assignments.buildOrThrow(),
                 TupleDomain.all(),
                 Optional.empty(),
                 false,
@@ -821,15 +824,11 @@ public class TestCostCalculator
                 Optional.empty(),
                 Optional.empty());
 
-        return new AggregationNode(
+        return singleAggregation(
                 new PlanNodeId(id),
                 source,
                 ImmutableMap.of(new Symbol("count"), aggregation),
-                singleGroupingSet(source.getOutputSymbols()),
-                ImmutableList.of(),
-                AggregationNode.Step.SINGLE,
-                Optional.empty(),
-                Optional.empty());
+                singleGroupingSet(source.getOutputSymbols()));
     }
 
     /**

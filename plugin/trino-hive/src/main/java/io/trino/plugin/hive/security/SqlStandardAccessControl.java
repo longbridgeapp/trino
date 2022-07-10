@@ -13,9 +13,9 @@
  */
 package io.trino.plugin.hive.security;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.base.CatalogName;
-import io.trino.plugin.hive.authentication.HiveIdentity;
 import io.trino.plugin.hive.metastore.Database;
 import io.trino.plugin.hive.metastore.HivePrincipal;
 import io.trino.plugin.hive.metastore.HivePrivilegeInfo;
@@ -24,6 +24,7 @@ import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorSecurityContext;
 import io.trino.spi.connector.SchemaRoutineName;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.function.FunctionKind;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.ConnectorIdentity;
 import io.trino.spi.security.Privilege;
@@ -34,6 +35,7 @@ import io.trino.spi.type.Type;
 
 import javax.inject.Inject;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -53,6 +55,7 @@ import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.isRoleEn
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.listApplicableRoles;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.listEnabledPrincipals;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.function.FunctionKind.TABLE;
 import static io.trino.spi.security.AccessDeniedException.denyAddColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentTable;
@@ -69,6 +72,7 @@ import static io.trino.spi.security.AccessDeniedException.denyDropRole;
 import static io.trino.spi.security.AccessDeniedException.denyDropSchema;
 import static io.trino.spi.security.AccessDeniedException.denyDropTable;
 import static io.trino.spi.security.AccessDeniedException.denyDropView;
+import static io.trino.spi.security.AccessDeniedException.denyExecuteFunction;
 import static io.trino.spi.security.AccessDeniedException.denyExecuteTableProcedure;
 import static io.trino.spi.security.AccessDeniedException.denyGrantRoles;
 import static io.trino.spi.security.AccessDeniedException.denyGrantTablePrivilege;
@@ -83,6 +87,7 @@ import static io.trino.spi.security.AccessDeniedException.denyRevokeRoles;
 import static io.trino.spi.security.AccessDeniedException.denyRevokeTablePrivilege;
 import static io.trino.spi.security.AccessDeniedException.denySelectTable;
 import static io.trino.spi.security.AccessDeniedException.denySetCatalogSessionProperty;
+import static io.trino.spi.security.AccessDeniedException.denySetMaterializedViewProperties;
 import static io.trino.spi.security.AccessDeniedException.denySetRole;
 import static io.trino.spi.security.AccessDeniedException.denySetSchemaAuthorization;
 import static io.trino.spi.security.AccessDeniedException.denySetTableAuthorization;
@@ -181,14 +186,6 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanCreateTable(ConnectorSecurityContext context, SchemaTableName tableName)
-    {
-        if (!isDatabaseOwner(context, tableName.getSchemaName())) {
-            denyCreateTable(tableName.toString());
-        }
-    }
-
-    @Override
     public void checkCanCreateTable(ConnectorSecurityContext context, SchemaTableName tableName, Map<String, Object> properties)
     {
         if (!isDatabaseOwner(context, tableName.getSchemaName())) {
@@ -213,7 +210,7 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanSetTableProperties(ConnectorSecurityContext context, SchemaTableName tableName, Map<String, Object> properties)
+    public void checkCanSetTableProperties(ConnectorSecurityContext context, SchemaTableName tableName, Map<String, Optional<Object>> properties)
     {
         if (!isTableOwner(context, tableName)) {
             denySetTableProperties(tableName.toString());
@@ -381,7 +378,7 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public void checkCanCreateMaterializedView(ConnectorSecurityContext context, SchemaTableName materializedViewName)
+    public void checkCanCreateMaterializedView(ConnectorSecurityContext context, SchemaTableName materializedViewName, Map<String, Object> properties)
     {
         if (!isDatabaseOwner(context, materializedViewName.getSchemaName())) {
             denyCreateMaterializedView(materializedViewName.toString());
@@ -409,6 +406,14 @@ public class SqlStandardAccessControl
     {
         if (!isTableOwner(context, viewName)) {
             denyRenameMaterializedView(viewName.toString(), newViewName.toString());
+        }
+    }
+
+    @Override
+    public void checkCanSetMaterializedViewProperties(ConnectorSecurityContext context, SchemaTableName materializedViewName, Map<String, Optional<Object>> properties)
+    {
+        if (!isTableOwner(context, materializedViewName)) {
+            denySetMaterializedViewProperties(materializedViewName.toString());
         }
     }
 
@@ -568,15 +573,23 @@ public class SqlStandardAccessControl
     }
 
     @Override
-    public Optional<ViewExpression> getRowFilter(ConnectorSecurityContext context, SchemaTableName tableName)
+    public void checkCanExecuteFunction(ConnectorSecurityContext context, FunctionKind functionKind, SchemaRoutineName function)
     {
-        return Optional.empty();
+        if (functionKind == TABLE && !isAdmin(context)) {
+            denyExecuteFunction(function.toString());
+        }
     }
 
     @Override
-    public Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
+    public List<ViewExpression> getRowFilters(ConnectorSecurityContext context, SchemaTableName tableName)
     {
-        return Optional.empty();
+        return ImmutableList.of();
+    }
+
+    @Override
+    public List<ViewExpression> getColumnMasks(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
+    {
+        return ImmutableList.of();
     }
 
     private boolean isAdmin(ConnectorSecurityContext context)
@@ -638,7 +651,7 @@ public class SqlStandardAccessControl
             return true;
         }
 
-        Set<HivePrincipal> allowedPrincipals = metastore.listTablePrivileges(context, new HiveIdentity(context.getIdentity()), tableName.getSchemaName(), tableName.getTableName(), Optional.empty()).stream()
+        Set<HivePrincipal> allowedPrincipals = metastore.listTablePrivileges(context, tableName.getSchemaName(), tableName.getTableName(), Optional.empty()).stream()
                 .filter(privilegeInfo -> privilegeInfo.getHivePrivilege() == requiredPrivilege)
                 .filter(privilegeInfo -> !grantOptionRequired || privilegeInfo.isGrantOption())
                 .map(HivePrivilegeInfo::getGrantee)
@@ -675,12 +688,15 @@ public class SqlStandardAccessControl
                 Stream.of(userPrincipal),
                 listApplicableRoles(userPrincipal, hivePrincipal -> metastore.listRoleGrants(context, hivePrincipal))
                         .map(role -> new HivePrincipal(ROLE, role.getRoleName())));
-        return listTablePrivileges(context, new HiveIdentity(identity), databaseName, tableName, principals);
+        return listTablePrivileges(context, databaseName, tableName, principals);
     }
 
-    private Stream<HivePrivilegeInfo> listTablePrivileges(ConnectorSecurityContext context, HiveIdentity identity, String databaseName, String tableName, Stream<HivePrincipal> principals)
+    private Stream<HivePrivilegeInfo> listTablePrivileges(ConnectorSecurityContext context,
+            String databaseName,
+            String tableName,
+            Stream<HivePrincipal> principals)
     {
-        return principals.flatMap(principal -> metastore.listTablePrivileges(context, identity, databaseName, tableName, Optional.of(principal)).stream());
+        return principals.flatMap(principal -> metastore.listTablePrivileges(context, databaseName, tableName, Optional.of(principal)).stream());
     }
 
     private boolean hasAdminOptionForRoles(ConnectorSecurityContext context, Set<String> roles)
@@ -710,7 +726,7 @@ public class SqlStandardAccessControl
             return true;
         }
 
-        Set<HivePrincipal> allowedPrincipals = metastore.listTablePrivileges(context, new HiveIdentity(context.getIdentity()), tableName.getSchemaName(), tableName.getTableName(), Optional.empty()).stream()
+        Set<HivePrincipal> allowedPrincipals = metastore.listTablePrivileges(context, tableName.getSchemaName(), tableName.getTableName(), Optional.empty()).stream()
                 .map(HivePrivilegeInfo::getGrantee)
                 .collect(toImmutableSet());
 

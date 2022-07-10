@@ -25,12 +25,13 @@ import io.trino.cost.StatsAndCosts;
 import io.trino.cost.StatsCalculator;
 import io.trino.cost.StatsProvider;
 import io.trino.execution.warnings.WarningCollector;
+import io.trino.metadata.AnalyzeMetadata;
 import io.trino.metadata.Metadata;
-import io.trino.metadata.NewTableLayout;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.ResolvedFunction;
 import io.trino.metadata.TableExecuteHandle;
 import io.trino.metadata.TableHandle;
+import io.trino.metadata.TableLayout;
 import io.trino.metadata.TableMetadata;
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
@@ -50,7 +51,6 @@ import io.trino.sql.analyzer.RelationType;
 import io.trino.sql.analyzer.Scope;
 import io.trino.sql.planner.StatisticsAggregationPlanner.TableStatisticAggregation;
 import io.trino.sql.planner.optimizations.PlanOptimizer;
-import io.trino.sql.planner.plan.AggregationNode;
 import io.trino.sql.planner.plan.Assignments;
 import io.trino.sql.planner.plan.DeleteNode;
 import io.trino.sql.planner.plan.ExplainAnalyzeNode;
@@ -60,6 +60,7 @@ import io.trino.sql.planner.plan.OutputNode;
 import io.trino.sql.planner.plan.PlanNode;
 import io.trino.sql.planner.plan.ProjectNode;
 import io.trino.sql.planner.plan.RefreshMaterializedViewNode;
+import io.trino.sql.planner.plan.SimpleTableExecuteNode;
 import io.trino.sql.planner.plan.StatisticAggregations;
 import io.trino.sql.planner.plan.StatisticsWriterNode;
 import io.trino.sql.planner.plan.TableExecuteNode;
@@ -133,6 +134,7 @@ import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.sql.planner.PlanBuilder.newPlanBuilder;
 import static io.trino.sql.planner.QueryPlanner.visibleFields;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
+import static io.trino.sql.planner.plan.AggregationNode.singleAggregation;
 import static io.trino.sql.planner.plan.AggregationNode.singleGroupingSet;
 import static io.trino.sql.planner.plan.TableWriterNode.CreateReference;
 import static io.trino.sql.planner.plan.TableWriterNode.InsertReference;
@@ -220,7 +222,15 @@ public class LogicalPlanner
         PlanNode root = planStatement(analysis, analysis.getStatement());
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Initial plan:\n%s", PlanPrinter.textLogicalPlan(root, symbolAllocator.getTypes(), metadata, StatsAndCosts.empty(), session, 0, false));
+            LOG.debug("Initial plan:\n%s", PlanPrinter.textLogicalPlan(
+                    root,
+                    symbolAllocator.getTypes(),
+                    metadata,
+                    plannerContext.getFunctionManager(),
+                    StatsAndCosts.empty(),
+                    session,
+                    0,
+                    false));
         }
 
         planSanityChecker.validateIntermediatePlan(root, session, plannerContext, typeAnalyzer, symbolAllocator.getTypes(), warningCollector);
@@ -231,7 +241,15 @@ public class LogicalPlanner
                 requireNonNull(root, format("%s returned a null plan", optimizer.getClass().getName()));
 
                 if (LOG.isDebugEnabled()) {
-                    LOG.debug("%s:\n%s", optimizer.getClass().getName(), PlanPrinter.textLogicalPlan(root, symbolAllocator.getTypes(), metadata, StatsAndCosts.empty(), session, 0, false));
+                    LOG.debug("%s:\n%s", optimizer.getClass().getName(), PlanPrinter.textLogicalPlan(
+                            root,
+                            symbolAllocator.getTypes(),
+                            metadata,
+                            plannerContext.getFunctionManager(),
+                            StatsAndCosts.empty(),
+                            session,
+                            0,
+                            false));
                 }
             }
         }
@@ -319,7 +337,9 @@ public class LogicalPlanner
 
     private RelationPlan createAnalyzePlan(Analysis analysis, Analyze analyzeStatement)
     {
-        TableHandle targetTable = analysis.getAnalyzeTarget().orElseThrow();
+        AnalyzeMetadata analyzeMetadata = analysis.getAnalyzeMetadata().orElseThrow();
+        TableHandle targetTable = analyzeMetadata.getTableHandle();
+        TableStatisticsMetadata tableStatisticsMetadata = analyzeMetadata.getStatisticsMetadata();
 
         // Plan table scan
         Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(session, targetTable);
@@ -334,26 +354,17 @@ public class LogicalPlanner
             columnNameToSymbol.put(column.getName(), symbol);
         }
 
-        TableStatisticsMetadata tableStatisticsMetadata = metadata.getStatisticsCollectionMetadata(
-                session,
-                targetTable.getCatalogName().getCatalogName(),
-                tableMetadata.getMetadata());
-
-        TableStatisticAggregation tableStatisticAggregation = statisticsAggregationPlanner.createStatisticsAggregation(tableStatisticsMetadata, columnNameToSymbol.build());
+        TableStatisticAggregation tableStatisticAggregation = statisticsAggregationPlanner.createStatisticsAggregation(tableStatisticsMetadata, columnNameToSymbol.buildOrThrow());
         StatisticAggregations statisticAggregations = tableStatisticAggregation.getAggregations();
         List<Symbol> groupingSymbols = statisticAggregations.getGroupingSymbols();
 
         PlanNode planNode = new StatisticsWriterNode(
                 idAllocator.getNextId(),
-                new AggregationNode(
+                singleAggregation(
                         idAllocator.getNextId(),
-                        TableScanNode.newInstance(idAllocator.getNextId(), targetTable, tableScanOutputs.build(), symbolToColumnHandle.build(), false, Optional.empty()),
+                        TableScanNode.newInstance(idAllocator.getNextId(), targetTable, tableScanOutputs.build(), symbolToColumnHandle.buildOrThrow(), false, Optional.empty()),
                         statisticAggregations.getAggregations(),
-                        singleGroupingSet(groupingSymbols),
-                        ImmutableList.of(),
-                        AggregationNode.Step.SINGLE,
-                        Optional.empty(),
-                        Optional.empty()),
+                        singleGroupingSet(groupingSymbols)),
                 new StatisticsWriterNode.WriteStatisticsReference(targetTable),
                 symbolAllocator.newSymbol("rows", BIGINT),
                 tableStatisticsMetadata.getTableStatistics().contains(ROW_COUNT),
@@ -374,7 +385,7 @@ public class LogicalPlanner
 
         ConnectorTableMetadata tableMetadata = create.getMetadata().orElseThrow();
 
-        Optional<NewTableLayout> newTableLayout = create.getLayout();
+        Optional<TableLayout> newTableLayout = create.getLayout();
 
         List<String> columnNames = tableMetadata.getColumns().stream()
                 .filter(column -> !column.isHidden()) // todo this filter is redundant
@@ -382,7 +393,6 @@ public class LogicalPlanner
                 .collect(toImmutableList());
 
         TableStatisticsMetadata statisticsMetadata = metadata.getStatisticsCollectionMetadataForWrite(session, destination.getCatalogName(), tableMetadata);
-
         return createTableWriterPlan(
                 analysis,
                 plan.getRoot(),
@@ -400,7 +410,7 @@ public class LogicalPlanner
             Query query,
             TableHandle tableHandle,
             List<ColumnHandle> insertColumns,
-            Optional<NewTableLayout> newTableLayout,
+            Optional<TableLayout> newTableLayout,
             Optional<WriterTarget> materializedViewRefreshWriterTarget)
     {
         TableMetadata tableMetadata = metadata.getTableMetadata(session, tableHandle);
@@ -529,7 +539,7 @@ public class LogicalPlanner
         Analysis.Insert insert = analysis.getInsert().orElseThrow();
         TableHandle tableHandle = insert.getTarget();
         Query query = insertStatement.getQuery();
-        Optional<NewTableLayout> newTableLayout = insert.getNewTableLayout();
+        Optional<TableLayout> newTableLayout = insert.getNewTableLayout();
         return getInsertPlan(analysis, insert.getTable(), query, tableHandle, insert.getColumns(), newTableLayout, Optional.empty());
     }
 
@@ -548,7 +558,7 @@ public class LogicalPlanner
         Analysis.RefreshMaterializedViewAnalysis viewAnalysis = analysis.getRefreshMaterializedView().get();
         TableHandle tableHandle = viewAnalysis.getTarget();
         Query query = viewAnalysis.getQuery();
-        Optional<NewTableLayout> newTableLayout = metadata.getInsertLayout(session, viewAnalysis.getTarget());
+        Optional<TableLayout> newTableLayout = metadata.getInsertLayout(session, viewAnalysis.getTarget());
         TableWriterNode.RefreshMaterializedViewReference writerTarget = new TableWriterNode.RefreshMaterializedViewReference(
                 viewAnalysis.getTable(),
                 tableHandle,
@@ -563,7 +573,7 @@ public class LogicalPlanner
             WriterTarget target,
             List<String> columnNames,
             List<ColumnMetadata> columnMetadataList,
-            Optional<NewTableLayout> writeTableLayout,
+            Optional<TableLayout> writeTableLayout,
             TableStatisticsMetadata statisticsMetadata)
     {
         Optional<PartitioningScheme> partitioningScheme = Optional.empty();
@@ -604,7 +614,7 @@ public class LogicalPlanner
         if (!statisticsMetadata.isEmpty()) {
             TableStatisticAggregation result = statisticsAggregationPlanner.createStatisticsAggregation(statisticsMetadata, columnToSymbolMap);
 
-            StatisticAggregations.Parts aggregations = result.getAggregations().createPartialAggregations(symbolAllocator, plannerContext);
+            StatisticAggregations.Parts aggregations = result.getAggregations().createPartialAggregations(symbolAllocator, session, plannerContext);
 
             // partial aggregation is run within the TableWriteOperator to calculate the statistics for
             // the data consumed by the TableWriteOperator
@@ -810,12 +820,20 @@ public class LogicalPlanner
     private RelationPlan createTableExecutePlan(Analysis analysis, TableExecute statement)
     {
         Table table = statement.getTable();
-        TableHandle tableHandle = analysis.getTableHandle(table);
         QualifiedObjectName tableName = createQualifiedObjectName(session, statement, table.getName());
         TableExecuteHandle executeHandle = analysis.getTableExecuteHandle().orElseThrow();
 
+        if (!analysis.isTableExecuteReadsData()) {
+            SimpleTableExecuteNode node = new SimpleTableExecuteNode(
+                    idAllocator.getNextId(),
+                    symbolAllocator.newSymbol("rows", BIGINT),
+                    executeHandle);
+            return new RelationPlan(node, analysis.getRootScope(), node.getOutputSymbols(), Optional.empty());
+        }
+
+        TableHandle tableHandle = analysis.getTableHandle(table);
         RelationPlan tableScanPlan = createRelationPlan(analysis, table);
-        PlanBuilder sourcePlanBuilder = newPlanBuilder(tableScanPlan, analysis, ImmutableMap.of(), ImmutableMap.of());
+        PlanBuilder sourcePlanBuilder = newPlanBuilder(tableScanPlan, analysis, ImmutableMap.of(), ImmutableMap.of(), session, plannerContext);
         if (statement.getWhere().isPresent()) {
             SubqueryPlanner subqueryPlanner = new SubqueryPlanner(analysis, symbolAllocator, idAllocator, buildLambdaDeclarationToSymbolMap(analysis, symbolAllocator), plannerContext, typeCoercion, Optional.empty(), session, ImmutableMap.of());
             Expression whereExpression = statement.getWhere().get();
@@ -831,9 +849,10 @@ public class LogicalPlanner
                 .map(ColumnMetadata::getName)
                 .collect(toImmutableList());
 
-        TableWriterNode.TableExecuteTarget tableExecuteTarget = new TableWriterNode.TableExecuteTarget(executeHandle, Optional.empty(), tableName.asSchemaTableName());
+        boolean supportsReportingWrittenBytes = metadata.supportsReportingWrittenBytes(session, tableHandle);
+        TableWriterNode.TableExecuteTarget tableExecuteTarget = new TableWriterNode.TableExecuteTarget(executeHandle, Optional.empty(), tableName.asSchemaTableName(), supportsReportingWrittenBytes);
 
-        Optional<NewTableLayout> layout = metadata.getLayoutForTableExecute(session, executeHandle);
+        Optional<TableLayout> layout = metadata.getLayoutForTableExecute(session, executeHandle);
 
         List<Symbol> symbols = visibleFields(tableScanPlan);
 

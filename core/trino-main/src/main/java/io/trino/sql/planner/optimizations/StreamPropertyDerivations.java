@@ -54,6 +54,7 @@ import io.trino.sql.planner.plan.RefreshMaterializedViewNode;
 import io.trino.sql.planner.plan.RowNumberNode;
 import io.trino.sql.planner.plan.SampleNode;
 import io.trino.sql.planner.plan.SemiJoinNode;
+import io.trino.sql.planner.plan.SimpleTableExecuteNode;
 import io.trino.sql.planner.plan.SortNode;
 import io.trino.sql.planner.plan.SpatialJoinNode;
 import io.trino.sql.planner.plan.StatisticsWriterNode;
@@ -452,6 +453,12 @@ public final class StreamPropertyDerivations
         }
 
         @Override
+        public StreamProperties visitSimpleTableExecuteNode(SimpleTableExecuteNode node, List<StreamProperties> context)
+        {
+            return StreamProperties.singleStream();
+        }
+
+        @Override
         public StreamProperties visitRefreshMaterializedView(RefreshMaterializedViewNode node, List<StreamProperties> inputProperties)
         {
             return StreamProperties.singleStream();
@@ -691,8 +698,6 @@ public final class StreamPropertyDerivations
 
             checkArgument(distribution != SINGLE || this.partitioningColumns.equals(Optional.of(ImmutableList.of())),
                     "Single stream must be partitioned on empty set");
-            checkArgument(distribution == SINGLE || !this.partitioningColumns.equals(Optional.of(ImmutableList.of())),
-                    "Multiple streams must not be partitioned on empty set");
 
             this.ordered = ordered;
             checkArgument(!ordered || distribution == SINGLE, "Ordered must be a single stream");

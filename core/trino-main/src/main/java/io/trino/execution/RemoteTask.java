@@ -36,8 +36,6 @@ public interface RemoteTask
 
     void noMoreSplits(PlanNodeId sourceId);
 
-    void noMoreSplits(PlanNodeId sourceId, Lifespan lifespan);
-
     void setOutputBuffers(OutputBuffers outputBuffers);
 
     /**
@@ -64,6 +62,11 @@ public interface RemoteTask
     PartitionedSplitsInfo getPartitionedSplitsInfo();
 
     void fail(Throwable cause);
+
+    /**
+     * Fails task remotely; only transitions to failed state when we recevie confirmation that remote operation is completed
+     */
+    void failRemotely(Throwable cause);
 
     PartitionedSplitsInfo getQueuedPartitionedSplitsInfo();
 

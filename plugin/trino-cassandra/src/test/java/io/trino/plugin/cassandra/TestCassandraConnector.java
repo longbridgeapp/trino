@@ -13,7 +13,7 @@
  */
 package io.trino.plugin.cassandra;
 
-import com.datastax.driver.core.utils.Bytes;
+import com.datastax.oss.protocol.internal.util.Bytes;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Shorts;
@@ -64,8 +64,6 @@ import static io.trino.plugin.cassandra.CassandraTestingUtils.TABLE_DELETE_DATA;
 import static io.trino.plugin.cassandra.CassandraTestingUtils.TABLE_TUPLE_TYPE;
 import static io.trino.plugin.cassandra.CassandraTestingUtils.TABLE_USER_DEFINED_TYPE;
 import static io.trino.plugin.cassandra.CassandraTestingUtils.createTestTables;
-import static io.trino.spi.connector.ConnectorSplitManager.SplitSchedulingStrategy.UNGROUPED_SCHEDULING;
-import static io.trino.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
@@ -120,10 +118,12 @@ public class TestCassandraConnector
 
         Connector connector = connectorFactory.create("test", ImmutableMap.of(
                 "cassandra.contact-points", server.getHost(),
+                "cassandra.load-policy.use-dc-aware", "true",
+                "cassandra.load-policy.dc-aware.local-dc", "datacenter1",
                 "cassandra.native-protocol-port", Integer.toString(server.getPort())),
                 new TestingConnectorContext());
 
-        metadata = connector.getMetadata(CassandraTransactionHandle.INSTANCE);
+        metadata = connector.getMetadata(SESSION, CassandraTransactionHandle.INSTANCE);
         assertInstanceOf(metadata, CassandraMetadata.class);
 
         splitManager = connector.getSplitManager();
@@ -186,7 +186,7 @@ public class TestCassandraConnector
 
         tableHandle = metadata.applyFilter(SESSION, tableHandle, Constraint.alwaysTrue()).get().getHandle();
 
-        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, tableHandle, UNGROUPED_SCHEDULING, DynamicFilter.EMPTY));
+        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue()));
 
         long rowNumber = 0;
         for (ConnectorSplit split : splits) {
@@ -258,7 +258,7 @@ public class TestCassandraConnector
 
         ConnectorTransactionHandle transaction = CassandraTransactionHandle.INSTANCE;
 
-        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, tableHandle, UNGROUPED_SCHEDULING, DynamicFilter.EMPTY));
+        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue()));
 
         long rowNumber = 0;
         for (ConnectorSplit split : splits) {
@@ -309,7 +309,7 @@ public class TestCassandraConnector
 
         tableHandle = metadata.applyFilter(SESSION, tableHandle, Constraint.alwaysTrue()).get().getHandle();
 
-        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, tableHandle, UNGROUPED_SCHEDULING, DynamicFilter.EMPTY));
+        List<ConnectorSplit> splits = getAllSplits(splitManager.getSplits(transaction, SESSION, tableHandle, DynamicFilter.EMPTY, Constraint.alwaysTrue()));
 
         long rowNumber = 0;
         for (ConnectorSplit split : splits) {
@@ -431,7 +431,7 @@ public class TestCassandraConnector
     {
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
         while (!splitSource.isFinished()) {
-            splits.addAll(getFutureValue(splitSource.getNextBatch(NOT_PARTITIONED, 1000)).getSplits());
+            splits.addAll(getFutureValue(splitSource.getNextBatch(1000)).getSplits());
         }
         return splits.build();
     }
@@ -445,7 +445,7 @@ public class TestCassandraConnector
             index.put(name, i);
             i++;
         }
-        return index.build();
+        return index.buildOrThrow();
     }
 
     private CassandraTableHandle getTableHandle(Optional<List<CassandraPartition>> partitions, String clusteringKeyPredicates)

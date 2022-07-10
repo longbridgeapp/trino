@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Primitives;
 import io.airlift.slice.Slice;
+import io.airlift.slice.Slices;
 import io.trino.Session;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.FunctionNullability;
@@ -134,6 +135,7 @@ import static io.trino.spi.type.TypeUtils.readNativeValue;
 import static io.trino.spi.type.TypeUtils.writeNativeValue;
 import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.sql.DynamicFilters.isDynamicFilter;
+import static io.trino.sql.ExpressionUtils.isEffectivelyLiteral;
 import static io.trino.sql.analyzer.ConstantExpressionVerifier.verifyExpressionIsConstant;
 import static io.trino.sql.analyzer.ExpressionAnalyzer.createConstantAnalyzer;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
@@ -159,6 +161,7 @@ public class ExpressionInterpreter
     private final Expression expression;
     private final PlannerContext plannerContext;
     private final Metadata metadata;
+    private final LiteralInterpreter literalInterpreter;
     private final LiteralEncoder literalEncoder;
     private final Session session;
     private final ConnectorSession connectorSession;
@@ -175,12 +178,13 @@ public class ExpressionInterpreter
         this.expression = requireNonNull(expression, "expression is null");
         this.plannerContext = requireNonNull(plannerContext, "plannerContext is null");
         this.metadata = plannerContext.getMetadata();
+        this.literalInterpreter = new LiteralInterpreter(plannerContext, session);
         this.literalEncoder = new LiteralEncoder(plannerContext);
         this.session = requireNonNull(session, "session is null");
         this.connectorSession = session.toConnectorSession();
         this.expressionTypes = ImmutableMap.copyOf(requireNonNull(expressionTypes, "expressionTypes is null"));
         verify((expressionTypes.containsKey(NodeRef.of(expression))));
-        this.functionInvoker = new InterpretedFunctionInvoker(metadata);
+        this.functionInvoker = new InterpretedFunctionInvoker(plannerContext.getFunctionManager());
         this.typeCoercion = new TypeCoercion(plannerContext.getTypeManager()::getType);
     }
 
@@ -203,7 +207,7 @@ public class ExpressionInterpreter
         Map<NodeRef<Expression>, Type> coercions = ImmutableMap.<NodeRef<Expression>, Type>builder()
                 .putAll(analyzer.getExpressionCoercions())
                 .put(NodeRef.of(expression), expectedType)
-                .build();
+                .buildOrThrow();
         return evaluateConstantExpression(expression, coercions, analyzer.getTypeOnlyCoercions(), plannerContext, session, accessControl, ImmutableSet.of(), parameters);
     }
 
@@ -238,7 +242,7 @@ public class ExpressionInterpreter
 
         // expressionInterpreter/optimizer only understands a subset of expression types
         // TODO: remove this when the new expression tree is implemented
-        Expression canonicalized = canonicalizeExpression(rewrite, analyzer.getExpressionTypes(), plannerContext.getMetadata(), session);
+        Expression canonicalized = canonicalizeExpression(rewrite, analyzer.getExpressionTypes(), plannerContext, session);
 
         // The optimization above may have rewritten the expression tree which breaks all the identity maps, so redo the analysis
         // to re-analyze coercions that might be necessary
@@ -385,7 +389,7 @@ public class ExpressionInterpreter
         @Override
         protected Object visitLiteral(Literal node, Object context)
         {
-            return LiteralInterpreter.evaluate(plannerContext, session, expressionTypes, node);
+            return literalInterpreter.evaluate(node, type(node));
         }
 
         @Override
@@ -546,7 +550,6 @@ public class ExpressionInterpreter
 
         private List<Object> processOperands(CoalesceExpression node, Object context)
         {
-            Type type = type(node);
             List<Object> newOperands = new ArrayList<>();
             Set<Expression> uniqueNewOperands = new HashSet<>();
             for (Expression operand : node.getOperands()) {
@@ -559,14 +562,18 @@ public class ExpressionInterpreter
                             newOperands.add(nestedOperand);
                         }
                         // This operand can be evaluated to a non-null value. Remaining operands can be skipped.
-                        if (nestedOperand instanceof Literal) {
+                        if (isEffectivelyLiteral(plannerContext, session, nestedOperand)) {
+                            verify(
+                                    !(nestedOperand instanceof NullLiteral) && !(nestedOperand instanceof Cast && ((Cast) nestedOperand).getExpression() instanceof NullLiteral),
+                                    "Null operand should have been removed by recursive coalesce processing");
                             return newOperands;
                         }
                     }
                 }
                 else if (value instanceof Expression) {
+                    verify(!(value instanceof NullLiteral), "Null value is expected to be represented as null, not NullLiteral");
                     // Skip duplicates unless they are non-deterministic.
-                    Expression expression = toExpression(value, type);
+                    Expression expression = (Expression) value;
                     if (!isDeterministic(expression, metadata) || uniqueNewOperands.add(expression)) {
                         newOperands.add(expression);
                     }
@@ -598,27 +605,29 @@ public class ExpressionInterpreter
                 return null;
             }
 
-            Set<?> set = inListCache.get(valueList);
+            if (!(value instanceof Expression)) {
+                Set<?> set = inListCache.get(valueList);
 
-            // We use the presence of the node in the map to indicate that we've already done
-            // the analysis below. If the value is null, it means that we can't apply the HashSet
-            // optimization
-            if (!inListCache.containsKey(valueList)) {
-                if (valueList.getValues().stream().allMatch(Literal.class::isInstance) &&
-                        valueList.getValues().stream().noneMatch(NullLiteral.class::isInstance)) {
-                    Set<Object> objectSet = valueList.getValues().stream().map(expression -> processWithExceptionHandling(expression, context)).collect(Collectors.toSet());
-                    Type type = type(node.getValue());
-                    set = FastutilSetHelper.toFastutilHashSet(
-                            objectSet,
-                            type,
-                            metadata.getScalarFunctionInvoker(metadata.resolveOperator(session, HASH_CODE, ImmutableList.of(type)), simpleConvention(FAIL_ON_NULL, NEVER_NULL)).getMethodHandle(),
-                            metadata.getScalarFunctionInvoker(metadata.resolveOperator(session, EQUAL, ImmutableList.of(type, type)), simpleConvention(NULLABLE_RETURN, NEVER_NULL, NEVER_NULL)).getMethodHandle());
+                // We use the presence of the node in the map to indicate that we've already done
+                // the analysis below. If the value is null, it means that we can't apply the HashSet
+                // optimization
+                if (!inListCache.containsKey(valueList)) {
+                    if (valueList.getValues().stream().allMatch(Literal.class::isInstance) &&
+                            valueList.getValues().stream().noneMatch(NullLiteral.class::isInstance)) {
+                        Set<Object> objectSet = valueList.getValues().stream().map(expression -> processWithExceptionHandling(expression, context)).collect(Collectors.toSet());
+                        Type type = type(node.getValue());
+                        set = FastutilSetHelper.toFastutilHashSet(
+                                objectSet,
+                                type,
+                                plannerContext.getFunctionManager().getScalarFunctionInvoker(metadata.resolveOperator(session, HASH_CODE, ImmutableList.of(type)), simpleConvention(FAIL_ON_NULL, NEVER_NULL)).getMethodHandle(),
+                                plannerContext.getFunctionManager().getScalarFunctionInvoker(metadata.resolveOperator(session, EQUAL, ImmutableList.of(type, type)), simpleConvention(NULLABLE_RETURN, NEVER_NULL, NEVER_NULL)).getMethodHandle());
+                    }
+                    inListCache.put(valueList, set);
                 }
-                inListCache.put(valueList, set);
-            }
 
-            if (set != null && !(value instanceof Expression)) {
-                return set.contains(value);
+                if (set != null) {
+                    return set.contains(value);
+                }
             }
 
             boolean hasUnresolvedValue = value instanceof Expression;
@@ -629,6 +638,14 @@ public class ExpressionInterpreter
 
             ResolvedFunction equalsOperator = metadata.resolveOperator(session, OperatorType.EQUAL, types(node.getValue(), valueList));
             for (Expression expression : valueList.getValues()) {
+                if (value instanceof Expression && expression instanceof Literal) {
+                    // skip interpreting of literal IN term since it cannot be compared
+                    // with unresolved "value" and it cannot be simplified further
+                    values.add(expression);
+                    types.add(type(expression));
+                    continue;
+                }
+
                 // Use process() instead of processWithExceptionHandling() for processing in-list items.
                 // Do not handle exceptions thrown while processing a single in-list expression,
                 // but fail the whole in-predicate evaluation.
@@ -664,11 +681,11 @@ public class ExpressionInterpreter
                 Type type = type(node.getValue());
                 List<Expression> expressionValues = toExpressions(values, types);
                 List<Expression> simplifiedExpressionValues = Stream.concat(
-                        expressionValues.stream()
-                                .filter(expression -> isDeterministic(expression, metadata))
-                                .distinct(),
-                        expressionValues.stream()
-                                .filter((expression -> !isDeterministic(expression, metadata))))
+                                expressionValues.stream()
+                                        .filter(expression -> isDeterministic(expression, metadata))
+                                        .distinct(),
+                                expressionValues.stream()
+                                        .filter((expression -> !isDeterministic(expression, metadata))))
                         .collect(toImmutableList());
 
                 if (simplifiedExpressionValues.size() == 1) {
@@ -729,7 +746,7 @@ public class ExpressionInterpreter
                 case MINUS:
                     ResolvedFunction resolvedOperator = metadata.resolveOperator(session, OperatorType.NEGATION, types(node.getValue()));
                     InvocationConvention invocationConvention = new InvocationConvention(ImmutableList.of(NEVER_NULL), FAIL_ON_NULL, true, false);
-                    MethodHandle handle = metadata.getScalarFunctionInvoker(resolvedOperator, invocationConvention).getMethodHandle();
+                    MethodHandle handle = plannerContext.getFunctionManager().getScalarFunctionInvoker(resolvedOperator, invocationConvention).getMethodHandle();
 
                     if (handle.type().parameterCount() > 0 && handle.type().parameterType(0) == ConnectorSession.class) {
                         handle = handle.bindTo(connectorSession);
@@ -1037,7 +1054,7 @@ public class ExpressionInterpreter
             }
 
             // do not optimize non-deterministic functions
-            if (optimize && (!metadata.getFunctionMetadata(resolvedFunction).isDeterministic() ||
+            if (optimize && (!metadata.getFunctionMetadata(session, resolvedFunction).isDeterministic() ||
                     hasUnresolvedValue(argumentValues) ||
                     isDynamicFilter(node) ||
                     resolvedFunction.getSignature().getName().equals("fail"))) {
@@ -1207,11 +1224,11 @@ public class ExpressionInterpreter
                 StringLiteral pattern = (StringLiteral) node.getPattern();
 
                 if (node.getEscape().isPresent()) {
-                    Slice escape = ((StringLiteral) node.getEscape().get()).getSlice();
-                    result = LikeFunctions.likePattern(pattern.getSlice(), escape);
+                    Slice escape = Slices.utf8Slice(((StringLiteral) node.getEscape().get()).getValue());
+                    result = LikeFunctions.likePattern(Slices.utf8Slice(pattern.getValue()), escape);
                 }
                 else {
-                    result = LikeFunctions.compileLikePattern(pattern.getSlice());
+                    result = LikeFunctions.compileLikePattern(Slices.utf8Slice(pattern.getValue()));
                 }
 
                 likePatternCache.put(node, result);

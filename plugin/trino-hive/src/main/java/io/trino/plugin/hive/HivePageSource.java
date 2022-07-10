@@ -45,6 +45,7 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.VarcharType;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
@@ -62,6 +63,7 @@ import java.util.function.Function;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.hive.HiveColumnHandle.isRowIdColumnHandle;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CURSOR_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_BUCKET_FILES;
@@ -243,11 +245,11 @@ public class HivePageSource
             return page;
         }
         catch (TrinoException e) {
-            closeWithSuppression(e);
+            closeAllSuppress(e, this);
             throw e;
         }
         catch (RuntimeException e) {
-            closeWithSuppression(e);
+            closeAllSuppress(e, this);
             throw new TrinoException(HIVE_CURSOR_ERROR, e);
         }
     }
@@ -270,29 +272,15 @@ public class HivePageSource
     }
 
     @Override
-    public long getSystemMemoryUsage()
+    public long getMemoryUsage()
     {
-        return delegate.getSystemMemoryUsage();
+        return delegate.getMemoryUsage();
     }
 
     @Override
     public Metrics getMetrics()
     {
         return delegate.getMetrics();
-    }
-
-    protected void closeWithSuppression(Throwable throwable)
-    {
-        requireNonNull(throwable, "throwable is null");
-        try {
-            close();
-        }
-        catch (RuntimeException e) {
-            // Self-suppression not permitted
-            if (throwable != e) {
-                throwable.addSuppressed(e);
-            }
-        }
     }
 
     public ConnectorPageSource getPageSource()
@@ -362,6 +350,11 @@ public class HivePageSource
             return Optional.of(new MapCoercer(typeManager, fromHiveType, toHiveType));
         }
         if (isRowType(fromType) && isRowType(toType)) {
+            if (fromHiveType.getCategory() == ObjectInspector.Category.UNION || toHiveType.getCategory() == ObjectInspector.Category.UNION) {
+                HiveType fromHiveTypeStruct = HiveType.toHiveType(fromType);
+                HiveType toHiveTypeStruct = HiveType.toHiveType(toType);
+                return Optional.of(new StructCoercer(typeManager, fromHiveTypeStruct, toHiveTypeStruct));
+            }
             return Optional.of(new StructCoercer(typeManager, fromHiveType, toHiveType));
         }
 

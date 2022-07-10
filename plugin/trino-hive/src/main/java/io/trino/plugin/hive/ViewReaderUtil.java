@@ -13,14 +13,13 @@
  */
 package io.trino.plugin.hive;
 
-import com.linkedin.coral.hive.hive2rel.HiveMetastoreClient;
+import com.linkedin.coral.common.HiveMetastoreClient;
 import com.linkedin.coral.hive.hive2rel.HiveToRelConverter;
 import com.linkedin.coral.trino.rel2trino.RelToTrinoConverter;
 import io.airlift.json.JsonCodec;
 import io.airlift.json.JsonCodecFactory;
 import io.airlift.json.ObjectMapperProvider;
 import io.trino.plugin.base.CatalogName;
-import io.trino.plugin.hive.authentication.HiveIdentity;
 import io.trino.plugin.hive.metastore.Column;
 import io.trino.plugin.hive.metastore.CoralSemiTransactionalHiveMSCAdapter;
 import io.trino.plugin.hive.metastore.SemiTransactionalHiveMetastore;
@@ -42,6 +41,7 @@ import org.apache.hadoop.hive.metastore.TableType;
 import java.util.Base64;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.BiFunction;
 
@@ -50,7 +50,7 @@ import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_VIEW_DATA;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_VIEW_TRANSLATION_ERROR;
 import static io.trino.plugin.hive.HiveMetadata.TABLE_COMMENT;
-import static io.trino.plugin.hive.HiveSessionProperties.isLegacyHiveViewTranslation;
+import static io.trino.plugin.hive.HiveSessionProperties.isHiveViewsLegacyTranslation;
 import static io.trino.plugin.hive.HiveStorageFormat.TEXTFILE;
 import static io.trino.plugin.hive.HiveType.toHiveType;
 import static io.trino.plugin.hive.metastore.StorageFormat.fromHiveStorageFormat;
@@ -78,18 +78,20 @@ public final class ViewReaderUtil
             Table table,
             TypeManager typeManager,
             BiFunction<ConnectorSession, SchemaTableName, Optional<CatalogSchemaTableName>> tableRedirectionResolver,
-            MetadataProvider metadataProvider)
+            MetadataProvider metadataProvider,
+            boolean runHiveViewRunAsInvoker)
     {
         if (isPrestoView(table)) {
             return new PrestoViewReader();
         }
-        if (isLegacyHiveViewTranslation(session)) {
-            return new LegacyHiveViewReader();
+        if (isHiveViewsLegacyTranslation(session)) {
+            return new LegacyHiveViewReader(runHiveViewRunAsInvoker);
         }
 
         return new HiveViewReader(
-                new CoralSemiTransactionalHiveMSCAdapter(metastore, new HiveIdentity(session), coralTableRedirectionResolver(session, tableRedirectionResolver, metadataProvider)),
-                typeManager);
+                new CoralSemiTransactionalHiveMSCAdapter(metastore, coralTableRedirectionResolver(session, tableRedirectionResolver, metadataProvider)),
+                typeManager,
+                runHiveViewRunAsInvoker);
     }
 
     private static CoralTableRedirectionResolver coralTableRedirectionResolver(
@@ -119,6 +121,7 @@ public final class ViewReaderUtil
         });
     }
 
+    public static final String ICEBERG_MATERIALIZED_VIEW_COMMENT = "Presto Materialized View";
     public static final String PRESTO_VIEW_FLAG = "presto_view";
     static final String VIEW_PREFIX = "/* Presto View: ";
     static final String VIEW_SUFFIX = " */";
@@ -127,12 +130,27 @@ public final class ViewReaderUtil
 
     public static boolean isPrestoView(Table table)
     {
-        return "true".equals(table.getParameters().get(PRESTO_VIEW_FLAG));
+        return isPrestoView(table.getParameters());
+    }
+
+    public static boolean isPrestoView(Map<String, String> tableParameters)
+    {
+        return "true".equals(tableParameters.get(PRESTO_VIEW_FLAG));
     }
 
     public static boolean isHiveOrPrestoView(Table table)
     {
-        return table.getTableType().equals(TableType.VIRTUAL_VIEW.name());
+        return isHiveOrPrestoView(table.getTableType());
+    }
+
+    public static boolean isHiveOrPrestoView(String tableType)
+    {
+        return tableType.equals(TableType.VIRTUAL_VIEW.name());
+    }
+
+    public static boolean isTrinoMaterializedView(String tableType, Map<String, String> tableParameters)
+    {
+        return isHiveOrPrestoView(tableType) && isPrestoView(tableParameters) && tableParameters.get(TABLE_COMMENT).equalsIgnoreCase(ICEBERG_MATERIALIZED_VIEW_COMMENT);
     }
 
     public static boolean canDecodeView(Table table)
@@ -157,6 +175,11 @@ public final class ViewReaderUtil
         @Override
         public ConnectorViewDefinition decodeViewData(String viewData, Table table, CatalogName catalogName)
         {
+            return decodeViewData(viewData);
+        }
+
+        public static ConnectorViewDefinition decodeViewData(String viewData)
+        {
             checkCondition(viewData.startsWith(VIEW_PREFIX), HIVE_INVALID_VIEW_DATA, "View data missing prefix: %s", viewData);
             checkCondition(viewData.endsWith(VIEW_SUFFIX), HIVE_INVALID_VIEW_DATA, "View data missing suffix: %s", viewData);
             viewData = viewData.substring(VIEW_PREFIX.length());
@@ -174,18 +197,20 @@ public final class ViewReaderUtil
     {
         private final HiveMetastoreClient metastoreClient;
         private final TypeManager typeManager;
+        private final boolean hiveViewsRunAsInvoker;
 
-        public HiveViewReader(HiveMetastoreClient hiveMetastoreClient, TypeManager typemanager)
+        public HiveViewReader(HiveMetastoreClient hiveMetastoreClient, TypeManager typeManager, boolean hiveViewsRunAsInvoker)
         {
             this.metastoreClient = requireNonNull(hiveMetastoreClient, "hiveMetastoreClient is null");
-            this.typeManager = requireNonNull(typemanager, "typeManager is null");
+            this.typeManager = requireNonNull(typeManager, "typeManager is null");
+            this.hiveViewsRunAsInvoker = hiveViewsRunAsInvoker;
         }
 
         @Override
         public ConnectorViewDefinition decodeViewData(String viewSql, Table table, CatalogName catalogName)
         {
             try {
-                HiveToRelConverter hiveToRelConverter = HiveToRelConverter.create(metastoreClient);
+                HiveToRelConverter hiveToRelConverter = new HiveToRelConverter(metastoreClient);
                 RelNode rel = hiveToRelConverter.convertView(table.getDatabaseName(), table.getTableName());
                 RelToTrinoConverter relToTrino = new RelToTrinoConverter();
                 String trinoSql = relToTrino.convert(rel);
@@ -202,7 +227,7 @@ public final class ViewReaderUtil
                         columns,
                         Optional.ofNullable(table.getParameters().get(TABLE_COMMENT)),
                         Optional.empty(),
-                        false);
+                        hiveViewsRunAsInvoker);
             }
             catch (RuntimeException e) {
                 throw new TrinoException(HIVE_VIEW_TRANSLATION_ERROR,

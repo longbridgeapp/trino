@@ -17,7 +17,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.slice.Slice;
-import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.BoundSignature;
 import io.trino.metadata.FunctionNullability;
 import io.trino.metadata.LiteralFunction;
@@ -31,8 +30,7 @@ import io.trino.spi.type.TimeZoneKey;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
-import io.trino.sql.analyzer.ExpressionAnalyzer;
-import io.trino.sql.analyzer.Scope;
+import io.trino.sql.ExpressionUtils;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.NodeRef;
 import io.trino.transaction.TestingTransactionManager;
@@ -49,11 +47,11 @@ import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.testing.Assertions.assertEqualsIgnoreCase;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.metadata.FunctionId.toFunctionId;
-import static io.trino.metadata.FunctionKind.SCALAR;
 import static io.trino.metadata.LiteralFunction.LITERAL_FUNCTION_NAME;
 import static io.trino.operator.scalar.JoniRegexpCasts.castVarcharToJoniRegexp;
 import static io.trino.operator.scalar.JsonFunctions.castVarcharToJsonPath;
 import static io.trino.operator.scalar.StringFunctions.castVarcharToCodePoints;
+import static io.trino.spi.function.FunctionKind.SCALAR;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.CharType.createCharType;
 import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
@@ -65,6 +63,7 @@ import static io.trino.spi.type.TypeSignatureParameter.typeVariable;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createVarcharType;
+import static io.trino.sql.ExpressionUtils.isEffectivelyLiteral;
 import static io.trino.sql.SqlFormatter.formatSql;
 import static io.trino.sql.planner.TestingPlannerContext.PLANNER_CONTEXT;
 import static io.trino.transaction.TransactionBuilder.transaction;
@@ -76,7 +75,6 @@ import static io.trino.type.Re2JRegexpType.RE2J_REGEXP_SIGNATURE;
 import static io.trino.type.UnknownType.UNKNOWN;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Collections.emptyMap;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
@@ -95,7 +93,11 @@ public class TestLiteralEncoder
 
     private final ResolvedFunction base64Function = new ResolvedFunction(
             new BoundSignature("from_base64", VARBINARY, ImmutableList.of(VARCHAR)),
-            toFunctionId(new Signature("from_base64", VARBINARY.getTypeSignature(), ImmutableList.of(new TypeSignature("varchar", typeVariable("x"))))),
+            toFunctionId(Signature.builder()
+                    .name("from_base64")
+                    .returnType(VARBINARY)
+                    .argumentType(new TypeSignature("varchar", typeVariable("x")))
+                    .build()),
             SCALAR,
             true,
             new FunctionNullability(false, ImmutableList.of(false)),
@@ -269,6 +271,7 @@ public class TestLiteralEncoder
     private void assertEncodeCaseInsensitively(Object value, Type type, String expected)
     {
         Expression expression = encoder.toExpression(TEST_SESSION, value, type);
+        assertTrue(isEffectivelyLiteral(PLANNER_CONTEXT, TEST_SESSION, expression), "isEffectivelyLiteral returned false for: " + expression);
         assertEquals(getExpressionType(expression), type);
         assertEquals(getExpressionValue(expression), value);
         assertEqualsIgnoreCase(formatSql(expression), expected);
@@ -277,6 +280,7 @@ public class TestLiteralEncoder
     private <T> void assertRoundTrip(T value, Type type, BiPredicate<T, T> predicate)
     {
         Expression expression = encoder.toExpression(TEST_SESSION, value, type);
+        assertTrue(isEffectivelyLiteral(PLANNER_CONTEXT, TEST_SESSION, expression), "isEffectivelyLiteral returned false for: " + expression);
         assertEquals(getExpressionType(expression), type);
         @SuppressWarnings("unchecked")
         T decodedValue = (T) getExpressionValue(expression);
@@ -301,18 +305,7 @@ public class TestLiteralEncoder
         return transaction(new TestingTransactionManager(), new AllowAllAccessControl())
                 .singleStatement()
                 .execute(TEST_SESSION, transactionSession -> {
-                    ExpressionAnalyzer expressionAnalyzer = ExpressionAnalyzer.createWithoutSubqueries(
-                            PLANNER_CONTEXT,
-                            new AllowAllAccessControl(),
-                            transactionSession,
-                            TypeProvider.empty(),
-                            emptyMap(),
-                            node -> new IllegalStateException("Unexpected node: " + node),
-                            WarningCollector.NOOP,
-                            false);
-                    expressionAnalyzer.analyze(expression, Scope.create());
-                    Map<NodeRef<Expression>, Type> expressionTypes = expressionAnalyzer.getExpressionTypes();
-                    return expressionTypes;
+                    return ExpressionUtils.getExpressionTypes(PLANNER_CONTEXT, transactionSession, expression, TypeProvider.empty());
                 });
     }
 

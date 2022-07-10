@@ -24,6 +24,7 @@ import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
+import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.statistics.TableStatistics;
 import io.trino.spi.type.Type;
@@ -84,6 +85,12 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public JdbcTableHandle getTableHandle(ConnectorSession session, PreparedQuery preparedQuery)
+    {
+        return delegate().getTableHandle(session, preparedQuery);
+    }
+
+    @Override
     public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
     {
         return delegate().getColumns(session, tableHandle);
@@ -117,6 +124,12 @@ public abstract class ForwardingJdbcClient
     public Optional<JdbcExpression> implementAggregation(ConnectorSession session, AggregateFunction aggregate, Map<String, ColumnHandle> assignments)
     {
         return delegate().implementAggregation(session, aggregate, assignments);
+    }
+
+    @Override
+    public Optional<String> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    {
+        return delegate().convertPredicate(session, expression, assignments);
     }
 
     @Override
@@ -234,6 +247,12 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
+    public TableStatistics getTableStatistics(ConnectorSession session, JdbcTableHandle handle)
+    {
+        return delegate().getTableStatistics(session, handle);
+    }
+
+    @Override
     public boolean supportsTopN(ConnectorSession session, JdbcTableHandle handle, List<JdbcSortItem> sortOrder)
     {
         return delegate().supportsTopN(session, handle, sortOrder);
@@ -255,6 +274,19 @@ public abstract class ForwardingJdbcClient
     public boolean isLimitGuaranteed(ConnectorSession session)
     {
         return delegate().isLimitGuaranteed(session);
+    }
+
+    @Override
+    public Optional<String> getTableComment(ResultSet resultSet)
+            throws SQLException
+    {
+        return delegate().getTableComment(resultSet);
+    }
+
+    @Override
+    public void setTableComment(ConnectorSession session, JdbcTableHandle handle, Optional<String> comment)
+    {
+        delegate().setTableComment(session, handle, comment);
     }
 
     @Override
@@ -288,7 +320,7 @@ public abstract class ForwardingJdbcClient
     }
 
     @Override
-    public void setTableProperties(ConnectorSession session, JdbcTableHandle handle, Map<String, Object> properties)
+    public void setTableProperties(ConnectorSession session, JdbcTableHandle handle, Map<String, Optional<Object>> properties)
     {
         delegate().setTableProperties(session, handle, properties);
     }
@@ -309,6 +341,12 @@ public abstract class ForwardingJdbcClient
     public void dropSchema(ConnectorSession session, String schemaName)
     {
         delegate().dropSchema(session, schemaName);
+    }
+
+    @Override
+    public void renameSchema(ConnectorSession session, String schemaName, String newSchemaName)
+    {
+        delegate().renameSchema(session, schemaName, newSchemaName);
     }
 
     @Override

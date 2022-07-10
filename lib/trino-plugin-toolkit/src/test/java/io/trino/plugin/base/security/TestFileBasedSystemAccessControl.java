@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.base.security;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
@@ -37,11 +38,12 @@ import javax.security.auth.kerberos.KerberosPrincipal;
 import java.io.File;
 import java.util.Collection;
 import java.util.EnumSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.io.Files.copy;
 import static io.trino.plugin.base.security.FileBasedAccessControlConfig.SECURITY_CONFIG_FILE;
 import static io.trino.plugin.base.security.FileBasedAccessControlConfig.SECURITY_REFRESH_PERIOD;
@@ -54,7 +56,6 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.util.Files.newTemporaryFile;
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertTrue;
 
 public class TestFileBasedSystemAccessControl
 {
@@ -115,6 +116,7 @@ public class TestFileBasedSystemAccessControl
     private static final String CREATE_MATERIALIZED_VIEW_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot create materialized view .*";
     private static final String DROP_MATERIALIZED_VIEW_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot drop materialized view .*";
     private static final String REFRESH_MATERIALIZED_VIEW_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot refresh materialized view .*";
+    private static final String SET_MATERIALIZED_VIEW_PROPERTIES_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot set properties of materialized view .*";
     private static final String GRANT_DELETE_PRIVILEGE_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot grant privilege DELETE on table .*";
     private static final String DENY_DELETE_PRIVILEGE_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot deny privilege DELETE on table .*";
     private static final String REVOKE_DELETE_PRIVILEGE_ACCESS_DENIED_MESSAGE = "Access Denied: Cannot revoke privilege DELETE on table .*";
@@ -141,14 +143,14 @@ public class TestFileBasedSystemAccessControl
         accessControl.checkCanDeleteFromTable(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
         accessControl.checkCanTruncateTable(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
 
-        accessControl.checkCanCreateTable(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
+        accessControl.checkCanCreateTable(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"), Map.of());
         accessControl.checkCanDropTable(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
         accessControl.checkCanTruncateTable(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
         accessControl.checkCanRenameTable(UNKNOWN,
                 new CatalogSchemaTableName("some-catalog", "unknown", "unknown"),
                 new CatalogSchemaTableName("some-catalog", "unknown", "new_unknown"));
 
-        accessControl.checkCanCreateMaterializedView(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
+        accessControl.checkCanCreateMaterializedView(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"), Map.of());
         accessControl.checkCanDropMaterializedView(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
         accessControl.checkCanRefreshMaterializedView(UNKNOWN, new CatalogSchemaTableName("some-catalog", "unknown", "unknown"));
 
@@ -365,8 +367,7 @@ public class TestFileBasedSystemAccessControl
         return EnumSet.allOf(Privilege.class)
                 .stream()
                 .flatMap(privilege -> Stream.of(true, false).map(grantOption -> new Object[] {privilege, grantOption}))
-                .collect(toImmutableList())
-                .toArray(new Object[0][0]);
+                .toArray(Object[][]::new);
     }
 
     @Test
@@ -564,8 +565,8 @@ public class TestFileBasedSystemAccessControl
     {
         SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-access-table.json");
 
-        accessControl.checkCanCreateMaterializedView(ADMIN, new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"));
-        assertAccessDenied(() -> accessControl.checkCanCreateMaterializedView(BOB, new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view")), CREATE_MATERIALIZED_VIEW_ACCESS_DENIED_MESSAGE);
+        accessControl.checkCanCreateMaterializedView(ADMIN, new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"), Map.of());
+        assertAccessDenied(() -> accessControl.checkCanCreateMaterializedView(BOB, new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"), Map.of()), CREATE_MATERIALIZED_VIEW_ACCESS_DENIED_MESSAGE);
     }
 
     @Test
@@ -575,6 +576,33 @@ public class TestFileBasedSystemAccessControl
 
         accessControl.checkCanRefreshMaterializedView(ADMIN, new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"));
         assertAccessDenied(() -> accessControl.checkCanRefreshMaterializedView(UNKNOWN, new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view")), REFRESH_MATERIALIZED_VIEW_ACCESS_DENIED_MESSAGE);
+    }
+
+    @Test
+    public void testTableRulesForCheckCanSetMaterializedViewProperties()
+    {
+        SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-access-table.json");
+
+        accessControl.checkCanSetMaterializedViewProperties(
+                ADMIN,
+                new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"),
+                ImmutableMap.of());
+        accessControl.checkCanSetMaterializedViewProperties(
+                ALICE,
+                new CatalogSchemaTableName("some-catalog", "aliceschema", "alice-materialized-view"),
+                ImmutableMap.of());
+        assertAccessDenied(
+                () -> accessControl.checkCanSetMaterializedViewProperties(
+                        ALICE,
+                        new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"),
+                        ImmutableMap.of()),
+                SET_MATERIALIZED_VIEW_PROPERTIES_ACCESS_DENIED_MESSAGE);
+        assertAccessDenied(
+                () -> accessControl.checkCanSetMaterializedViewProperties(
+                        BOB,
+                        new CatalogSchemaTableName("some-catalog", "bobschema", "bob-materialized-view"),
+                        ImmutableMap.of()),
+                SET_MATERIALIZED_VIEW_PROPERTIES_ACCESS_DENIED_MESSAGE);
     }
 
     @Test
@@ -656,6 +684,50 @@ public class TestFileBasedSystemAccessControl
 
         accessControl.checkCanRenameColumn(ADMIN, new CatalogSchemaTableName("some-catalog", "bobschema", "bobtable"));
         assertAccessDenied(() -> accessControl.checkCanRenameColumn(BOB, new CatalogSchemaTableName("some-catalog", "bobschema", "bobtable")), RENAME_COLUMNS_ACCESS_DENIED_MESSAGE);
+    }
+
+    @Test
+    public void testTableRulesForMixedGroupUsers()
+    {
+        SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-access-table-mixed-groups.json");
+
+        SystemSecurityContext userGroup1Group2 = new SystemSecurityContext(Identity.forUser("user_1_2")
+                .withGroups(ImmutableSet.of("group1", "group2")).build(), Optional.empty());
+        SystemSecurityContext userGroup2 = new SystemSecurityContext(Identity.forUser("user_2")
+                .withGroups(ImmutableSet.of("group2")).build(), Optional.empty());
+
+        assertEquals(
+                accessControl.getColumnMasks(
+                        userGroup1Group2,
+                        new CatalogSchemaTableName("some-catalog", "my_schema", "my_table"),
+                        "col_a",
+                        VARCHAR),
+                ImmutableList.of());
+
+        assertViewExpressionEquals(
+                accessControl.getColumnMasks(
+                        userGroup2,
+                        new CatalogSchemaTableName("some-catalog", "my_schema", "my_table"),
+                        "col_a",
+                        VARCHAR),
+                new ViewExpression(userGroup2.getIdentity().getUser(), Optional.of("some-catalog"), Optional.of("my_schema"), "'mask_a'"));
+
+        SystemSecurityContext userGroup1Group3 = new SystemSecurityContext(Identity.forUser("user_1_3")
+                .withGroups(ImmutableSet.of("group1", "group3")).build(), Optional.empty());
+        SystemSecurityContext userGroup3 = new SystemSecurityContext(Identity.forUser("user_3")
+                .withGroups(ImmutableSet.of("group3")).build(), Optional.empty());
+
+        assertEquals(
+                accessControl.getRowFilters(
+                        userGroup1Group3,
+                        new CatalogSchemaTableName("some-catalog", "my_schema", "my_table")),
+                ImmutableList.of());
+
+        assertViewExpressionEquals(
+                accessControl.getRowFilters(
+                        userGroup3,
+                        new CatalogSchemaTableName("some-catalog", "my_schema", "my_table")),
+                new ViewExpression(userGroup3.getIdentity().getUser(), Optional.of("some-catalog"), Optional.of("my_schema"), "country='US'"));
     }
 
     @Test
@@ -745,7 +817,7 @@ public class TestFileBasedSystemAccessControl
     @Test
     public void testCanSetUserOperations()
     {
-        SystemAccessControl accessControl = newFileBasedSystemAccessControl("catalog_principal.json");
+        SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-catalog_principal.json");
 
         try {
             accessControl.checkCanSetUser(Optional.empty(), alice.getUser());
@@ -780,7 +852,7 @@ public class TestFileBasedSystemAccessControl
         catch (AccessDeniedException expected) {
         }
 
-        SystemAccessControl accessControlNoPatterns = newFileBasedSystemAccessControl("catalog.json");
+        SystemAccessControl accessControlNoPatterns = newFileBasedSystemAccessControl("file-based-system-catalog.json");
         accessControlNoPatterns.checkCanSetUser(kerberosValidAlice.getPrincipal(), kerberosValidAlice.getUser());
     }
 
@@ -851,7 +923,7 @@ public class TestFileBasedSystemAccessControl
     @Test
     public void testQueryNotSet()
     {
-        SystemAccessControl accessControlManager = newFileBasedSystemAccessControl("catalog.json");
+        SystemAccessControl accessControlManager = newFileBasedSystemAccessControl("file-based-system-catalog.json");
 
         accessControlManager.checkCanExecuteQuery(new SystemSecurityContext(bob, queryId));
         accessControlManager.checkCanViewQueryOwnedBy(new SystemSecurityContext(bob, queryId), any);
@@ -939,7 +1011,7 @@ public class TestFileBasedSystemAccessControl
     @Test
     public void testSystemInformationNotSet()
     {
-        SystemAccessControl accessControlManager = newFileBasedSystemAccessControl("catalog.json");
+        SystemAccessControl accessControlManager = newFileBasedSystemAccessControl("file-based-system-catalog.json");
 
         assertThatThrownBy(() -> accessControlManager.checkCanReadSystemInformation(new SystemSecurityContext(bob, Optional.empty())))
                 .isInstanceOf(AccessDeniedException.class)
@@ -974,7 +1046,7 @@ public class TestFileBasedSystemAccessControl
     @Test
     public void testSchemaOperations()
     {
-        SystemAccessControl accessControl = newFileBasedSystemAccessControl("catalog.json");
+        SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-catalog.json");
 
         TrinoPrincipal user = new TrinoPrincipal(PrincipalType.USER, "some_user");
         TrinoPrincipal role = new TrinoPrincipal(PrincipalType.ROLE, "some_user");
@@ -1240,15 +1312,15 @@ public class TestFileBasedSystemAccessControl
         SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-access-table.json");
 
         assertEquals(
-                accessControl.getColumnMask(
+                accessControl.getColumnMasks(
                         ALICE,
                         new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns"),
                         "masked",
                         VARCHAR),
-                Optional.empty());
+                ImmutableList.of());
 
         assertViewExpressionEquals(
-                accessControl.getColumnMask(
+                accessControl.getColumnMasks(
                         CHARLIE,
                         new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns"),
                         "masked",
@@ -1256,7 +1328,7 @@ public class TestFileBasedSystemAccessControl
                 new ViewExpression(CHARLIE.getIdentity().getUser(), Optional.of("some-catalog"), Optional.of("bobschema"), "'mask'"));
 
         assertViewExpressionEquals(
-                accessControl.getColumnMask(
+                accessControl.getColumnMasks(
                         CHARLIE,
                         new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns"),
                         "masked_with_user",
@@ -1270,22 +1342,22 @@ public class TestFileBasedSystemAccessControl
         SystemAccessControl accessControl = newFileBasedSystemAccessControl("file-based-system-access-table.json");
 
         assertEquals(
-                accessControl.getRowFilter(ALICE, new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns")),
-                Optional.empty());
+                accessControl.getRowFilters(ALICE, new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns")),
+                ImmutableList.of());
 
         assertViewExpressionEquals(
-                accessControl.getRowFilter(CHARLIE, new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns")),
+                accessControl.getRowFilters(CHARLIE, new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns")),
                 new ViewExpression(CHARLIE.getIdentity().getUser(), Optional.of("some-catalog"), Optional.of("bobschema"), "starts_with(value, 'filter')"));
 
         assertViewExpressionEquals(
-                accessControl.getRowFilter(CHARLIE, new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns_with_grant")),
+                accessControl.getRowFilters(CHARLIE, new CatalogSchemaTableName("some-catalog", "bobschema", "bobcolumns_with_grant")),
                 new ViewExpression("filter-user", Optional.of("some-catalog"), Optional.of("bobschema"), "starts_with(value, 'filter-with-user')"));
     }
 
-    private static void assertViewExpressionEquals(Optional<ViewExpression> result, ViewExpression expected)
+    private static void assertViewExpressionEquals(List<ViewExpression> result, ViewExpression expected)
     {
-        assertTrue(result.isPresent());
-        ViewExpression actual = result.get();
+        assertEquals(result.size(), 1);
+        ViewExpression actual = result.get(0);
         assertEquals(actual.getIdentity(), expected.getIdentity(), "Identity");
         assertEquals(actual.getCatalog(), expected.getCatalog(), "Catalog");
         assertEquals(actual.getSchema(), expected.getSchema(), "Schema");
@@ -1308,7 +1380,7 @@ public class TestFileBasedSystemAccessControl
     {
         File configFile = newTemporaryFile();
         configFile.deleteOnExit();
-        copy(new File(getResourcePath("catalog.json")), configFile);
+        copy(new File(getResourcePath("file-based-system-catalog.json")), configFile);
 
         SystemAccessControl accessControl = newFileBasedSystemAccessControl(ImmutableMap.of(
                 SECURITY_CONFIG_FILE, configFile.getAbsolutePath(),
@@ -1319,7 +1391,7 @@ public class TestFileBasedSystemAccessControl
         accessControl.checkCanCreateView(alice, aliceView);
         accessControl.checkCanCreateView(alice, aliceView);
 
-        copy(new File(getResourcePath("security-config-file-with-unknown-rules.json")), configFile);
+        copy(new File(getResourcePath("file-based-system-security-config-file-with-unknown-rules.json")), configFile);
         sleep(2);
 
         assertThatThrownBy(() -> accessControl.checkCanCreateView(alice, aliceView))
@@ -1331,7 +1403,7 @@ public class TestFileBasedSystemAccessControl
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageStartingWith("Invalid JSON file");
 
-        copy(new File(getResourcePath("catalog.json")), configFile);
+        copy(new File(getResourcePath("file-based-system-catalog.json")), configFile);
         sleep(2);
 
         accessControl.checkCanCreateView(alice, aliceView);
@@ -1340,7 +1412,7 @@ public class TestFileBasedSystemAccessControl
     @Test
     public void parseUnknownRules()
     {
-        assertThatThrownBy(() -> newFileBasedSystemAccessControl("security-config-file-with-unknown-rules.json"))
+        assertThatThrownBy(() -> newFileBasedSystemAccessControl("file-based-system-security-config-file-with-unknown-rules.json"))
                 .hasMessageContaining("Invalid JSON");
     }
 

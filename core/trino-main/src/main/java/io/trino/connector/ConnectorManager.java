@@ -194,9 +194,14 @@ public class ConnectorManager
         return createCatalog(catalogName, connectorFactory, properties);
     }
 
-    public synchronized void refreshConnector(String key, CatalogEntity catalogEntity){
+    public synchronized void refreshConnector(String key, List<CatalogEntity> catalogEntitys){
+        CatalogEntity catalogEntity = catalogEntitys.get(0);
         if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
             this.createCatalog(catalogEntity.getCatalogName(), catalogEntity.getConnectorName(), catalogEntity.getProperties());
+        }else if(CatalogOperationEnum.CATALOG_MUL_ADD.getKey().equals(key)){
+            for(CatalogEntity entity : catalogEntitys){
+                this.createCatalog(entity.getCatalogName(), entity.getConnectorName(), entity.getProperties());
+            }
         }else if(CatalogOperationEnum.CATALOG_UPDATE.getKey().equals(key)){
             String removedCatalog = catalogEntity.getCatalogName();
             if(catalogEntity.getOrigCatalogName()!=null

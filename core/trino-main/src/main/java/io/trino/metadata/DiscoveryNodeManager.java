@@ -399,7 +399,8 @@ public final class DiscoveryNodeManager
         return Boolean.parseBoolean(service.getProperties().get("coordinator"));
     }
 
-    public synchronized void updateCatalogToActiveConnectorNodes(String key, CatalogEntity catalogEntity){
+    public synchronized void updateCatalogToActiveConnectorNodes(String key, List<CatalogEntity> catalogEntitys){
+        CatalogEntity catalogEntity = catalogEntitys.get(0);
         CatalogName systemCatalog = new CatalogName("system");
         // 获取集群节点的信息
         Set<InternalNode> nodes = activeNodesByCatalogName.get(systemCatalog);
@@ -410,6 +411,13 @@ public final class DiscoveryNodeManager
         if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
             activeNodesByCatalogName.putAll(catalog,nodes);
             restApiAddedCatalogNameList.add(catalog);
+        }else if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+            for(CatalogEntity entity : catalogEntitys){
+                String cName = entity.getCatalogName();
+                CatalogName cKey = new CatalogName(cName);
+                activeNodesByCatalogName.putAll(cKey,nodes);
+                restApiAddedCatalogNameList.add(cKey);
+            }
         }else if(CatalogOperationEnum.CATALOG_UPDATE.getKey().equals(key)){
             String removedCatalogName = catalogName;
             if(catalogEntity.getOrigCatalogName()!=null

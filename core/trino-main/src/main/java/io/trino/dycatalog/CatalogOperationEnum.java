@@ -16,6 +16,7 @@ package io.trino.dycatalog;
 public enum CatalogOperationEnum {
 
     CATALOG_ADD("CATALOG_ADD"),
+    CATALOG_MUL_ADD("CATALOG_MUL_ADD"),
     CATALOG_DELETE("CATALOG_DELETE"),
     CATALOG_UPDATE("CATALOG_UPDATE")
     ;

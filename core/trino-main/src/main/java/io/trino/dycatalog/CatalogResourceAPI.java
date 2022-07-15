@@ -23,6 +23,7 @@ import io.trino.metadata.Catalog;
 import io.trino.metadata.CatalogManager;
 import io.trino.metadata.DiscoveryNodeManager;
 import io.trino.server.security.ResourceSecurity;
+import org.testng.collections.Lists;
 
 import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;
@@ -32,6 +33,7 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -74,7 +76,21 @@ public class CatalogResourceAPI
     {
         requireNonNull(catalogEntity, "catalogInfo is null");
         log.info("### RestApi Add Catalog %s using connector %s --", catalogEntity.getCatalogName(), catalogEntity.getConnectorName());
-        refreshConnector(CatalogOperationEnum.CATALOG_ADD.getKey(), catalogEntity);
+        refreshConnector(CatalogOperationEnum.CATALOG_ADD.getKey(), Lists.newArrayList(catalogEntity));
+        return Response.status(Response.Status.OK).entity("success").build();
+    }
+
+    @ResourceSecurity(PUBLIC)
+    @POST
+    @Path("/addCatalogs")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response createCatalogs(CatalogEntitySet catalogEntitySet)
+    {
+        requireNonNull(catalogEntitySet, "catalogEntitySet is null");
+
+        log.info("### RestApi Add Catalogs");
+        refreshConnector(CatalogOperationEnum.CATALOG_MUL_ADD.getKey(), catalogEntitySet.getCatalogEntitys());
         return Response.status(Response.Status.OK).entity("success").build();
     }
 
@@ -86,7 +102,7 @@ public class CatalogResourceAPI
     public Response removeCatalog(CatalogEntity catalogEntity){
         String catalogName = catalogEntity.getCatalogName();
         log.info("### RestApi Remove Catalog %s ", catalogName);
-        refreshConnector(CatalogOperationEnum.CATALOG_DELETE.getKey(), catalogEntity);
+        refreshConnector(CatalogOperationEnum.CATALOG_DELETE.getKey(), Lists.newArrayList(catalogEntity));
         return Response.status(Response.Status.OK).entity("success").build();
     }
 
@@ -103,8 +119,20 @@ public class CatalogResourceAPI
         }else{
             log.info("### RestApi update Catalog %s ", catalogName);
         }
-        refreshConnector(CatalogOperationEnum.CATALOG_UPDATE.getKey(), catalogEntity);
+        refreshConnector(CatalogOperationEnum.CATALOG_UPDATE.getKey(), Lists.newArrayList(catalogEntity));
         return Response.status(Response.Status.OK).entity("success").build();
+    }
+
+    @ResourceSecurity(PUBLIC)
+    @POST
+    @Path("/searchCatalog")
+    @Consumes(MediaType.APPLICATION_JSON)
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response searchCatalog(CatalogEntity catalogEntity)
+    {
+        requireNonNull(catalogEntity, "catalogInfo is null");
+        log.info("### RestApi search Catalog %s --", catalogEntity.getCatalogName());
+        return Response.status(Response.Status.OK).entity(catalogManager.getCatalog(catalogEntity.getCatalogName())).build();
     }
 
     @ResourceSecurity(PUBLIC)
@@ -115,12 +143,12 @@ public class CatalogResourceAPI
         return Response.status(Response.Status.OK).entity("pong").build();
     }
 
-    private void refreshConnector(String key, CatalogEntity catalogEntity){
+    private void refreshConnector(String key, List<CatalogEntity> catalogEntitys){
         // get existing announcement
         ServiceAnnouncement announcement = getTrinoAnnouncement(announcer.getServiceAnnouncements());
         Map<String, String> mapProperties = new HashMap<String,String>(announcement.getProperties());//？？？
         // 在ConnectorManager 中更新数据源实例的信息
-        connectorManager.refreshConnector(key, catalogEntity);
+        connectorManager.refreshConnector(key, catalogEntitys);
         // 基于更新的数据源实例信息，构建新的ServiceAnnouncement
         // automatically build connectorIds if not configured
         Set<String> connectorIds = catalogManager.getCatalogs().stream()
@@ -148,7 +176,7 @@ public class CatalogResourceAPI
         // 强制发出广播
         announcer.forceAnnounce();
         // 在心跳信息中更新数据源信息
-        discoveryNodeManager.updateCatalogToActiveConnectorNodes(key, catalogEntity);
+        discoveryNodeManager.updateCatalogToActiveConnectorNodes(key, catalogEntitys);
 
     }
 

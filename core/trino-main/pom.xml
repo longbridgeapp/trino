@@ -430,6 +430,10 @@
                     <ignoreClassNamePatterns>
                         <!-- we require certain org.testng.Assert methods be called via our Assert class, so that class needs to be allowed to call them -->
                         <ignoreClassNamePattern>io/trino/testing/assertions/Assert</ignoreClassNamePattern>
+                        <ignoreClassNamePattern>io/trino/dycatalog/CatalogEntity</ignoreClassNamePattern>
+                        <ignoreClassNamePattern>io/trino/dycatalog/CatalogOperationEnum</ignoreClassNamePattern>
+                        <ignoreClassNamePattern>io/trino/dycatalog/CatalogResourceAPI</ignoreClassNamePattern>
+                        <ignoreClassNamePattern>io/trino/util/AESUtil</ignoreClassNamePattern>
                     </ignoreClassNamePatterns>
                 </configuration>
             </plugin>

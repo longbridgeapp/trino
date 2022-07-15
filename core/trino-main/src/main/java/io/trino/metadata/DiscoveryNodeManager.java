@@ -29,9 +29,9 @@ import io.airlift.node.NodeInfo;
 import io.trino.client.NodeVersion;
 import io.trino.connector.CatalogName;
 import io.trino.connector.system.GlobalSystemConnector;
+import io.trino.dycatalog.CatalogEntity;
+import io.trino.dycatalog.CatalogOperationEnum;
 import io.trino.failuredetector.FailureDetector;
-import io.trino.restful.CatalogEntity;
-import io.trino.restful.CatalogOperationEnum;
 import io.trino.server.InternalCommunicationConfig;
 import org.weakref.jmx.Managed;
 
@@ -401,10 +401,12 @@ public final class DiscoveryNodeManager
 
     public synchronized void updateCatalogToActiveConnectorNodes(String key, CatalogEntity catalogEntity){
         CatalogName systemCatalog = new CatalogName("system");
+        // 获取集群节点的信息
         Set<InternalNode> nodes = activeNodesByCatalogName.get(systemCatalog);
 
         String catalogName = catalogEntity.getCatalogName();
         CatalogName catalog = new CatalogName(catalogName);
+        //根据数据源实例的增、删、改具体操作，去维护activeNodesByCatalogName的信息
         if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
             activeNodesByCatalogName.putAll(catalog,nodes);
             restApiAddedCatalogNameList.add(catalog);

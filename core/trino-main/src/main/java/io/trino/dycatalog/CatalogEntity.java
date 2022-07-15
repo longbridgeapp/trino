@@ -1,3 +1,4 @@
+package io.trino.dycatalog;
 /*
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -11,7 +12,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.trino.restful;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
@@ -19,27 +19,27 @@ import java.util.Map;
 import static java.util.Objects.requireNonNull;
 
 /**
- * @author duhanmin
+ * @author rock
  */
 public class CatalogEntity
 {
 
-    private final String catalogName;
+    private final String catalogName; // 数据源实例的名称
 
-    private final String connectorName;
+    private final String connectorName; // Trino数据源连接器的名称，这个名字是固定的，基于当前Trino的Plugin支持的数据源类型。
 
-    private final Map<String, String> properties;
+    private final Map<String, String> properties; // 连接器的属性信息
 
     //only when catalog update and catalog name is changed, the var has value
     private final String origCatalogName;
 
     @JsonCreator
     public CatalogEntity(
-            @JsonProperty("catalogName") String catalogName,
-            @JsonProperty("connectorName") String connectorName,
-            @JsonProperty("properties") Map<String, String> properties,
-            @JsonProperty("origCatalogName")  String origCatalogName
-    )
+        @JsonProperty("catalogName") String catalogName,
+        @JsonProperty("connectorName") String connectorName,
+        @JsonProperty("properties") Map<String, String> properties,
+        @JsonProperty("origCatalogName")  String origCatalogName
+        )
     {
         this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.connectorName = requireNonNull(connectorName, "connectorName is null");

@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
 import io.airlift.log.Logger;
 import io.trino.connector.ConnectorManager;
+import io.trino.util.AESUtil;
 
 import javax.inject.Inject;
 
@@ -85,8 +86,19 @@ public class StaticCatalogStore
         String connectorName = properties.remove("connector.name");
         checkState(connectorName != null, "Catalog configuration %s does not contain connector.name", file.getAbsoluteFile());
 
+        decryptPassword(properties);
+
         connectorManager.createCatalog(catalogName, connectorName, ImmutableMap.copyOf(properties));
         log.info("-- Added catalog %s using connector %s --", catalogName, connectorName);
+    }
+
+    // 解密
+    private void decryptPassword(Map<String, String> properties) {
+        String encryptPassword = properties.remove("encrypt-password");
+        String password = properties.get("connection-password");
+        if("true".equalsIgnoreCase(encryptPassword) && password != null && !"".equalsIgnoreCase(password.trim())){
+            properties.put("connection-password", AESUtil.decrypt(password));
+        }
     }
 
     private static List<File> listFiles(File installedPluginsDir)

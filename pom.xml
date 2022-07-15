@@ -79,6 +79,9 @@
         <air.test.jvmsize>3g</air.test.jvmsize>
 
         <air.javadoc.lint>-missing</air.javadoc.lint>
+
+        <air.check.fail-checkstyle>false</air.check.fail-checkstyle>
+        <air.check.skip-checkstyle>true</air.check.skip-checkstyle>
     </properties>
 
     <modules>

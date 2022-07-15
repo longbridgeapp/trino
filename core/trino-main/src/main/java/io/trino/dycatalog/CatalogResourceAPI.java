@@ -35,6 +35,7 @@ import javax.ws.rs.core.Response;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
@@ -132,7 +133,8 @@ public class CatalogResourceAPI
     {
         requireNonNull(catalogEntity, "catalogInfo is null");
         log.info("### RestApi search Catalog %s --", catalogEntity.getCatalogName());
-        return Response.status(Response.Status.OK).entity(catalogManager.getCatalog(catalogEntity.getCatalogName())).build();
+        Optional<Catalog> catalog = catalogManager.getCatalog(catalogEntity.getCatalogName());
+        return Response.status(Response.Status.OK).entity(catalog.isEmpty() ? null : catalog.get().toString()).build();
     }
 
     @ResourceSecurity(PUBLIC)

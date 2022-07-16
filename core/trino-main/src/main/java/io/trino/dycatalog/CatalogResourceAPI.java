@@ -14,6 +14,7 @@
 package io.trino.dycatalog;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.Lists;
 import com.google.inject.Inject;
 import io.airlift.discovery.client.Announcer;
 import io.airlift.discovery.client.ServiceAnnouncement;
@@ -23,7 +24,6 @@ import io.trino.metadata.Catalog;
 import io.trino.metadata.CatalogManager;
 import io.trino.metadata.DiscoveryNodeManager;
 import io.trino.server.security.ResourceSecurity;
-import org.testng.collections.Lists;
 
 import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;

@@ -222,7 +222,7 @@ public class ConnectorManager
             if(connectors.containsKey(rCatalog)){
                 connectors.remove(rCatalog);
             }
-            catalogManager.removeCatalog(catalogEntity.getCatalogName());
+            catalogManager.removeCatalog(catalogEntity.getCatalogName()); // catalogManager.getCatalog(catalogEntity.getCatalogName()).isEmpty()
         }
     }
 

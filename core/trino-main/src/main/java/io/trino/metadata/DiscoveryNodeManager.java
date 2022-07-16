@@ -411,7 +411,7 @@ public final class DiscoveryNodeManager
         if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
             activeNodesByCatalogName.putAll(catalog,nodes);
             restApiAddedCatalogNameList.add(catalog);
-        }else if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+        }else if(CatalogOperationEnum.CATALOG_MUL_ADD.getKey().equals(key)){
             for(CatalogEntity entity : catalogEntitys){
                 String cName = entity.getCatalogName();
                 CatalogName cKey = new CatalogName(cName);

@@ -78,6 +78,7 @@ public class CatalogResourceAPI
         requireNonNull(catalogEntity, "catalogInfo is null");
         log.info("### RestApi Add Catalog %s using connector %s --", catalogEntity.getCatalogName(), catalogEntity.getConnectorName());
         refreshConnector(CatalogOperationEnum.CATALOG_ADD.getKey(), Lists.newArrayList(catalogEntity));
+        refreshCatalogFile(CatalogOperationEnum.CATALOG_ADD.getKey(), Lists.newArrayList(catalogEntity));
         return Response.status(Response.Status.OK).entity("success").build();
     }
 
@@ -92,6 +93,7 @@ public class CatalogResourceAPI
 
         log.info("### RestApi Add Catalogs");
         refreshConnector(CatalogOperationEnum.CATALOG_MUL_ADD.getKey(), catalogEntitySet.getCatalogEntitys());
+        refreshCatalogFile(CatalogOperationEnum.CATALOG_MUL_ADD.getKey(), catalogEntitySet.getCatalogEntitys());
         return Response.status(Response.Status.OK).entity("success").build();
     }
 
@@ -121,6 +123,7 @@ public class CatalogResourceAPI
             log.info("### RestApi update Catalog %s ", catalogName);
         }
         refreshConnector(CatalogOperationEnum.CATALOG_UPDATE.getKey(), Lists.newArrayList(catalogEntity));
+        refreshCatalogFile(CatalogOperationEnum.CATALOG_UPDATE.getKey(), Lists.newArrayList(catalogEntity));
         return Response.status(Response.Status.OK).entity("success").build();
     }
 
@@ -191,4 +194,27 @@ public class CatalogResourceAPI
         }
         throw new IllegalArgumentException("Trino announcement not found: " + announcements);
     }
+
+    // 对本地calalog文件做增量
+    private void refreshCatalogFile(String key, List<CatalogEntity> catalogEntitys){
+        CatalogEntity catalogEntity = catalogEntitys.get(0);
+        if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+
+        }else if(CatalogOperationEnum.CATALOG_MUL_ADD.getKey().equals(key)){
+            for(CatalogEntity entity : catalogEntitys){
+
+            }
+        }else if(CatalogOperationEnum.CATALOG_UPDATE.getKey().equals(key)){
+            String removedCatalog = catalogEntity.getCatalogName();
+            if(catalogEntity.getOrigCatalogName()!=null
+                    && !"".equals(catalogEntity.getOrigCatalogName())){
+                String origCatalogName = catalogEntity.getOrigCatalogName();
+                removedCatalog = origCatalogName;
+            }
+
+        }else if(CatalogOperationEnum.CATALOG_DELETE.getKey().equals(key)){
+
+        }
+    }
+
 }

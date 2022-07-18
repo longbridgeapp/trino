@@ -15,6 +15,7 @@ package io.trino.dycatalog;
 
 import com.google.common.base.Joiner;
 import com.google.common.collect.Lists;
+import com.google.common.io.Files;
 import com.google.inject.Inject;
 import io.airlift.discovery.client.Announcer;
 import io.airlift.discovery.client.ServiceAnnouncement;
@@ -23,6 +24,7 @@ import io.trino.connector.ConnectorManager;
 import io.trino.metadata.Catalog;
 import io.trino.metadata.CatalogManager;
 import io.trino.metadata.DiscoveryNodeManager;
+import io.trino.metadata.StaticCatalogStore;
 import io.trino.server.security.ResourceSecurity;
 
 import javax.ws.rs.Consumes;
@@ -32,6 +34,9 @@ import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import java.io.File;
+import java.text.MessageFormat;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -53,18 +58,26 @@ public class CatalogResourceAPI
     private final Announcer announcer;
     private final CatalogManager catalogManager;
     private final DiscoveryNodeManager discoveryNodeManager;
+    private final StaticCatalogStore staticCatalogStore;
 
     Logger log = Logger.get(CatalogResourceAPI.class);
+
+    private final String CATALOG_CONTENT = "connector.name={0}\n" +
+            "connection-url={1}\n" +
+            "connection-user={2}\n" +
+            "connection-password={3}";
+
 
     @Inject
     public CatalogResourceAPI(ConnectorManager connectorManager,
                               Announcer announcer, CatalogManager catalogManager
-        , DiscoveryNodeManager discoveryNodeManager)
+        , DiscoveryNodeManager discoveryNodeManager,StaticCatalogStore staticCatalogStore)
     {
         this.connectorManager = requireNonNull(connectorManager, "connectorManager is null");
         this.announcer = requireNonNull(announcer, "announcer is null");
         this.catalogManager = requireNonNull(catalogManager, "catalogManager is null");
         this.discoveryNodeManager = requireNonNull(discoveryNodeManager, "discoveryNodeManager is null");
+        this.staticCatalogStore = requireNonNull(staticCatalogStore, "staticCatalogStore is null");
     }
 
     //method for add catalog
@@ -198,11 +211,38 @@ public class CatalogResourceAPI
     // 对本地calalog文件做增量
     private void refreshCatalogFile(String key, List<CatalogEntity> catalogEntitys){
         CatalogEntity catalogEntity = catalogEntitys.get(0);
-        if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+        if(!"mysql".equalsIgnoreCase(catalogEntity.getConnectorName()) && !"postgresql".equalsIgnoreCase(catalogEntity.getConnectorName()) && !CatalogOperationEnum.CATALOG_MUL_ADD.getKey().equals(key)) return;
 
+        List<String> fileNames = new ArrayList<>();
+        File catalogConfigurationDir = staticCatalogStore.getCatalogConfigurationDir();
+        for (File file : StaticCatalogStore.listFiles(catalogConfigurationDir)) {
+            if (file.isFile() && file.getName().endsWith(".properties")) {
+                fileNames.add(file.getName().replace(".properties",""));
+            }
+        }
+
+        File newCatalogFile = new File(catalogConfigurationDir.getPath()+File.separatorChar+catalogEntity.getCatalogName()+".properties");
+        String content = null;
+        if(!CatalogOperationEnum.CATALOG_DELETE.getKey().equals(key)){
+            final Map<String, String> properties = catalogEntity.getProperties();
+            final String connectionUrl = requireNonNull(properties.get("connection-url"), "connection-url is null");
+            final String connectionUser = requireNonNull(properties.get("connection-user"), "connection-user is null");
+            final String connectionPassword = requireNonNull(properties.get("connection-password"), "connection-password is null");
+            content = MessageFormat.format(CATALOG_CONTENT,catalogEntity.getConnectorName(),connectionUrl,connectionUser,connectionPassword);
+        }
+
+        requireNonNull(content, "content is null");
+        requireNonNull(newCatalogFile, "newCatalogFile is null");
+
+        if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
+            try{
+                Files.write(content.getBytes("UTF-8"),newCatalogFile);
+            }catch (Exception e){
+                log.error("写入失败，error：",e);
+            }
         }else if(CatalogOperationEnum.CATALOG_MUL_ADD.getKey().equals(key)){
             for(CatalogEntity entity : catalogEntitys){
-
+                if(!"mysql".equalsIgnoreCase(catalogEntity.getConnectorName()) && !"postgresql".equalsIgnoreCase(catalogEntity.getConnectorName())) return;
             }
         }else if(CatalogOperationEnum.CATALOG_UPDATE.getKey().equals(key)){
             String removedCatalog = catalogEntity.getCatalogName();
@@ -213,7 +253,7 @@ public class CatalogResourceAPI
             }
 
         }else if(CatalogOperationEnum.CATALOG_DELETE.getKey().equals(key)){
-
+            // 暂时不做删除操作
         }
     }
 

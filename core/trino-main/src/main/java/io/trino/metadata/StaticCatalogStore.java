@@ -101,7 +101,7 @@ public class StaticCatalogStore
         }
     }
 
-    private static List<File> listFiles(File installedPluginsDir)
+    public static List<File> listFiles(File installedPluginsDir)
     {
         if (installedPluginsDir != null && installedPluginsDir.isDirectory()) {
             File[] files = installedPluginsDir.listFiles();
@@ -110,5 +110,9 @@ public class StaticCatalogStore
             }
         }
         return ImmutableList.of();
+    }
+
+    public File getCatalogConfigurationDir() {
+        return catalogConfigurationDir;
     }
 }

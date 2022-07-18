@@ -236,7 +236,11 @@ public class CatalogResourceAPI
 
         if(CatalogOperationEnum.CATALOG_ADD.getKey().equals(key)){
             try{
-                Files.write(content.getBytes("UTF-8"),newCatalogFile);
+                if(!fileNames.contains(catalogEntity.getCatalogName())){
+                    Files.write(content.getBytes("UTF-8"),newCatalogFile);
+                }else{
+                    throw new UnsupportedOperationException();
+                }
             }catch (Exception e){
                 log.error("写入失败，error：",e);
             }

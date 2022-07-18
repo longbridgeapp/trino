@@ -26,6 +26,7 @@ import io.trino.metadata.CatalogManager;
 import io.trino.metadata.DiscoveryNodeManager;
 import io.trino.metadata.StaticCatalogStore;
 import io.trino.server.security.ResourceSecurity;
+import io.trino.util.AESUtil;
 
 import javax.ws.rs.Consumes;
 import javax.ws.rs.GET;
@@ -65,7 +66,8 @@ public class CatalogResourceAPI
     private final String CATALOG_CONTENT = "connector.name={0}\n" +
             "connection-url={1}\n" +
             "connection-user={2}\n" +
-            "connection-password={3}";
+            "connection-password={3}\n" +
+            "encrypt-password=true";
 
 
     @Inject
@@ -228,7 +230,7 @@ public class CatalogResourceAPI
             final String connectionUrl = requireNonNull(properties.get("connection-url"), "connection-url is null");
             final String connectionUser = requireNonNull(properties.get("connection-user"), "connection-user is null");
             final String connectionPassword = requireNonNull(properties.get("connection-password"), "connection-password is null");
-            content = MessageFormat.format(CATALOG_CONTENT,catalogEntity.getConnectorName(),connectionUrl,connectionUser,connectionPassword);
+            content = MessageFormat.format(CATALOG_CONTENT,catalogEntity.getConnectorName(),connectionUrl,connectionUser, AESUtil.encrypt(connectionPassword));
         }
 
         requireNonNull(content, "content is null");

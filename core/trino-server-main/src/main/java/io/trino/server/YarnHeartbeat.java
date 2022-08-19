@@ -13,6 +13,7 @@
  */
 package io.trino.server;
 
+import io.airlift.log.Logger;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import org.apache.bval.util.StringUtils;
@@ -24,6 +25,7 @@ import static com.google.common.base.MoreObjects.firstNonNull;
 
 public class YarnHeartbeat
 {
+    private static final Logger log = Logger.get(YarnHeartbeat.class);
     private static final Map<String, String> env = System.getenv();
     private static final String YARN_URL_API = "yarn_url_api";
     private static int num;
@@ -41,6 +43,7 @@ public class YarnHeartbeat
         if (env.containsKey(YARN_URL_API)) {
             String yarnUrlApi = env.get(YARN_URL_API);
             if (StringUtils.isNotBlank(yarnUrlApi)) {
+                log.info("Yarn url api: %s", yarnUrlApi);
                 this.yarn = true;
                 this.yarnUrlApi = yarnUrlApi;
             }

@@ -35,6 +35,12 @@ public final class TrinoServer
         }
 
         String version = TrinoServer.class.getPackage().getImplementationVersion();
-        new Server().start(firstNonNull(version, "unknown"));
+        YarnHeartbeat yarnHeartbeat = new YarnHeartbeat();
+        if (yarnHeartbeat.isYarn()) {
+            yarnHeartbeat.init(version);
+        }
+        else {
+            new Server().start(firstNonNull(version, "unknown"));
+        }
     }
 }

@@ -55,7 +55,7 @@ public class YarnHeartbeat
         main.start();
         while (heartbeat && num <= 2) {
             try {
-                Thread.sleep(1000);
+                Thread.sleep(5000);
                 Response execute = new OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build().newCall(new Request.Builder().url(yarnUrlApi).build()).execute();
             }
             catch (Exception e) {

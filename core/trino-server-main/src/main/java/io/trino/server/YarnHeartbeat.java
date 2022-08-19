@@ -43,7 +43,7 @@ public class YarnHeartbeat
         if (env.containsKey(YARN_URL_API)) {
             String yarnUrlApi = env.get(YARN_URL_API);
             if (StringUtils.isNotBlank(yarnUrlApi)) {
-                log.info("Yarn url api: %s", yarnUrlApi);
+                log.warn("Yarn url api: %s", yarnUrlApi);
                 this.yarn = true;
                 this.yarnUrlApi = yarnUrlApi;
             }

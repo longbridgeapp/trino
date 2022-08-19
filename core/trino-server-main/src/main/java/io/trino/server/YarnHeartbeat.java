@@ -15,7 +15,6 @@ package io.trino.server;
 
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
-import okhttp3.Response;
 import org.apache.bval.util.StringUtils;
 
 import java.util.Map;
@@ -56,7 +55,7 @@ public class YarnHeartbeat
         while (heartbeat && num <= 2) {
             try {
                 Thread.sleep(5000);
-                Response execute = new OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build().newCall(new Request.Builder().url(yarnUrlApi).build()).execute();
+                new OkHttpClient.Builder().readTimeout(5, TimeUnit.SECONDS).build().newCall(new Request.Builder().url(yarnUrlApi).build()).execute();
             }
             catch (Exception e) {
                 num++;

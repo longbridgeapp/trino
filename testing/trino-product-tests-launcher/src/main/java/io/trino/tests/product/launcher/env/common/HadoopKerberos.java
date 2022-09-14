@@ -51,8 +51,8 @@ public class HadoopKerberos
     {
         this.configDir = dockerFiles.getDockerFilesHostDirectory("common/hadoop-kerberos/");
         this.portBinder = requireNonNull(portBinder, "portBinder is null");
-        hadoopBaseImage = requireNonNull(environmentConfig, "environmentConfig is null").getHadoopBaseImage();
-        hadoopImagesVersion = requireNonNull(environmentConfig, "environmentConfig is null").getHadoopImagesVersion();
+        hadoopBaseImage = environmentConfig.getHadoopBaseImage();
+        hadoopImagesVersion = environmentConfig.getHadoopImagesVersion();
         this.hadoop = requireNonNull(hadoop, "hadoop is null");
     }
 
@@ -69,7 +69,10 @@ public class HadoopKerberos
             portBinder.exposePort(container, 7778);
             container
                     .withCreateContainerCmdModifier(createContainerCmd -> createContainerCmd.withDomainName("docker.cluster"))
-                    .withCopyFileToContainer(forHostPath(configDir.getPath("config.properties")), CONTAINER_PRESTO_CONFIG_PROPERTIES);
+                    .withCopyFileToContainer(forHostPath(configDir.getPath("config.properties")), CONTAINER_PRESTO_CONFIG_PROPERTIES)
+                    .withCopyFileToContainer(
+                            forHostPath(configDir.getPath("create_kerberos_credential_cache_files.sh")),
+                            "/docker/presto-init.d/create_kerberos_credentials.sh");
         });
         builder.configureContainer(TESTS, container -> {
             container.setDockerImageName(dockerImageName);

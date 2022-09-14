@@ -17,17 +17,26 @@ import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.node.NodeInfo;
 import io.airlift.stats.TestingGcMonitor;
+import io.airlift.testing.TestingTicker;
 import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
 import io.airlift.units.Duration;
+import io.trino.Session;
+import io.trino.connector.CatalogHandle;
+import io.trino.connector.CatalogProperties;
+import io.trino.connector.ConnectorServices;
+import io.trino.connector.ConnectorServicesProvider;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.buffer.BufferResult;
 import io.trino.execution.buffer.BufferState;
 import io.trino.execution.buffer.OutputBuffers;
 import io.trino.execution.buffer.OutputBuffers.OutputBufferId;
 import io.trino.execution.executor.TaskExecutor;
+import io.trino.execution.executor.TaskHandle;
 import io.trino.memory.LocalMemoryManager;
 import io.trino.memory.NodeMemoryConfig;
 import io.trino.memory.QueryContext;
@@ -45,10 +54,18 @@ import io.trino.version.EmbedVersion;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
-import java.net.URI;
-import java.util.Optional;
-import java.util.concurrent.TimeUnit;
+import javax.annotation.concurrent.GuardedBy;
 
+import java.net.URI;
+import java.util.List;
+import java.util.Optional;
+import java.util.OptionalInt;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Predicate;
+
+import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.SystemSessionProperties.QUERY_MAX_MEMORY_PER_NODE;
@@ -61,6 +78,7 @@ import static io.trino.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
 import static io.trino.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
 import static io.trino.execution.buffer.PagesSerde.getSerializedPagePositionCount;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
@@ -239,6 +257,53 @@ public class TestSqlTaskManager
     }
 
     @Test
+    public void testFailStuckSplitTasks()
+            throws InterruptedException, ExecutionException, TimeoutException
+    {
+        TestingTicker ticker = new TestingTicker();
+
+        TaskHandle taskHandle = taskExecutor.addTask(
+                TASK_ID,
+                () -> 1.0,
+                1,
+                new Duration(1, SECONDS),
+                OptionalInt.of(1));
+        MockSplitRunner mockSplitRunner = new MockSplitRunner();
+
+        TaskExecutor taskExecutor = new TaskExecutor(4, 8, 3, 4, ticker);
+        // Here we explicitly enqueue an indefinite running split runner
+        taskExecutor.enqueueSplits(taskHandle, false, ImmutableList.of(mockSplitRunner));
+        taskExecutor.start();
+
+        // wait for the task executor to start processing the split
+        mockSplitRunner.waitForStart();
+
+        TaskManagerConfig taskManagerConfig = new TaskManagerConfig()
+                .setInterruptStuckSplitTasksEnabled(true)
+                .setInterruptStuckSplitTasksDetectionInterval(new Duration(10, SECONDS))
+                .setInterruptStuckSplitTasksWarningThreshold(new Duration(10, SECONDS))
+                .setInterruptStuckSplitTasksTimeout(new Duration(10, SECONDS));
+
+        try (SqlTaskManager sqlTaskManager = createSqlTaskManager(taskManagerConfig, new NodeMemoryConfig(), taskExecutor, stackTraceElements -> true)) {
+            sqlTaskManager.addStateChangeListener(TASK_ID, (state) -> {
+                if (state.isDone()) {
+                    taskExecutor.removeTask(taskHandle);
+                }
+            });
+
+            ticker.increment(30, SECONDS);
+            sqlTaskManager.failStuckSplitTasks();
+
+            mockSplitRunner.waitForFinish();
+            assertEquals(sqlTaskManager.getAllTaskInfo().size(), 1);
+            assertEquals(sqlTaskManager.getAllTaskInfo().get(0).getTaskStatus().getState(), TaskState.FAILED);
+        }
+        finally {
+            taskExecutor.stop();
+        }
+    }
+
+    @Test
     public void testSessionPropertyMemoryLimitOverride()
     {
         NodeMemoryConfig memoryConfig = new NodeMemoryConfig()
@@ -295,6 +360,7 @@ public class TestSqlTaskManager
     {
         return new SqlTaskManager(
                 new EmbedVersion("testversion"),
+                new NoConnectorServicesProvider(),
                 createTestingPlanner(),
                 new MockLocationFactory(),
                 taskExecutor,
@@ -308,6 +374,31 @@ public class TestSqlTaskManager
                 new NodeSpillConfig(),
                 new TestingGcMonitor(),
                 new ExchangeManagerRegistry(new ExchangeHandleResolver()));
+    }
+
+    private SqlTaskManager createSqlTaskManager(
+            TaskManagerConfig taskManagerConfig,
+            NodeMemoryConfig nodeMemoryConfig,
+            TaskExecutor taskExecutor,
+            Predicate<List<StackTraceElement>> stuckSplitStackTracePredicate)
+    {
+        return new SqlTaskManager(
+                new EmbedVersion("testversion"),
+                new NoConnectorServicesProvider(),
+                createTestingPlanner(),
+                new MockLocationFactory(),
+                taskExecutor,
+                createTestSplitMonitor(),
+                new NodeInfo("test"),
+                localMemoryManager,
+                taskManagementExecutor,
+                taskManagerConfig,
+                nodeMemoryConfig,
+                localSpillManager,
+                new NodeSpillConfig(),
+                new TestingGcMonitor(),
+                new ExchangeManagerRegistry(new ExchangeHandleResolver()),
+                stuckSplitStackTracePredicate);
     }
 
     private TaskInfo createTask(SqlTaskManager sqlTaskManager, TaskId taskId, ImmutableSet<ScheduledSplit> splits, OutputBuffers outputBuffers)
@@ -372,6 +463,98 @@ public class TestSqlTaskManager
         public URI createMemoryInfoLocation(InternalNode node)
         {
             return URI.create("http://fake.invalid/" + node.getNodeIdentifier() + "/memory");
+        }
+    }
+
+    private static class MockSplitRunner
+            implements SplitRunner
+    {
+        private final SettableFuture<Void> startedFuture = SettableFuture.create();
+        private final SettableFuture<Void> finishedFuture = SettableFuture.create();
+
+        @GuardedBy("this")
+        private Thread runnerThread;
+        @GuardedBy("this")
+        private boolean closed;
+
+        public void waitForStart()
+                throws ExecutionException, InterruptedException, TimeoutException
+        {
+            startedFuture.get(10, SECONDS);
+        }
+
+        public void waitForFinish()
+                throws ExecutionException, InterruptedException, TimeoutException
+        {
+            finishedFuture.get(10, SECONDS);
+        }
+
+        @Override
+        public synchronized boolean isFinished()
+        {
+            return closed;
+        }
+
+        @Override
+        public ListenableFuture<Void> processFor(Duration duration)
+        {
+            startedFuture.set(null);
+            synchronized (this) {
+                runnerThread = Thread.currentThread();
+
+                if (closed) {
+                    finishedFuture.set(null);
+                    return immediateVoidFuture();
+                }
+            }
+
+            while (true) {
+                try {
+                    Thread.sleep(100000);
+                }
+                catch (InterruptedException e) {
+                    break;
+                }
+            }
+
+            synchronized (this) {
+                closed = true;
+            }
+            finishedFuture.set(null);
+
+            return immediateVoidFuture();
+        }
+
+        @Override
+        public String getInfo()
+        {
+            return "MockSplitRunner";
+        }
+
+        @Override
+        public synchronized void close()
+        {
+            closed = true;
+
+            if (runnerThread != null) {
+                runnerThread.interrupt();
+            }
+        }
+    }
+
+    private static class NoConnectorServicesProvider
+            implements ConnectorServicesProvider
+    {
+        @Override
+        public void loadInitialCatalogs() {}
+
+        @Override
+        public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs) {}
+
+        @Override
+        public ConnectorServices getConnectorServices(CatalogHandle catalogHandle)
+        {
+            throw new UnsupportedOperationException();
         }
     }
 }

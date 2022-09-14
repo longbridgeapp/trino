@@ -78,8 +78,8 @@ public final class ShardCompactor
     public ShardCompactor(StorageManager storageManager, StorageManagerConfig config, TypeManager typeManager)
     {
         this(storageManager,
-                requireNonNull(config, "config is null").toOrcReaderOptions(),
-                requireNonNull(typeManager, "typeManager is null").getTypeOperators());
+                config.toOrcReaderOptions(),
+                typeManager.getTypeOperators());
     }
 
     public ShardCompactor(StorageManager storageManager, OrcReaderOptions orcReaderOptions, TypeOperators typeOperators)

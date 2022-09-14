@@ -116,7 +116,7 @@ public class BinPackingNodeAllocatorService
             MemoryManagerConfig memoryManagerConfig)
     {
         this(nodeManager,
-                requireNonNull(clusterMemoryManager, "clusterMemoryManager is null")::getWorkerMemoryInfo,
+                clusterMemoryManager::getWorkerMemoryInfo,
                 nodeSchedulerConfig.isIncludeCoordinator(),
                 Duration.ofMillis(nodeSchedulerConfig.getAllowedNoMatchingNodePeriod().toMillis()),
                 memoryManagerConfig.getFaultTolerantExecutionTaskRuntimeMemoryEstimationOverhead(),
@@ -505,7 +505,7 @@ public class BinPackingNodeAllocatorService
         public ReserveResult tryReserve(PendingAcquire acquire)
         {
             NodeRequirements requirements = acquire.getNodeRequirements();
-            Optional<Set<InternalNode>> catalogNodes = requirements.getCatalogName().map(nodesSnapshot::getConnectorNodes);
+            Optional<Set<InternalNode>> catalogNodes = requirements.getCatalogHandle().map(nodesSnapshot::getConnectorNodes);
 
             List<InternalNode> candidates = allNodesSorted.stream()
                     .filter(node -> catalogNodes.isEmpty() || catalogNodes.get().contains(node))

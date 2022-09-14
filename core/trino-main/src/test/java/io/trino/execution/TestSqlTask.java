@@ -21,6 +21,7 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.stats.CounterStat;
 import io.airlift.stats.TestingGcMonitor;
 import io.airlift.units.DataSize;
+import io.airlift.units.Duration;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.buffer.BufferResult;
 import io.trino.execution.buffer.BufferState;
@@ -35,7 +36,6 @@ import io.trino.spi.QueryId;
 import io.trino.spi.predicate.Domain;
 import io.trino.spiller.SpillSpaceTracker;
 import io.trino.sql.planner.LocalExecutionPlanner;
-import io.trino.sql.planner.plan.DynamicFilterId;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
@@ -50,10 +50,13 @@ import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.SessionTestUtils.TEST_SESSION;
 import static io.trino.execution.DynamicFiltersCollector.INITIAL_DYNAMIC_FILTERS_VERSION;
+import static io.trino.execution.DynamicFiltersCollector.VersionedDynamicFilterDomains;
 import static io.trino.execution.SqlTask.createSqlTask;
 import static io.trino.execution.TaskStatus.STARTING_VERSION;
+import static io.trino.execution.TaskTestUtils.DYNAMIC_FILTER_SOURCE_ID;
 import static io.trino.execution.TaskTestUtils.EMPTY_SPLIT_ASSIGNMENTS;
 import static io.trino.execution.TaskTestUtils.PLAN_FRAGMENT;
+import static io.trino.execution.TaskTestUtils.PLAN_FRAGMENT_WITH_DYNAMIC_FILTER_SOURCE;
 import static io.trino.execution.TaskTestUtils.SPLIT;
 import static io.trino.execution.TaskTestUtils.TABLE_SCAN_NODE_ID;
 import static io.trino.execution.TaskTestUtils.createTestSplitMonitor;
@@ -63,7 +66,9 @@ import static io.trino.execution.buffer.OutputBuffers.BufferType.PARTITIONED;
 import static io.trino.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
 import static io.trino.execution.buffer.PagesSerde.getSerializedPagePositionCount;
 import static io.trino.spi.type.BigintType.BIGINT;
+import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.TestingSession.testSessionBuilder;
+import static io.trino.testing.assertions.Assert.assertEventually;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -317,8 +322,9 @@ public class TestSqlTask
             throws Exception
     {
         SqlTask sqlTask = createInitialTask();
-        sqlTask.updateTask(TEST_SESSION,
-                Optional.of(PLAN_FRAGMENT),
+        sqlTask.updateTask(
+                TEST_SESSION,
+                Optional.of(PLAN_FRAGMENT_WITH_DYNAMIC_FILTER_SOURCE),
                 ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(SPLIT), false)),
                 createInitialEmptyOutputBuffers(PARTITIONED)
                         .withBuffer(OUT, 0)
@@ -332,11 +338,45 @@ public class TestSqlTask
         ListenableFuture<?> future = sqlTask.getTaskStatus(STARTING_VERSION);
         assertFalse(future.isDone());
 
-        // make sure future gets unblocked when dynamic filters' version is updated
-        taskContext.updateDomains(ImmutableMap.of(new DynamicFilterId("filter"), Domain.none(BIGINT)));
+        // make sure future gets unblocked when dynamic filters version is updated
+        taskContext.updateDomains(ImmutableMap.of(DYNAMIC_FILTER_SOURCE_ID, Domain.none(BIGINT)));
         assertEquals(sqlTask.getTaskStatus().getVersion(), STARTING_VERSION + 1);
         assertEquals(sqlTask.getTaskStatus().getDynamicFiltersVersion(), INITIAL_DYNAMIC_FILTERS_VERSION + 1);
         future.get();
+    }
+
+    @Test(timeOut = 30_000)
+    public void testDynamicFilterFetchAfterTaskDone()
+            throws Exception
+    {
+        SqlTask sqlTask = createInitialTask();
+        OutputBuffers outputBuffers = createInitialEmptyOutputBuffers(PARTITIONED).withBuffer(OUT, 0).withNoMoreBufferIds();
+        sqlTask.updateTask(
+                TEST_SESSION,
+                Optional.of(PLAN_FRAGMENT_WITH_DYNAMIC_FILTER_SOURCE),
+                ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(), false)),
+                outputBuffers,
+                ImmutableMap.of());
+
+        assertEquals(sqlTask.getTaskStatus().getDynamicFiltersVersion(), INITIAL_DYNAMIC_FILTERS_VERSION);
+
+        // close the sources (no splits will ever be added)
+        updateTask(sqlTask, ImmutableList.of(new SplitAssignment(TABLE_SCAN_NODE_ID, ImmutableSet.of(), true)), outputBuffers);
+
+        // complete the task by calling destroy on it
+        TaskInfo info = sqlTask.destroyTaskResults(OUT);
+        assertEquals(info.getOutputBuffers().getState(), BufferState.FINISHED);
+
+        assertEventually(new Duration(10, SECONDS), () -> {
+            TaskStatus status = sqlTask.getTaskStatus(info.getTaskStatus().getVersion()).get();
+            assertEquals(status.getState(), TaskState.FINISHED);
+            assertEquals(status.getDynamicFiltersVersion(), INITIAL_DYNAMIC_FILTERS_VERSION + 1);
+        });
+        VersionedDynamicFilterDomains versionedDynamicFilters = sqlTask.acknowledgeAndGetNewDynamicFilterDomains(INITIAL_DYNAMIC_FILTERS_VERSION);
+        assertEquals(versionedDynamicFilters.getVersion(), INITIAL_DYNAMIC_FILTERS_VERSION + 1);
+        assertEquals(
+                versionedDynamicFilters.getDynamicFilterDomains(),
+                ImmutableMap.of(DYNAMIC_FILTER_SOURCE_ID, Domain.none(VARCHAR)));
     }
 
     private SqlTask createInitialTask()

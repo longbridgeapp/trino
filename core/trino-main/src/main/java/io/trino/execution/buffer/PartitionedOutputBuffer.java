@@ -22,6 +22,7 @@ import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.buffer.OutputBuffers.OutputBufferId;
 import io.trino.execution.buffer.SerializedPageReference.PagesReleasedListener;
 import io.trino.memory.context.LocalMemoryContext;
+import io.trino.plugin.base.metrics.TDigestHistogram;
 
 import java.util.List;
 import java.util.Optional;
@@ -66,7 +67,7 @@ public class PartitionedOutputBuffer
         checkArgument(outputBuffers.isNoMoreBufferIds(), "Expected a final output buffer descriptor");
         this.outputBuffers = outputBuffers;
         this.memoryManager = new OutputBufferMemoryManager(
-                requireNonNull(maxBufferSize, "maxBufferSize is null").toBytes(),
+                maxBufferSize.toBytes(),
                 requireNonNull(memoryContextSupplier, "memoryContextSupplier is null"),
                 requireNonNull(notificationExecutor, "notificationExecutor is null"));
         this.onPagesReleased = PagesReleasedListener.forOutputBufferMemoryManager(memoryManager);
@@ -127,7 +128,8 @@ public class PartitionedOutputBuffer
                 totalBufferedPages,
                 totalRowsAdded.get(),
                 totalPagesAdded.get(),
-                infos.build());
+                infos.build(),
+                Optional.of(new TDigestHistogram(memoryManager.getUtilizationHistogram())));
     }
 
     @Override

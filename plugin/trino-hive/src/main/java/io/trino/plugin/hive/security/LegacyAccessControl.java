@@ -32,7 +32,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-import static io.trino.spi.function.FunctionKind.TABLE;
 import static io.trino.spi.security.AccessDeniedException.denyAddColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentColumn;
 import static io.trino.spi.security.AccessDeniedException.denyCommentTable;
@@ -62,8 +61,6 @@ public class LegacyAccessControl
             LegacySecurityConfig securityConfig)
     {
         this.accessControlMetastore = requireNonNull(accessControlMetastore, "accessControlMetastore is null");
-
-        requireNonNull(securityConfig, "securityConfig is null");
         allowDropTable = securityConfig.getAllowDropTable();
         allowRenameTable = securityConfig.getAllowRenameTable();
         allowCommentTable = securityConfig.getAllowCommentTable();
@@ -162,6 +159,11 @@ public class LegacyAccessControl
         if (!allowCommentTable) {
             denyCommentTable(tableName.toString());
         }
+    }
+
+    @Override
+    public void checkCanSetViewComment(ConnectorSecurityContext context, SchemaTableName viewName)
+    {
     }
 
     @Override
@@ -394,9 +396,13 @@ public class LegacyAccessControl
     @Override
     public void checkCanExecuteFunction(ConnectorSecurityContext context, FunctionKind functionKind, SchemaRoutineName function)
     {
-        if (functionKind == TABLE) {
-            denyExecuteFunction(function.toString());
+        switch (functionKind) {
+            case SCALAR, AGGREGATE, WINDOW:
+                return;
+            case TABLE:
+                denyExecuteFunction(function.toString());
         }
+        throw new UnsupportedOperationException("Unsupported function kind: " + functionKind);
     }
 
     @Override

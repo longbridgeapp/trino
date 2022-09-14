@@ -66,7 +66,6 @@ public class TestAccumuloConnectorTest
                 return false;
 
             case SUPPORTS_ADD_COLUMN:
-            case SUPPORTS_DROP_COLUMN:
                 return false;
 
             case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
@@ -113,6 +112,15 @@ public class TestAccumuloConnectorTest
         assertEquals(getColumnComment(tableName, "b"), "Accumulo column b:b. Indexed: false");
 
         assertUpdate("DROP TABLE " + tableName);
+    }
+
+    @Override
+    public void testCreateTableWithColumnCommentSpecialCharacter(String comment)
+    {
+        // TODO https://github.com/trinodb/trino/issues/14095 Enable this test after fixing the issue
+        assertThatThrownBy(() -> super.testCreateTableWithColumnCommentSpecialCharacter(comment))
+                .hasMessageContaining("expected [%s] but found [Accumulo row ID]".formatted(comment));
+        throw new SkipException("Accumulo connector ignores column comments when creating a new table");
     }
 
     @Override

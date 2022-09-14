@@ -25,8 +25,6 @@ import io.trino.spi.exchange.ExchangeContext;
 import io.trino.spi.exchange.ExchangeSinkHandle;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandle;
-import io.trino.spi.exchange.ExchangeSourceSplitter;
-import io.trino.spi.exchange.ExchangeSourceStatistics;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.crypto.SecretKey;
@@ -37,9 +35,9 @@ import java.io.UncheckedIOException;
 import java.net.URI;
 import java.security.Key;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -61,25 +59,26 @@ import static io.trino.plugin.exchange.filesystem.FileSystemExchangeSink.COMMITT
 import static io.trino.plugin.exchange.filesystem.FileSystemExchangeSink.DATA_FILE_SUFFIX;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
-import static java.util.concurrent.CompletableFuture.completedFuture;
 
 public class FileSystemExchange
         implements Exchange
 {
     private static final Pattern PARTITION_FILE_NAME_PATTERN = Pattern.compile("(\\d+)_(\\d+)\\.data");
-    private static final char[] RANDOMIZED_PREFIX_ALPHABET = "abcdefghijklmnopqrstuvwzyz0123456789".toCharArray();
-    private static final int RANDOMIZED_PREFIX_LENGTH = 6;
+    private static final char[] RANDOMIZED_HEX_PREFIX_ALPHABET = "abcdef0123456789".toCharArray();
+    private static final int RANDOMIZED_HEX_PREFIX_LENGTH = 6;
 
     private final List<URI> baseDirectories;
     private final FileSystemExchangeStorage exchangeStorage;
     private final FileSystemExchangeStats stats;
     private final ExchangeContext exchangeContext;
     private final int outputPartitionCount;
+    private final boolean preserveOrderWithinPartition;
     private final int fileListingParallelism;
     private final Optional<SecretKey> secretKey;
+    private final long exchangeSourceHandleTargetDataSizeInBytes;
     private final ExecutorService executor;
 
-    private final Map<Integer, String> randomizedPrefixes = new ConcurrentHashMap<>();
+    private final Map<Integer, URI> outputDirectories = new ConcurrentHashMap<>();
 
     @GuardedBy("this")
     private final Set<Integer> allSinks = new HashSet<>();
@@ -98,8 +97,10 @@ public class FileSystemExchange
             FileSystemExchangeStats stats,
             ExchangeContext exchangeContext,
             int outputPartitionCount,
+            boolean preserveOrderWithinPartition,
             int fileListingParallelism,
             Optional<SecretKey> secretKey,
+            long exchangeSourceHandleTargetDataSizeInBytes,
             ExecutorService executor)
     {
         List<URI> directories = new ArrayList<>(requireNonNull(baseDirectories, "baseDirectories is null"));
@@ -110,8 +111,11 @@ public class FileSystemExchange
         this.stats = requireNonNull(stats, "stats is null");
         this.exchangeContext = requireNonNull(exchangeContext, "exchangeContext is null");
         this.outputPartitionCount = outputPartitionCount;
+        this.preserveOrderWithinPartition = preserveOrderWithinPartition;
+
         this.fileListingParallelism = fileListingParallelism;
         this.secretKey = requireNonNull(secretKey, "secretKey is null");
+        this.exchangeSourceHandleTargetDataSizeInBytes = exchangeSourceHandleTargetDataSizeInBytes;
         this.executor = requireNonNull(executor, "executor is null");
     }
 
@@ -145,7 +149,7 @@ public class FileSystemExchange
             throw new UncheckedIOException(e);
         }
 
-        return new FileSystemExchangeSinkInstanceHandle(fileSystemExchangeSinkHandle, outputDirectory, outputPartitionCount);
+        return new FileSystemExchangeSinkInstanceHandle(fileSystemExchangeSinkHandle, outputDirectory, outputPartitionCount, preserveOrderWithinPartition);
     }
 
     @Override
@@ -208,7 +212,21 @@ public class FileSystemExchange
                     partitionsList.forEach(partitions -> partitions.forEach(partitionFiles::put));
                     ImmutableList.Builder<ExchangeSourceHandle> result = ImmutableList.builder();
                     for (Integer partitionId : partitionFiles.keySet()) {
-                        result.add(new FileSystemExchangeSourceHandle(partitionId, ImmutableList.copyOf(partitionFiles.get(partitionId)), secretKey.map(SecretKey::getEncoded)));
+                        Collection<FileStatus> files = partitionFiles.get(partitionId);
+                        long currentExchangeHandleDataSizeInBytes = 0;
+                        ImmutableList.Builder<FileStatus> currentExchangeHandleFiles = ImmutableList.builder();
+                        for (FileStatus file : files) {
+                            if (currentExchangeHandleDataSizeInBytes > 0 && currentExchangeHandleDataSizeInBytes + file.getFileSize() > exchangeSourceHandleTargetDataSizeInBytes) {
+                                result.add(new FileSystemExchangeSourceHandle(partitionId, currentExchangeHandleFiles.build(), secretKey.map(SecretKey::getEncoded)));
+                                currentExchangeHandleDataSizeInBytes = 0;
+                                currentExchangeHandleFiles = ImmutableList.builder();
+                            }
+                            currentExchangeHandleDataSizeInBytes += file.getFileSize();
+                            currentExchangeHandleFiles.add(file);
+                        }
+                        if (currentExchangeHandleDataSizeInBytes > 0) {
+                            result.add(new FileSystemExchangeSourceHandle(partitionId, currentExchangeHandleFiles.build(), secretKey.map(SecretKey::getEncoded)));
+                        }
                     }
                     return result.build();
                 },
@@ -252,12 +270,10 @@ public class FileSystemExchange
 
     private URI getTaskOutputDirectory(int taskPartitionId)
     {
-        URI baseDirectory = baseDirectories.get(taskPartitionId % baseDirectories.size());
-        String randomizedPrefix = randomizedPrefixes.computeIfAbsent(taskPartitionId, ignored -> generateRandomizedPrefix());
-
         // Add a randomized prefix to evenly distribute data into different S3 shards
-        // Data output file path format: {randomizedPrefix}.{queryId}.{stageId}.{sinkPartitionId}/{attemptId}/{sourcePartitionId}_{splitId}.data
-        return baseDirectory.resolve(randomizedPrefix + "." + exchangeContext.getQueryId() + "." + exchangeContext.getExchangeId() + "." + taskPartitionId + PATH_SEPARATOR);
+        // Data output file path format: {randomizedHexPrefix}.{queryId}.{stageId}.{sinkPartitionId}/{attemptId}/{sourcePartitionId}_{splitId}.data
+        return outputDirectories.computeIfAbsent(taskPartitionId, ignored -> baseDirectories.get(ThreadLocalRandom.current().nextInt(baseDirectories.size()))
+                .resolve(generateRandomizedHexPrefix() + "." + exchangeContext.getQueryId() + "." + exchangeContext.getExchangeId() + "." + taskPartitionId + PATH_SEPARATOR));
     }
 
     @Override
@@ -267,54 +283,19 @@ public class FileSystemExchange
     }
 
     @Override
-    public ExchangeSourceSplitter split(ExchangeSourceHandle handle, long targetSizeInBytes)
-    {
-        // Currently we only split at the file level, and external logic groups sources that are not large enough
-        FileSystemExchangeSourceHandle sourceHandle = (FileSystemExchangeSourceHandle) handle;
-        Iterator<FileStatus> filesIterator = sourceHandle.getFiles().iterator();
-        return new ExchangeSourceSplitter()
-        {
-            @Override
-            public CompletableFuture<Void> isBlocked()
-            {
-                return completedFuture(null);
-            }
-
-            @Override
-            public Optional<ExchangeSourceHandle> getNext()
-            {
-                if (filesIterator.hasNext()) {
-                    return Optional.of(new FileSystemExchangeSourceHandle(sourceHandle.getPartitionId(), ImmutableList.of(filesIterator.next()), secretKey.map(SecretKey::getEncoded)));
-                }
-                return Optional.empty();
-            }
-
-            @Override
-            public void close()
-            {
-            }
-        };
-    }
-
-    @Override
-    public ExchangeSourceStatistics getExchangeSourceStatistics(ExchangeSourceHandle handle)
-    {
-        FileSystemExchangeSourceHandle sourceHandle = (FileSystemExchangeSourceHandle) handle;
-        long sizeInBytes = sourceHandle.getFiles().stream().mapToLong(FileStatus::getFileSize).sum();
-        return new ExchangeSourceStatistics(sizeInBytes);
-    }
-
-    @Override
     public void close()
     {
         stats.getCloseExchange().record(exchangeStorage.deleteRecursively(allSinks.stream().map(this::getTaskOutputDirectory).collect(toImmutableList())));
     }
 
-    private static String generateRandomizedPrefix()
+    /**
+     * Some storage systems prefer the prefix to be hexadecimal characters
+     */
+    private static String generateRandomizedHexPrefix()
     {
-        char[] value = new char[RANDOMIZED_PREFIX_LENGTH];
+        char[] value = new char[RANDOMIZED_HEX_PREFIX_LENGTH];
         for (int i = 0; i < value.length; i++) {
-            value[i] = RANDOMIZED_PREFIX_ALPHABET[ThreadLocalRandom.current().nextInt(RANDOMIZED_PREFIX_ALPHABET.length)];
+            value[i] = RANDOMIZED_HEX_PREFIX_ALPHABET[ThreadLocalRandom.current().nextInt(RANDOMIZED_HEX_PREFIX_ALPHABET.length)];
         }
         return new String(value);
     }

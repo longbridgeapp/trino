@@ -26,6 +26,7 @@ import io.airlift.log.Logger;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
+import io.airlift.slice.Slices;
 import io.airlift.units.DataSize;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.StageId;
@@ -508,7 +509,7 @@ public class DeduplicatingDirectExchangeBuffer
             this.queryId = requireNonNull(queryId, "queryId is null");
             this.exchangeId = requireNonNull(exchangeId, "exchangeId is null");
             this.executor = requireNonNull(executor, "executor is null");
-            this.pageBufferCapacityInBytes = requireNonNull(pageBufferCapacity, "pageBufferCapacity is null").toBytes();
+            this.pageBufferCapacityInBytes = pageBufferCapacity.toBytes();
         }
 
         public synchronized void addPages(TaskId taskId, List<Slice> pages)
@@ -537,12 +538,12 @@ public class DeduplicatingDirectExchangeBuffer
                 verify(writeBuffer == null, "writeBuffer is not expected to be initialized");
 
                 exchangeManager = exchangeManagerRegistry.getExchangeManager();
-                exchange = exchangeManager.createExchange(new ExchangeContext(queryId, exchangeId), 1);
+                exchange = exchangeManager.createExchange(new ExchangeContext(queryId, exchangeId), 1, true);
 
                 ExchangeSinkHandle sinkHandle = exchange.addSink(0);
                 sinkInstanceHandle = exchange.instantiateSink(sinkHandle, 0);
                 exchange.noMoreSinks();
-                exchangeSink = exchangeManager.createSink(sinkInstanceHandle, true);
+                exchangeSink = exchangeManager.createSink(sinkInstanceHandle);
 
                 writeBuffer = new DynamicSliceOutput(DEFAULT_MAX_PAGE_SIZE_IN_BYTES);
             }
@@ -579,7 +580,7 @@ public class DeduplicatingDirectExchangeBuffer
                 writeBuffer.writeInt(taskId.getPartitionId());
                 writeBuffer.writeInt(taskId.getAttemptId());
                 writeBuffer.writeBytes(page);
-                exchangeSink.add(0, writeBuffer.slice());
+                exchangeSink.add(0, Slices.copyOf(writeBuffer.slice()));
                 writeBuffer.reset();
                 spilledBytes += page.length();
                 spilledPageCount++;

@@ -14,6 +14,7 @@
 package io.trino.plugin.hive;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Lists;
@@ -22,12 +23,15 @@ import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
 import io.airlift.stats.CounterStat;
+import io.trino.hdfs.HdfsConfig;
+import io.trino.hdfs.HdfsConfiguration;
+import io.trino.hdfs.HdfsContext;
+import io.trino.hdfs.HdfsEnvironment;
+import io.trino.hdfs.authentication.NoHdfsAuthentication;
 import io.trino.operator.GroupByHashPageIndexerFactory;
 import io.trino.plugin.base.CatalogName;
-import io.trino.plugin.hive.AbstractTestHive.HiveTransaction;
 import io.trino.plugin.hive.AbstractTestHive.Transaction;
-import io.trino.plugin.hive.HdfsEnvironment.HdfsContext;
-import io.trino.plugin.hive.authentication.NoHdfsAuthentication;
+import io.trino.plugin.hive.aws.athena.PartitionProjectionService;
 import io.trino.plugin.hive.fs.FileSystemDirectoryLister;
 import io.trino.plugin.hive.fs.HiveFileIterator;
 import io.trino.plugin.hive.metastore.Column;
@@ -60,11 +64,10 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.security.ConnectorIdentity;
-import io.trino.spi.type.Type;
+import io.trino.spi.type.TestingTypeManager;
 import io.trino.spi.type.TypeOperators;
 import io.trino.sql.gen.JoinCompiler;
 import io.trino.testing.MaterializedResult;
-import io.trino.testing.MaterializedRow;
 import io.trino.testing.TestingNodeManager;
 import io.trino.type.BlockTypeOperators;
 import org.apache.hadoop.fs.FileSystem;
@@ -82,9 +85,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.stream.IntStream;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.util.concurrent.MoreExecutors.newDirectExecutorService;
@@ -99,7 +100,6 @@ import static io.trino.plugin.hive.HiveTestUtils.PAGE_SORTER;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHiveFileWriterFactories;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHivePageSourceFactories;
 import static io.trino.plugin.hive.HiveTestUtils.getDefaultHiveRecordCursorProviders;
-import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSessionProperties;
 import static io.trino.plugin.hive.HiveTestUtils.getTypes;
 import static io.trino.plugin.hive.HiveType.HIVE_LONG;
@@ -213,7 +213,9 @@ public abstract class AbstractTestHiveFileSystem
                         new PropertiesSystemTableProvider()),
                 new DefaultHiveMaterializedViewMetadataFactory(),
                 SqlStandardAccessControlMetadata::new,
-                new FileSystemDirectoryLister());
+                new FileSystemDirectoryLister(),
+                new PartitionProjectionService(config, ImmutableMap.of(), new TestingTypeManager()),
+                true);
         transactionManager = new HiveTransactionManager(metadataFactory);
         splitManager = new HiveSplitManager(
                 transactionManager,
@@ -261,12 +263,22 @@ public abstract class AbstractTestHiveFileSystem
 
     protected ConnectorSession newSession()
     {
-        return getHiveSession(config);
+        return HiveFileSystemTestUtils.newSession(config);
     }
 
     protected Transaction newTransaction()
     {
-        return new HiveTransaction(transactionManager);
+        return HiveFileSystemTestUtils.newTransaction(transactionManager);
+    }
+
+    protected MaterializedResult readTable(SchemaTableName tableName) throws IOException
+    {
+        return HiveFileSystemTestUtils.readTable(tableName, transactionManager, config, pageSourceProvider, splitManager);
+    }
+
+    protected MaterializedResult filterTable(SchemaTableName tableName, List<ColumnHandle> projectedColumns) throws IOException
+    {
+        return HiveFileSystemTestUtils.filterTable(tableName, projectedColumns, transactionManager, config, pageSourceProvider, splitManager);
     }
 
     @Test
@@ -558,52 +570,12 @@ public abstract class AbstractTestHiveFileSystem
         }
     }
 
-    protected MaterializedResult readTable(SchemaTableName tableName)
-            throws IOException
-    {
-        try (Transaction transaction = newTransaction()) {
-            ConnectorMetadata metadata = transaction.getMetadata();
-            ConnectorSession session = newSession();
-
-            ConnectorTableHandle table = getTableHandle(metadata, tableName);
-            List<ColumnHandle> columnHandles = ImmutableList.copyOf(metadata.getColumnHandles(session, table).values());
-
-            metadata.beginQuery(session);
-            ConnectorSplitSource splitSource = getSplits(splitManager, transaction, session, table);
-
-            List<Type> allTypes = getTypes(columnHandles);
-            List<Type> dataTypes = getTypes(columnHandles.stream()
-                    .filter(columnHandle -> !((HiveColumnHandle) columnHandle).isHidden())
-                    .collect(toImmutableList()));
-            MaterializedResult.Builder result = MaterializedResult.resultBuilder(session, dataTypes);
-
-            List<ConnectorSplit> splits = getAllSplits(splitSource);
-            for (ConnectorSplit split : splits) {
-                try (ConnectorPageSource pageSource = pageSourceProvider.createPageSource(transaction.getTransactionHandle(), session, split, table, columnHandles, DynamicFilter.EMPTY)) {
-                    MaterializedResult pageSourceResult = materializeSourceDataStream(session, pageSource, allTypes);
-                    for (MaterializedRow row : pageSourceResult.getMaterializedRows()) {
-                        Object[] dataValues = IntStream.range(0, row.getFieldCount())
-                                .filter(channel -> !((HiveColumnHandle) columnHandles.get(channel)).isHidden())
-                                .mapToObj(row::getField)
-                                .toArray();
-                        result.row(dataValues);
-                    }
-                }
-            }
-
-            metadata.cleanupQuery(session);
-            return result.build();
-        }
-    }
-
     private ConnectorTableHandle getTableHandle(ConnectorMetadata metadata, SchemaTableName tableName)
     {
-        ConnectorTableHandle handle = metadata.getTableHandle(newSession(), tableName);
-        checkArgument(handle != null, "table not found: %s", tableName);
-        return handle;
+        return HiveFileSystemTestUtils.getTableHandle(metadata, tableName, newSession());
     }
 
-    protected static class TestingHiveMetastore
+    public static class TestingHiveMetastore
             extends ForwardingHiveMetastore
     {
         private final Path basePath;
@@ -638,15 +610,13 @@ public abstract class AbstractTestHiveFileSystem
         public void dropTable(String databaseName, String tableName, boolean deleteData)
         {
             try {
-                Optional<Table> table = getTable(databaseName, tableName);
-                if (table.isEmpty()) {
-                    throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
-                }
+                Table table = getTable(databaseName, tableName)
+                        .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
 
                 // hack to work around the metastore not being configured for S3 or other FS
                 List<String> locations = listAllDataPaths(databaseName, tableName);
 
-                Table.Builder tableBuilder = Table.builder(table.get());
+                Table.Builder tableBuilder = Table.builder(table);
                 tableBuilder.getStorageBuilder().setLocation("/");
 
                 // drop table
@@ -668,12 +638,9 @@ public abstract class AbstractTestHiveFileSystem
 
         public void updateTableLocation(String databaseName, String tableName, String location)
         {
-            Optional<Table> table = getTable(databaseName, tableName);
-            if (table.isEmpty()) {
-                throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
-            }
-
-            Table.Builder tableBuilder = Table.builder(table.get());
+            Table table = getTable(databaseName, tableName)
+                    .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
+            Table.Builder tableBuilder = Table.builder(table);
             tableBuilder.getStorageBuilder().setLocation(location);
 
             // NOTE: this clears the permissions

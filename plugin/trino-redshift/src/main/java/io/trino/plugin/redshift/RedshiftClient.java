@@ -85,6 +85,7 @@ import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.Math.max;
 import static java.lang.String.format;
+import static java.util.Objects.requireNonNull;
 
 public class RedshiftClient
         extends BaseJdbcClient
@@ -109,11 +110,16 @@ public class RedshiftClient
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming tables across schemas");
         }
 
-        String sql = format(
+        super.renameTable(session, catalogName, schemaName, tableName, newTable);
+    }
+
+    @Override
+    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
+    {
+        return format(
                 "ALTER TABLE %s RENAME TO %s",
-                quoted(catalogName, schemaName, tableName),
-                quoted(newTable.getTableName()));
-        execute(session, sql);
+                quoted(catalogName, remoteSchemaName, remoteTableName),
+                quoted(newRemoteTableName));
     }
 
     @Override
@@ -167,12 +173,19 @@ public class RedshiftClient
     @Override
     public void setColumnComment(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Optional<String> comment)
     {
+        // Redshift doesn't support prepared statement for COMMENT statement
         String sql = format(
                 "COMMENT ON COLUMN %s.%s IS %s",
                 quoted(handle.asPlainTable().getRemoteTableName()),
                 quoted(column.getColumnName()),
-                comment.isPresent() ? format("'%s'", comment.get()) : "NULL");
+                comment.map(RedshiftClient::redshiftVarcharLiteral).orElse("NULL"));
         execute(session, sql);
+    }
+
+    private static String redshiftVarcharLiteral(String value)
+    {
+        requireNonNull(value, "value is null");
+        return "'" + value.replace("'", "''").replace("\\", "\\\\") + "'";
     }
 
     private static Optional<ColumnMapping> legacyDefaultColumnMapping(JdbcTypeHandle typeHandle)

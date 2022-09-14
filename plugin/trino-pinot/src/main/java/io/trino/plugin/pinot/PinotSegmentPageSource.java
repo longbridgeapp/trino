@@ -23,11 +23,10 @@ import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.connector.ConnectorPageSource;
+import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
-import org.apache.commons.codec.DecoderException;
-import org.apache.commons.codec.binary.Hex;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.common.utils.DataSchema.ColumnDataType;
 
@@ -37,8 +36,10 @@ import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static io.trino.plugin.base.util.JsonTypeUtil.jsonParse;
 import static io.trino.plugin.pinot.PinotErrorCode.PINOT_DECODE_ERROR;
 import static io.trino.plugin.pinot.PinotErrorCode.PINOT_UNSUPPORTED_COLUMN_TYPE;
+import static io.trino.plugin.pinot.decoders.VarbinaryDecoder.toBytes;
 import static java.lang.Float.floatToIntBits;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -265,9 +266,7 @@ public class PinotSegmentPageSource
         if (dataType.equals(ColumnDataType.FLOAT)) {
             return currentDataTable.getDataTable().getFloat(rowIndex, columnIndex);
         }
-        else {
-            return currentDataTable.getDataTable().getDouble(rowIndex, columnIndex);
-        }
+        return currentDataTable.getDataTable().getDouble(rowIndex, columnIndex);
     }
 
     private Block getArrayBlock(int rowIndex, int columnIndex)
@@ -326,20 +325,14 @@ public class PinotSegmentPageSource
             String field = currentDataTable.getDataTable().getString(rowIndex, columnIndex);
             return getUtf8Slice(field);
         }
-        else if (trinoType instanceof VarbinaryType) {
+        if (trinoType instanceof VarbinaryType) {
             return Slices.wrappedBuffer(toBytes(currentDataTable.getDataTable().getString(rowIndex, columnIndex)));
         }
+        if (trinoType.getTypeSignature().getBase() == StandardTypes.JSON) {
+            String field = currentDataTable.getDataTable().getString(rowIndex, columnIndex);
+            return jsonParse(getUtf8Slice(field));
+        }
         return Slices.EMPTY_SLICE;
-    }
-
-    private static byte[] toBytes(String stringValue)
-    {
-        try {
-            return Hex.decodeHex(stringValue.toCharArray());
-        }
-        catch (DecoderException e) {
-            throw new IllegalArgumentException("Value: " + stringValue + " is not Hex encoded", e);
-        }
     }
 
     private Slice getUtf8Slice(String value)

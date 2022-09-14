@@ -137,7 +137,8 @@ public class LazyOutputBuffer
                     0,
                     0,
                     0,
-                    ImmutableList.of());
+                    ImmutableList.of(),
+                    Optional.empty());
         }
         return outputBuffer.getInfo();
     }
@@ -176,7 +177,7 @@ public class LazyOutputBuffer
                             ExchangeSinkInstanceHandle exchangeSinkInstanceHandle = newOutputBuffers.getExchangeSinkInstanceHandle()
                                     .orElseThrow(() -> new IllegalArgumentException("exchange sink handle is expected to be present for buffer type EXTERNAL"));
                             ExchangeManager exchangeManager = exchangeManagerRegistry.getExchangeManager();
-                            ExchangeSink exchangeSink = exchangeManager.createSink(exchangeSinkInstanceHandle, false);
+                            ExchangeSink exchangeSink = exchangeManager.createSink(exchangeSinkInstanceHandle);
                             outputBuffer = new SpoolingExchangeOutputBuffer(stateMachine, newOutputBuffers, exchangeSink, memoryContextSupplier);
                             break;
                         default:

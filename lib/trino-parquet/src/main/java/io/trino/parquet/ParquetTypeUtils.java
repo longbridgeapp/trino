@@ -13,7 +13,13 @@
  */
 package io.trino.parquet;
 
+import com.google.common.collect.ImmutableList;
+import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.DecimalType;
+import io.trino.spi.type.MapType;
+import io.trino.spi.type.RowType;
+import io.trino.spi.type.Type;
+import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.io.ColumnIO;
 import org.apache.parquet.io.ColumnIOFactory;
@@ -21,8 +27,8 @@ import org.apache.parquet.io.GroupColumnIO;
 import org.apache.parquet.io.MessageColumnIO;
 import org.apache.parquet.io.ParquetDecodingException;
 import org.apache.parquet.io.PrimitiveColumnIO;
-import org.apache.parquet.schema.DecimalMetadata;
 import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.LogicalTypeAnnotation.DecimalLogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 
 import javax.annotation.Nullable;
@@ -30,11 +36,14 @@ import javax.annotation.Nullable;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static org.apache.parquet.schema.OriginalType.DECIMAL;
+import static org.apache.parquet.io.ColumnIOUtil.columnDefinitionLevel;
+import static org.apache.parquet.io.ColumnIOUtil.columnRepetitionLevel;
+import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
 import static org.apache.parquet.schema.Type.Repetition.REPEATED;
 
 public final class ParquetTypeUtils
@@ -80,7 +89,7 @@ public final class ParquetTypeUtils
          *  }
          */
         if (columnIO instanceof GroupColumnIO &&
-                columnIO.getType().getOriginalType() == null &&
+                columnIO.getType().getLogicalTypeAnnotation() == null &&
                 ((GroupColumnIO) columnIO).getChildrenCount() == 1 &&
                 !columnIO.getName().equals("array") &&
                 !columnIO.getName().equals(columnIO.getParent().getName() + "_tuple")) {
@@ -95,19 +104,19 @@ public final class ParquetTypeUtils
         return columnIO;
     }
 
-    public static Map<List<String>, RichColumnDescriptor> getDescriptors(MessageType fileSchema, MessageType requestedSchema)
+    public static Map<List<String>, ColumnDescriptor> getDescriptors(MessageType fileSchema, MessageType requestedSchema)
     {
-        Map<List<String>, RichColumnDescriptor> descriptorsByPath = new HashMap<>();
+        Map<List<String>, ColumnDescriptor> descriptorsByPath = new HashMap<>();
         List<PrimitiveColumnIO> columns = getColumns(fileSchema, requestedSchema);
         for (String[] paths : fileSchema.getPaths()) {
             List<String> columnPath = Arrays.asList(paths);
             getDescriptor(columns, columnPath)
-                    .ifPresent(richColumnDescriptor -> descriptorsByPath.put(columnPath, richColumnDescriptor));
+                    .ifPresent(columnDescriptor -> descriptorsByPath.put(columnPath, columnDescriptor));
         }
         return descriptorsByPath;
     }
 
-    public static Optional<RichColumnDescriptor> getDescriptor(List<PrimitiveColumnIO> columns, List<String> path)
+    public static Optional<ColumnDescriptor> getDescriptor(List<PrimitiveColumnIO> columns, List<String> path)
     {
         checkArgument(path.size() >= 1, "Parquet nested path should have at least one component");
         int index = getPathIndex(columns, path);
@@ -115,7 +124,7 @@ public final class ParquetTypeUtils
             return Optional.empty();
         }
         PrimitiveColumnIO columnIO = columns.get(index);
-        return Optional.of(new RichColumnDescriptor(columnIO.getColumnDescriptor(), columnIO.getType().asPrimitiveType()));
+        return Optional.of(columnIO.getColumnDescriptor());
     }
 
     private static int getPathIndex(List<PrimitiveColumnIO> columns, List<String> path)
@@ -219,13 +228,12 @@ public final class ParquetTypeUtils
         return null;
     }
 
-    public static Optional<DecimalType> createDecimalType(RichColumnDescriptor descriptor)
+    public static Optional<DecimalType> createDecimalType(PrimitiveField field)
     {
-        if (descriptor.getPrimitiveType().getOriginalType() != DECIMAL) {
+        if (!(field.getDescriptor().getPrimitiveType().getLogicalTypeAnnotation() instanceof DecimalLogicalTypeAnnotation decimalLogicalType)) {
             return Optional.empty();
         }
-        DecimalMetadata decimalMetadata = descriptor.getPrimitiveType().getDecimalMetadata();
-        return Optional.of(DecimalType.createDecimalType(decimalMetadata.getPrecision(), decimalMetadata.getScale()));
+        return Optional.of(DecimalType.createDecimalType(decimalLogicalType.getPrecision(), decimalLogicalType.getScale()));
     }
 
     /**
@@ -259,5 +267,51 @@ public final class ParquetTypeUtils
         }
 
         return value;
+    }
+
+    public static Optional<Field> constructField(Type type, ColumnIO columnIO)
+    {
+        if (columnIO == null) {
+            return Optional.empty();
+        }
+        boolean required = columnIO.getType().getRepetition() != OPTIONAL;
+        int repetitionLevel = columnRepetitionLevel(columnIO);
+        int definitionLevel = columnDefinitionLevel(columnIO);
+        if (type instanceof RowType rowType) {
+            GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
+            ImmutableList.Builder<Optional<Field>> fieldsBuilder = ImmutableList.builder();
+            List<RowType.Field> fields = rowType.getFields();
+            boolean structHasParameters = false;
+            for (RowType.Field rowField : fields) {
+                String name = rowField.getName().orElseThrow().toLowerCase(Locale.ENGLISH);
+                Optional<Field> field = constructField(rowField.getType(), lookupColumnByName(groupColumnIO, name));
+                structHasParameters |= field.isPresent();
+                fieldsBuilder.add(field);
+            }
+            if (structHasParameters) {
+                return Optional.of(new GroupField(type, repetitionLevel, definitionLevel, required, fieldsBuilder.build()));
+            }
+            return Optional.empty();
+        }
+        if (type instanceof MapType mapType) {
+            GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
+            GroupColumnIO keyValueColumnIO = getMapKeyValueColumn(groupColumnIO);
+            if (keyValueColumnIO.getChildrenCount() != 2) {
+                return Optional.empty();
+            }
+            Optional<Field> keyField = constructField(mapType.getKeyType(), keyValueColumnIO.getChild(0));
+            Optional<Field> valueField = constructField(mapType.getValueType(), keyValueColumnIO.getChild(1));
+            return Optional.of(new GroupField(type, repetitionLevel, definitionLevel, required, ImmutableList.of(keyField, valueField)));
+        }
+        if (type instanceof ArrayType arrayType) {
+            GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
+            if (groupColumnIO.getChildrenCount() != 1) {
+                return Optional.empty();
+            }
+            Optional<Field> field = constructField(arrayType.getElementType(), getArrayElementColumn(groupColumnIO.getChild(0)));
+            return Optional.of(new GroupField(type, repetitionLevel, definitionLevel, required, ImmutableList.of(field)));
+        }
+        PrimitiveColumnIO primitiveColumnIO = (PrimitiveColumnIO) columnIO;
+        return Optional.of(new PrimitiveField(type, required, primitiveColumnIO.getColumnDescriptor(), primitiveColumnIO.getId()));
     }
 }

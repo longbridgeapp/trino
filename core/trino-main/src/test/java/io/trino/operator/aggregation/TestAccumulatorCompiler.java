@@ -15,8 +15,6 @@ package io.trino.operator.aggregation;
 
 import com.google.common.collect.ImmutableList;
 import io.airlift.bytecode.DynamicClassLoader;
-import io.trino.metadata.BoundSignature;
-import io.trino.metadata.FunctionNullability;
 import io.trino.operator.aggregation.state.StateCompiler;
 import io.trino.server.PluginManager;
 import io.trino.spi.Page;
@@ -25,6 +23,9 @@ import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.function.AccumulatorState;
 import io.trino.spi.function.AccumulatorStateFactory;
 import io.trino.spi.function.AccumulatorStateSerializer;
+import io.trino.spi.function.AggregationImplementation;
+import io.trino.spi.function.BoundSignature;
+import io.trino.spi.function.FunctionNullability;
 import io.trino.spi.type.LongTimestamp;
 import io.trino.spi.type.RealType;
 import io.trino.spi.type.TimestampType;
@@ -32,7 +33,6 @@ import io.trino.sql.gen.IsolatedClass;
 import org.testng.annotations.Test;
 
 import java.lang.invoke.MethodHandle;
-import java.util.Optional;
 
 import static io.trino.operator.aggregation.AggregationFunctionAdapter.AggregationParameterKind.INPUT_CHANNEL;
 import static io.trino.operator.aggregation.AggregationFunctionAdapter.AggregationParameterKind.STATE;
@@ -85,21 +85,18 @@ public class TestAccumulatorCompiler
         inputFunction = normalizeInputMethod(inputFunction, signature, STATE, INPUT_CHANNEL);
         MethodHandle combineFunction = methodHandle(aggregation, "combine", stateInterface, stateInterface);
         MethodHandle outputFunction = methodHandle(aggregation, "output", stateInterface, BlockBuilder.class);
-        AggregationMetadata metadata = new AggregationMetadata(
-                inputFunction,
-                Optional.empty(),
-                Optional.of(combineFunction),
-                outputFunction,
-                ImmutableList.of(new AggregationMetadata.AccumulatorStateDescriptor<>(
-                        stateInterface,
-                        stateSerializer,
-                        stateFactory)));
+        AggregationImplementation implementation = AggregationImplementation.builder()
+                .inputFunction(inputFunction)
+                .combineFunction(combineFunction)
+                .outputFunction(outputFunction)
+                .accumulatorStateDescriptor(stateInterface, stateSerializer, stateFactory)
+                .build();
         FunctionNullability functionNullability = new FunctionNullability(false, ImmutableList.of(false));
 
         // test if we can compile aggregation
-        AccumulatorFactory accumulatorFactory = AccumulatorCompiler.generateAccumulatorFactory(signature, metadata, functionNullability);
+        AccumulatorFactory accumulatorFactory = AccumulatorCompiler.generateAccumulatorFactory(signature, implementation, functionNullability);
         assertThat(accumulatorFactory).isNotNull();
-        assertThat(AccumulatorCompiler.generateWindowAccumulatorClass(signature, metadata, functionNullability)).isNotNull();
+        assertThat(AccumulatorCompiler.generateWindowAccumulatorClass(signature, implementation, functionNullability)).isNotNull();
 
         TestingAggregationFunction aggregationFunction = new TestingAggregationFunction(
                 ImmutableList.of(TIMESTAMP_PICOS),

@@ -135,6 +135,7 @@ import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
 import static java.lang.String.join;
+import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
 
 public class MariaDbClient
@@ -149,6 +150,9 @@ public class MariaDbClient
 
     // An empty character means that the table doesn't have a comment in MariaDB
     private static final String NO_COMMENT = "";
+
+    // MariaDB Error Codes https://mariadb.com/kb/en/mariadb-error-codes/
+    private static final int PARSE_ERROR = 1064;
 
     private final AggregateFunctionRewriter<JdbcExpression, String> aggregateFunctionRewriter;
 
@@ -266,9 +270,9 @@ public class MariaDbClient
     public void setTableComment(ConnectorSession session, JdbcTableHandle handle, Optional<String> comment)
     {
         String sql = format(
-                "ALTER TABLE %s COMMENT = '%s'",
+                "ALTER TABLE %s COMMENT = %s",
                 quoted(handle.asPlainTable().getRemoteTableName()),
-                comment.orElse(NO_COMMENT)); // An empty character removes the existing comment in MariaDB
+                mariaDbVarcharLiteral(comment.orElse(NO_COMMENT))); // An empty character removes the existing comment in MariaDB
         execute(session, sql);
     }
 
@@ -447,17 +451,19 @@ public class MariaDbClient
     {
         try (Connection connection = connectionFactory.openConnection(session)) {
             String newRemoteColumnName = getIdentifierMapping().toRemoteColumnName(connection, newColumnName);
+            RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
             // MariaDB versions earlier than 10.5.2 do not support the RENAME COLUMN syntax
             // ALTER TABLE ... CHANGE statement exists in th old versions, but it requires providing all attributes of the column
             String sql = format(
                     "ALTER TABLE %s RENAME COLUMN %s TO %s",
-                    quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()),
+                    quoted(remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName()),
                     quoted(jdbcColumn.getColumnName()),
                     quoted(newRemoteColumnName));
             execute(connection, sql);
         }
         catch (TrinoException e) {
-            if (e.getCause() instanceof SQLSyntaxErrorException) {
+            // Note: SQLSyntaxErrorException can be thrown also when column name is invalid
+            if (e.getCause() instanceof SQLSyntaxErrorException syntaxError && syntaxError.getErrorCode() == PARSE_ERROR) {
                 throw new TrinoException(NOT_SUPPORTED, "Rename column not supported for the MariaDB server version", e);
             }
             throw e;
@@ -483,7 +489,13 @@ public class MariaDbClient
     protected String createTableSql(RemoteTableName remoteTableName, List<String> columns, ConnectorTableMetadata tableMetadata)
     {
         checkArgument(tableMetadata.getProperties().isEmpty(), "Unsupported table properties: %s", tableMetadata.getProperties());
-        return format("CREATE TABLE %s (%s) COMMENT '%s'", quoted(remoteTableName), join(", ", columns), tableMetadata.getComment().orElse(NO_COMMENT));
+        return format("CREATE TABLE %s (%s) COMMENT %s", quoted(remoteTableName), join(", ", columns), mariaDbVarcharLiteral(tableMetadata.getComment().orElse(NO_COMMENT)));
+    }
+
+    private static String mariaDbVarcharLiteral(String value)
+    {
+        requireNonNull(value, "value is null");
+        return "'" + value.replace("'", "''").replace("\\", "\\\\") + "'";
     }
 
     @Override
@@ -491,8 +503,9 @@ public class MariaDbClient
     {
         // MariaDB doesn't support specifying the catalog name in a rename. By setting the
         // catalogName parameter to null, it will be omitted in the ALTER TABLE statement.
-        verify(handle.getSchemaName() == null);
-        renameTable(session, null, handle.getCatalogName(), handle.getTableName(), newTableName);
+        RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
+        verify(remoteTableName.getSchemaName().isEmpty());
+        renameTable(session, null, remoteTableName.getCatalogName().orElse(null), remoteTableName.getTableName(), newTableName);
     }
 
     @Override

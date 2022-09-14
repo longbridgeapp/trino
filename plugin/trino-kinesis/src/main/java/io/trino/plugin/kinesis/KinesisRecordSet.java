@@ -112,7 +112,6 @@ public class KinesisRecordSet
     {
         this.split = requireNonNull(split, "split is null");
         this.session = requireNonNull(session, "session is null");
-        requireNonNull(kinesisConfig, "kinesisConfig is null");
         long dynamoReadCapacity = kinesisConfig.getDynamoReadCapacity();
         long dynamoWriteCapacity = kinesisConfig.getDynamoWriteCapacity();
         this.isLogBatches = kinesisConfig.isLogBatches();
@@ -241,15 +240,13 @@ public class KinesisRecordSet
             if (listIterator.hasNext()) {
                 return nextRow();
             }
-            else {
-                log.debug("(%s:%s) Read all of the records from the shard:  %d batches and %d messages and %d total bytes.",
-                        split.getStreamName(),
-                        split.getShardId(),
-                        batchesRead,
-                        totalMessages,
-                        totalBytes);
-                return false;
-            }
+            log.debug("(%s:%s) Read all of the records from the shard:  %d batches and %d messages and %d total bytes.",
+                    split.getStreamName(),
+                    split.getShardId(),
+                    batchesRead,
+                    totalMessages,
+                    totalBytes);
+            return false;
         }
 
         private boolean shouldGetMoreRecords()

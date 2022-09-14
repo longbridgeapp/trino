@@ -141,7 +141,6 @@ import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
-import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.DAYS;
 
 public class OracleClient
@@ -212,7 +211,6 @@ public class OracleClient
     {
         super(config, "\"", connectionFactory, queryBuilder, identifierMapping);
 
-        requireNonNull(oracleConfig, "oracleConfig is null");
         this.synonymsEnabled = oracleConfig.isSynonymsEnabled();
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
@@ -280,18 +278,17 @@ public class OracleClient
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming tables across schemas");
         }
 
-        String newTableName = newTable.getTableName().toUpperCase(ENGLISH);
-        String sql = format(
-                "ALTER TABLE %s RENAME TO %s",
-                quoted(catalogName, schemaName, tableName),
-                quoted(newTableName));
+        super.renameTable(session, catalogName, schemaName, tableName, newTable);
+    }
 
-        try (Connection connection = connectionFactory.openConnection(session)) {
-            execute(connection, sql);
-        }
-        catch (SQLException e) {
-            throw new TrinoException(JDBC_ERROR, e);
-        }
+    @Override
+    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
+    {
+        String newTableName = newRemoteTableName.toUpperCase(ENGLISH);
+        return format(
+                "ALTER TABLE %s RENAME TO %s",
+                quoted(catalogName, remoteSchemaName, remoteTableName),
+                quoted(newTableName));
     }
 
     @Override
@@ -678,11 +675,12 @@ public class OracleClient
     @Override
     public void setColumnComment(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Optional<String> comment)
     {
+        // Oracle doesn't support prepared statement for COMMENT statement
         String sql = format(
-                "COMMENT ON COLUMN %s.%s IS '%s'",
+                "COMMENT ON COLUMN %s.%s IS %s",
                 quoted(handle.asPlainTable().getRemoteTableName()),
                 quoted(column.getColumnName()),
-                comment.orElse(""));
+                varcharLiteral(comment.orElse("")));
         execute(session, sql);
     }
 }

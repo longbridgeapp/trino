@@ -34,17 +34,20 @@ import com.amazonaws.event.ProgressEventType;
 import com.amazonaws.event.ProgressListener;
 import com.amazonaws.metrics.RequestMetricCollector;
 import com.amazonaws.regions.DefaultAwsRegionProviderChain;
+import com.amazonaws.regions.Region;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3Builder;
 import com.amazonaws.services.s3.AmazonS3Client;
 import com.amazonaws.services.s3.AmazonS3Encryption;
 import com.amazonaws.services.s3.AmazonS3EncryptionClient;
+import com.amazonaws.services.s3.AmazonS3EncryptionClientBuilder;
 import com.amazonaws.services.s3.Headers;
 import com.amazonaws.services.s3.internal.Constants;
 import com.amazonaws.services.s3.model.AbortMultipartUploadRequest;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
 import com.amazonaws.services.s3.model.CompleteMultipartUploadRequest;
 import com.amazonaws.services.s3.model.CopyObjectRequest;
+import com.amazonaws.services.s3.model.CryptoConfiguration;
 import com.amazonaws.services.s3.model.DeleteObjectRequest;
 import com.amazonaws.services.s3.model.EncryptionMaterialsProvider;
 import com.amazonaws.services.s3.model.GetObjectMetadataRequest;
@@ -77,7 +80,7 @@ import com.google.common.net.MediaType;
 import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
-import io.trino.plugin.hive.util.FSDataInputStreamTail;
+import io.trino.hdfs.FSDataInputStreamTail;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
@@ -92,6 +95,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.util.Progressable;
+import org.gaul.modernizer_maven_annotations.SuppressModernizer;
 
 import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
@@ -341,13 +345,20 @@ public class TrinoS3FileSystem
             throws IOException
     {
         try (Closer closer = Closer.create()) {
-            closer.register(super::close);
+            closer.register(this::closeSuper);
             if (credentialsProvider instanceof Closeable) {
                 closer.register((Closeable) credentialsProvider);
             }
             closer.register(uploadExecutor::shutdown);
             closer.register(s3::shutdown);
         }
+    }
+
+    @SuppressModernizer
+    private void closeSuper()
+            throws IOException
+    {
+        super.close();
     }
 
     @Override
@@ -897,7 +908,13 @@ public class TrinoS3FileSystem
 
         // use local region when running inside of EC2
         if (pinS3ClientToCurrentRegion) {
-            clientBuilder.setRegion(getCurrentRegionFromEC2Metadata().getName());
+            Region region = getCurrentRegionFromEC2Metadata();
+            clientBuilder.setRegion(region.getName());
+            if (encryptionMaterialsProvider.isPresent()) {
+                CryptoConfiguration cryptoConfiguration = new CryptoConfiguration();
+                cryptoConfiguration.setAwsKmsRegion(region);
+                ((AmazonS3EncryptionClientBuilder) clientBuilder).withCryptoConfiguration(cryptoConfiguration);
+            }
             regionOrEndpointSet = true;
         }
 

@@ -43,6 +43,7 @@ import io.trino.sql.planner.plan.TableWriterNode.CreateTarget;
 import io.trino.sql.planner.plan.TableWriterNode.DeleteTarget;
 import io.trino.sql.planner.plan.TableWriterNode.InsertReference;
 import io.trino.sql.planner.plan.TableWriterNode.InsertTarget;
+import io.trino.sql.planner.plan.TableWriterNode.MergeTarget;
 import io.trino.sql.planner.plan.TableWriterNode.UpdateTarget;
 import io.trino.sql.planner.plan.TableWriterNode.WriterTarget;
 import io.trino.sql.planner.planprinter.IoPlanPrinter.FormattedMarker.Bound;
@@ -643,35 +644,41 @@ public class IoPlanPrinter
             if (writerTarget instanceof CreateTarget) {
                 CreateTarget target = (CreateTarget) writerTarget;
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogName().getCatalogName(),
+                        target.getHandle().getCatalogHandle().getCatalogName(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof InsertTarget) {
                 InsertTarget target = (InsertTarget) writerTarget;
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandle().getCatalogName().getCatalogName(),
+                        target.getHandle().getCatalogHandle().getCatalogName(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof DeleteTarget) {
                 DeleteTarget target = (DeleteTarget) writerTarget;
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandleOrElseThrow().getCatalogName().getCatalogName(),
+                        target.getHandleOrElseThrow().getCatalogHandle().getCatalogName(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof UpdateTarget) {
                 UpdateTarget target = (UpdateTarget) writerTarget;
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getHandleOrElseThrow().getCatalogName().getCatalogName(),
+                        target.getHandleOrElseThrow().getCatalogHandle().getCatalogName(),
+                        target.getSchemaTableName().getSchemaName(),
+                        target.getSchemaTableName().getTableName()));
+            }
+            else if (writerTarget instanceof MergeTarget target) {
+                context.setOutputTable(new CatalogSchemaTableName(
+                        target.getHandle().getCatalogHandle().getCatalogName(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
             else if (writerTarget instanceof TableWriterNode.RefreshMaterializedViewTarget) {
                 TableWriterNode.RefreshMaterializedViewTarget target = (TableWriterNode.RefreshMaterializedViewTarget) writerTarget;
                 context.setOutputTable(new CatalogSchemaTableName(
-                        target.getInsertHandle().getCatalogName().getCatalogName(),
+                        target.getInsertHandle().getCatalogHandle().getCatalogName(),
                         target.getSchemaTableName().getSchemaName(),
                         target.getSchemaTableName().getTableName()));
             }
@@ -693,7 +700,7 @@ public class IoPlanPrinter
             context.addInputTableColumnInfo(
                     new IoPlan.TableColumnInfo(
                             new CatalogSchemaTableName(
-                                    tableMetadata.getCatalogName().getCatalogName(),
+                                    tableMetadata.getCatalogName(),
                                     tableMetadata.getTable().getSchemaName(),
                                     tableMetadata.getTable().getTableName()),
                             parseConstraints(table, predicateDomain.intersect(filterDomain)),

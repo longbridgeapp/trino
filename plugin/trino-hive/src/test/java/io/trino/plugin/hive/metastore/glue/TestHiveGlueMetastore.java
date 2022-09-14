@@ -53,6 +53,7 @@ import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.statistics.ColumnStatisticMetadata;
 import io.trino.spi.statistics.ComputedStatistics;
 import io.trino.spi.statistics.TableStatisticType;
@@ -60,10 +61,13 @@ import io.trino.spi.type.BigintType;
 import io.trino.spi.type.DateType;
 import io.trino.spi.type.IntegerType;
 import io.trino.spi.type.SmallintType;
+import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TinyintType;
+import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
 import io.trino.testing.MaterializedResult;
 import org.testng.annotations.BeforeClass;
+import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.io.File;
@@ -167,6 +171,10 @@ public class TestHiveGlueMetastore
             .addAll(CREATE_TABLE_COLUMNS)
             .add(new ColumnMetadata(PARTITION_KEY, DateType.DATE))
             .build();
+    private static final List<ColumnMetadata> CREATE_TABLE_COLUMNS_PARTITIONED_TIMESTAMP = ImmutableList.<ColumnMetadata>builder()
+            .addAll(CREATE_TABLE_COLUMNS)
+            .add(new ColumnMetadata(PARTITION_KEY, TimestampType.TIMESTAMP_MILLIS))
+            .build();
     private static final List<String> VARCHAR_PARTITION_VALUES = ImmutableList.of("2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01");
 
     protected static final HiveBasicStatistics HIVE_BASIC_STATISTICS = new HiveBasicStatistics(1000, 5000, 3000, 4000);
@@ -192,6 +200,7 @@ public class TestHiveGlueMetastore
     @BeforeClass(alwaysRun = true)
     @Override
     public void initialize()
+            throws Exception
     {
         super.initialize();
         // uncomment to get extra AWS debug information
@@ -824,17 +833,149 @@ public class TestHiveGlueMetastore
     public void testGetPartitionsFilterIsNullWithValue()
             throws Exception
     {
-        TupleDomain<String> isNullFilter = new PartitionFilterBuilder()
-                .addDomain(PARTITION_KEY, Domain.onlyNull(VarcharType.VARCHAR))
-                .build();
         List<String> partitionList = new ArrayList<>();
+        partitionList.add("100");
         partitionList.add(null);
+
         doGetPartitionsFilterTest(
                 CREATE_TABLE_COLUMNS_PARTITIONED_VARCHAR,
                 PARTITION_KEY,
                 partitionList,
-                ImmutableList.of(isNullFilter),
+                ImmutableList.of(new PartitionFilterBuilder()
+                        // IS NULL
+                        .addDomain(PARTITION_KEY, Domain.onlyNull(VarcharType.VARCHAR))
+                        .build()),
                 ImmutableList.of(ImmutableList.of(GlueExpressionUtil.NULL_STRING)));
+
+        doGetPartitionsFilterTest(
+                CREATE_TABLE_COLUMNS_PARTITIONED_VARCHAR,
+                PARTITION_KEY,
+                partitionList,
+                ImmutableList.of(new PartitionFilterBuilder()
+                        // IS NULL or is a specific value
+                        .addDomain(PARTITION_KEY, Domain.create(ValueSet.of(VARCHAR, utf8Slice("100")), true))
+                        .build()),
+                ImmutableList.of(ImmutableList.of("100", GlueExpressionUtil.NULL_STRING)));
+    }
+
+    @Test
+    public void testGetPartitionsFilterEqualsOrIsNullWithValue()
+            throws Exception
+    {
+        TupleDomain<String> equalsOrIsNullFilter = new PartitionFilterBuilder()
+                .addStringValues(PARTITION_KEY, "2020-03-01")
+                .addDomain(PARTITION_KEY, Domain.onlyNull(VarcharType.VARCHAR))
+                .build();
+        List<String> partitionList = new ArrayList<>();
+        partitionList.add("2020-01-01");
+        partitionList.add("2020-02-01");
+        partitionList.add("2020-03-01");
+        partitionList.add(null);
+
+        doGetPartitionsFilterTest(
+                CREATE_TABLE_COLUMNS_PARTITIONED_VARCHAR,
+                PARTITION_KEY,
+                partitionList,
+                ImmutableList.of(equalsOrIsNullFilter),
+                ImmutableList.of(ImmutableList.of("2020-03-01", GlueExpressionUtil.NULL_STRING)));
+    }
+
+    @Test
+    public void testGetPartitionsFilterIsNotNull()
+            throws Exception
+    {
+        TupleDomain<String> isNotNullFilter = new PartitionFilterBuilder()
+                .addDomain(PARTITION_KEY, Domain.notNull(VarcharType.VARCHAR))
+                .build();
+        List<String> partitionList = new ArrayList<>();
+        partitionList.add("100");
+        partitionList.add(null);
+
+        doGetPartitionsFilterTest(
+                CREATE_TABLE_COLUMNS_PARTITIONED_VARCHAR,
+                PARTITION_KEY,
+                partitionList,
+                ImmutableList.of(isNotNullFilter),
+                ImmutableList.of(ImmutableList.of("100")));
+    }
+
+    @Test(dataProvider = "unsupportedNullPushdownTypes")
+    public void testGetPartitionsFilterUnsupportedIsNull(List<ColumnMetadata> columnMetadata, Type type, String partitionValue)
+            throws Exception
+    {
+        TupleDomain<String> isNullFilter = new PartitionFilterBuilder()
+                .addDomain(PARTITION_KEY, Domain.onlyNull(type))
+                .build();
+        List<String> partitionList = new ArrayList<>();
+        partitionList.add(partitionValue);
+        partitionList.add(null);
+
+        doGetPartitionsFilterTest(
+                columnMetadata,
+                PARTITION_KEY,
+                partitionList,
+                ImmutableList.of(isNullFilter),
+                // Currently, we get NULL partition from Glue and filter it in our side because
+                // (column = '__HIVE_DEFAULT_PARTITION__') on numeric types causes exception on Glue. e.g. 'input string: "__HIVE_D" is not an integer'
+                ImmutableList.of(ImmutableList.of(partitionValue, GlueExpressionUtil.NULL_STRING)));
+    }
+
+    @Test(dataProvider = "unsupportedNullPushdownTypes")
+    public void testGetPartitionsFilterUnsupportedIsNotNull(List<ColumnMetadata> columnMetadata, Type type, String partitionValue)
+            throws Exception
+    {
+        TupleDomain<String> isNotNullFilter = new PartitionFilterBuilder()
+                .addDomain(PARTITION_KEY, Domain.notNull(type))
+                .build();
+        List<String> partitionList = new ArrayList<>();
+        partitionList.add(partitionValue);
+        partitionList.add(null);
+
+        doGetPartitionsFilterTest(
+                columnMetadata,
+                PARTITION_KEY,
+                partitionList,
+                ImmutableList.of(isNotNullFilter),
+                // Currently, we get NULL partition from Glue and filter it in our side because
+                // (column <> '__HIVE_DEFAULT_PARTITION__') on numeric types causes exception on Glue. e.g. 'input string: "__HIVE_D" is not an integer'
+                ImmutableList.of(ImmutableList.of(partitionValue, GlueExpressionUtil.NULL_STRING)));
+    }
+
+    @DataProvider
+    public Object[][] unsupportedNullPushdownTypes()
+    {
+        return new Object[][] {
+                // Numeric types are unsupported for IS (NOT) NULL predicate pushdown
+                {CREATE_TABLE_COLUMNS_PARTITIONED_TINYINT, TinyintType.TINYINT, "127"},
+                {CREATE_TABLE_COLUMNS_PARTITIONED_SMALLINT, SmallintType.SMALLINT, "32767"},
+                {CREATE_TABLE_COLUMNS_PARTITIONED_INTEGER, IntegerType.INTEGER, "2147483647"},
+                {CREATE_TABLE_COLUMNS_PARTITIONED_BIGINT, BigintType.BIGINT, "9223372036854775807"},
+                {CREATE_TABLE_COLUMNS_PARTITIONED_DECIMAL, DECIMAL_TYPE, "12345.12345"},
+                // Date and timestamp aren't numeric types, but the pushdown is unsupported because of GlueExpressionUtil.canConvertSqlTypeToStringForGlue
+                {CREATE_TABLE_COLUMNS_PARTITIONED_DATE, DateType.DATE, "2022-07-11"},
+                {CREATE_TABLE_COLUMNS_PARTITIONED_TIMESTAMP, TimestampType.TIMESTAMP_MILLIS, "2022-07-11 01:02:03.123"},
+        };
+    }
+
+    @Test
+    public void testGetPartitionsFilterEqualsAndIsNotNull()
+            throws Exception
+    {
+        TupleDomain<String> equalsAndIsNotNullFilter = new PartitionFilterBuilder()
+                .addDomain(PARTITION_KEY, Domain.notNull(VarcharType.VARCHAR))
+                .addBigintValues(PARTITION_KEY2, 300L)
+                .build();
+
+        doGetPartitionsFilterTest(
+                CREATE_TABLE_COLUMNS_PARTITIONED_TWO_KEYS,
+                ImmutableList.of(PARTITION_KEY, PARTITION_KEY2),
+                ImmutableList.of(
+                        PartitionValues.make("2020-01-01", "100"),
+                        PartitionValues.make("2020-02-01", "200"),
+                        PartitionValues.make("2020-03-01", "300"),
+                        PartitionValues.make(null, "300")),
+                ImmutableList.of(equalsAndIsNotNullFilter),
+                ImmutableList.of(ImmutableList.of(PartitionValues.make("2020-03-01", "300"))));
     }
 
     @Test

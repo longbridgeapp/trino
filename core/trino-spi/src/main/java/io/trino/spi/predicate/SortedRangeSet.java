@@ -1104,17 +1104,11 @@ public final class SortedRangeSet
         @Override
         public int compareTo(RangeView that)
         {
-            int compare;
-            compare = compareLowBound(that);
-            if (compare != 0) {
-                return compare;
+            int lowBoundCompare = compareLowBound(that);
+            if (lowBoundCompare != 0) {
+                return lowBoundCompare;
             }
-            compare = compareHighBound(that);
-            if (compare != 0) {
-                return compare;
-            }
-
-            return 0;
+            return compareHighBound(that);
         }
 
         private int compareLowBound(RangeView that)

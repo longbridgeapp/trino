@@ -18,7 +18,6 @@ import com.google.common.primitives.Doubles;
 import com.google.common.primitives.Shorts;
 import com.google.common.primitives.SignedBytes;
 import io.airlift.slice.Slice;
-import io.trino.metadata.Signature;
 import io.trino.metadata.SqlScalarFunction;
 import io.trino.operator.aggregation.TypedSet;
 import io.trino.spi.TrinoException;
@@ -29,6 +28,7 @@ import io.trino.spi.function.LiteralParameter;
 import io.trino.spi.function.LiteralParameters;
 import io.trino.spi.function.OperatorDependency;
 import io.trino.spi.function.ScalarFunction;
+import io.trino.spi.function.Signature;
 import io.trino.spi.function.SqlNullable;
 import io.trino.spi.function.SqlType;
 import io.trino.spi.type.Decimals;
@@ -1174,6 +1174,15 @@ public final class MathFunctions
     public static boolean isNaN(@SqlType(StandardTypes.DOUBLE) double num)
     {
         return Double.isNaN(num);
+    }
+
+    @Description("Test if value is not-a-number")
+    @ScalarFunction("is_nan")
+    @SqlType(StandardTypes.BOOLEAN)
+    public static boolean isNaNReal(@SqlType(StandardTypes.REAL) long value)
+    {
+        float floatValue = intBitsToFloat(toIntExact(value));
+        return Float.isNaN(floatValue);
     }
 
     @Description("Test if value is finite")

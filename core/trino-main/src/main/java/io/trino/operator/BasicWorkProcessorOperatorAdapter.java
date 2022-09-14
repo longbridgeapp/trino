@@ -24,7 +24,7 @@ import static java.util.Objects.requireNonNull;
 
 /**
  * This {@link WorkProcessorOperator} adapter allows to adapt {@link WorkProcessor} operators
- * that do not require special input handling (e.g streaming operators).
+ * that do not require special input handling (e.g. streaming operators).
  */
 public class BasicWorkProcessorOperatorAdapter
         implements AdapterWorkProcessorOperator
@@ -106,7 +106,7 @@ public class BasicWorkProcessorOperatorAdapter
             BasicAdapterWorkProcessorOperatorFactory operatorFactory)
     {
         this.pageBuffer = new PageBuffer();
-        this.operator = requireNonNull(operatorFactory, "operatorFactory is null").createAdapterOperator(processorContext, pageBuffer.pages());
+        this.operator = operatorFactory.createAdapterOperator(processorContext, pageBuffer.pages());
     }
 
     @Override

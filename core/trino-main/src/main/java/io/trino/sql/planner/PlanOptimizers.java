@@ -31,6 +31,7 @@ import io.trino.sql.PlannerContext;
 import io.trino.sql.planner.iterative.IterativeOptimizer;
 import io.trino.sql.planner.iterative.Rule;
 import io.trino.sql.planner.iterative.RuleStats;
+import io.trino.sql.planner.iterative.rule.AddDynamicFilterSource;
 import io.trino.sql.planner.iterative.rule.AddExchangesBelowPartialAggregationOverGroupIdRuleSet;
 import io.trino.sql.planner.iterative.rule.AddIntermediateAggregations;
 import io.trino.sql.planner.iterative.rule.ApplyPreferredTableExecutePartitioning;
@@ -84,6 +85,7 @@ import io.trino.sql.planner.iterative.rule.MergeUnion;
 import io.trino.sql.planner.iterative.rule.MultipleDistinctAggregationToMarkDistinct;
 import io.trino.sql.planner.iterative.rule.OptimizeDuplicateInsensitiveJoins;
 import io.trino.sql.planner.iterative.rule.OptimizeRowPattern;
+import io.trino.sql.planner.iterative.rule.PreAggregateCaseAggregations;
 import io.trino.sql.planner.iterative.rule.PruneAggregationColumns;
 import io.trino.sql.planner.iterative.rule.PruneAggregationSourceColumns;
 import io.trino.sql.planner.iterative.rule.PruneApplyColumns;
@@ -111,6 +113,7 @@ import io.trino.sql.planner.iterative.rule.PruneJoinChildrenColumns;
 import io.trino.sql.planner.iterative.rule.PruneJoinColumns;
 import io.trino.sql.planner.iterative.rule.PruneLimitColumns;
 import io.trino.sql.planner.iterative.rule.PruneMarkDistinctColumns;
+import io.trino.sql.planner.iterative.rule.PruneMergeSourceColumns;
 import io.trino.sql.planner.iterative.rule.PruneOffsetColumns;
 import io.trino.sql.planner.iterative.rule.PruneOrderByInAggregation;
 import io.trino.sql.planner.iterative.rule.PruneOutputSourceColumns;
@@ -191,6 +194,7 @@ import io.trino.sql.planner.iterative.rule.RemoveEmptyExceptBranches;
 import io.trino.sql.planner.iterative.rule.RemoveEmptyGlobalAggregation;
 import io.trino.sql.planner.iterative.rule.RemoveEmptyTableExecute;
 import io.trino.sql.planner.iterative.rule.RemoveEmptyUnionBranches;
+import io.trino.sql.planner.iterative.rule.RemoveEmptyUpdate;
 import io.trino.sql.planner.iterative.rule.RemoveFullSample;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantDistinctLimit;
 import io.trino.sql.planner.iterative.rule.RemoveRedundantEnforceSingleRowNode;
@@ -248,7 +252,7 @@ import io.trino.sql.planner.optimizations.OptimizeMixedDistinctAggregations;
 import io.trino.sql.planner.optimizations.OptimizerStats;
 import io.trino.sql.planner.optimizations.PlanOptimizer;
 import io.trino.sql.planner.optimizations.PredicatePushDown;
-import io.trino.sql.planner.optimizations.ReplicateSemiJoinInDelete;
+import io.trino.sql.planner.optimizations.ReplicateJoinAndSemiJoinInDelete;
 import io.trino.sql.planner.optimizations.StatsRecordingPlanOptimizer;
 import io.trino.sql.planner.optimizations.TransformQuantifiedComparisonApplyToCorrelatedJoin;
 import io.trino.sql.planner.optimizations.UnaliasSymbolReferences;
@@ -453,7 +457,8 @@ public class PlanOptimizers
                                         new PruneCountAggregationOverScalar(metadata),
                                         new PruneOrderByInAggregation(metadata),
                                         new RewriteSpatialPartitioningAggregation(plannerContext),
-                                        new SimplifyCountOverConstant(plannerContext)))
+                                        new SimplifyCountOverConstant(plannerContext),
+                                        new PreAggregateCaseAggregations(plannerContext, typeAnalyzer)))
                                 .build()),
                 new IterativeOptimizer(
                         plannerContext,
@@ -761,6 +766,8 @@ public class PlanOptimizers
                         ImmutableSet.of(
                                 new ApplyPreferredTableWriterPartitioning(),
                                 new ApplyPreferredTableExecutePartitioning())),
+                // Make sure to run ReplicateJoinAndSemiJoinInDelete before ReorderJoins and AddExchanges
+                new ReplicateJoinAndSemiJoinInDelete(),
                 // Because ReorderJoins runs only once,
                 // PredicatePushDown, columnPruningOptimizer and RemoveRedundantIdentityProjections
                 // need to run beforehand in order to produce an optimal join order
@@ -809,7 +816,6 @@ public class PlanOptimizers
                         new OptimizeDuplicateInsensitiveJoins(metadata))));
 
         if (!forceSingleNode) {
-            builder.add(new ReplicateSemiJoinInDelete()); // Must run before AddExchanges
             builder.add(new IterativeOptimizer(
                     plannerContext,
                     ruleStats,
@@ -830,7 +836,7 @@ public class PlanOptimizers
                             .addAll(pushIntoTableScanRulesExceptJoins)
                             // PushJoinIntoTableScan must run after ReorderJoins (and DetermineJoinDistributionType)
                             // otherwise too early pushdown could prevent optimal plan from being selected.
-                            .add(new PushJoinIntoTableScan(metadata))
+                            .add(new PushJoinIntoTableScan(plannerContext, typeAnalyzer))
                             // DetermineTableScanNodePartitioning is needed to needs to ensure all table handles have proper partitioning determined
                             // Must run before AddExchanges
                             .add(new DetermineTableScanNodePartitioning(metadata, nodePartitioningManager, taskCountEstimator))
@@ -859,8 +865,9 @@ public class PlanOptimizers
                         statsCalculator,
                         costCalculator,
                         ImmutableSet.<Rule<?>>builder()
-                                // Run RemoveEmptyDeleteRuleSet and RemoveEmptyTableExecute after table scan is removed by PickTableLayout/AddExchanges
+                                // Run RemoveEmptyDeleteRuleSet, RemoveEmptyUpdate and RemoveEmptyTableExecute after table scan is removed by PickTableLayout/AddExchanges
                                 .addAll(RemoveEmptyDeleteRuleSet.rules())
+                                .add(new RemoveEmptyUpdate())
                                 .add(new RemoveEmptyTableExecute())
                                 .build()));
 
@@ -969,6 +976,16 @@ public class PlanOptimizers
         // Precomputed hashes - this assumes that partitioning will not change
         builder.add(new HashGenerationOptimizer(metadata));
 
+        builder.add(new IterativeOptimizer(
+                plannerContext,
+                ruleStats,
+                statsCalculator,
+                costCalculator,
+                AddDynamicFilterSource.rules()));
+        // If AddDynamicFilterSource fails to rewrite dynamic filter from JoinNode/SemiJoinNode to DynamicFilterSourceNode,
+        // RemoveUnsupportedDynamicFilters needs to be run again to clean up the corresponding dynamic filter expression left over the table scan.
+        builder.add(new RemoveUnsupportedDynamicFilters(plannerContext));
+
         builder.add(new BeginTableWrite(metadata, plannerContext.getFunctionManager())); // HACK! see comments in BeginTableWrite
 
         // TODO: consider adding a formal final plan sanitization optimizer that prepares the plan for transmission/execution/logging
@@ -1008,6 +1025,7 @@ public class PlanOptimizers
                 new PruneJoinColumns(),
                 new PruneLimitColumns(),
                 new PruneMarkDistinctColumns(),
+                new PruneMergeSourceColumns(),
                 new PruneOffsetColumns(),
                 new PruneOutputSourceColumns(),
                 new PrunePattenRecognitionColumns(),

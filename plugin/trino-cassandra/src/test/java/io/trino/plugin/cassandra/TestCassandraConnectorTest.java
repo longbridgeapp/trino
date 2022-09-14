@@ -18,7 +18,6 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Ints;
 import io.airlift.units.Duration;
 import io.trino.Session;
-import io.trino.spi.type.Type;
 import io.trino.testing.BaseConnectorTest;
 import io.trino.testing.Bytes;
 import io.trino.testing.MaterializedResult;
@@ -59,11 +58,11 @@ import static io.trino.spi.type.UuidType.UUID;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
-import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.testing.MaterializedResult.DEFAULT_PRECISION;
 import static io.trino.testing.MaterializedResult.resultBuilder;
 import static io.trino.testing.QueryAssertions.assertContains;
 import static io.trino.testing.QueryAssertions.assertContainsEventually;
+import static io.trino.type.IpAddressType.IPADDRESS;
 import static java.lang.String.format;
 import static java.util.Comparator.comparing;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -108,7 +107,6 @@ public class TestCassandraConnectorTest
                 return false;
 
             case SUPPORTS_ADD_COLUMN:
-            case SUPPORTS_DROP_COLUMN:
             case SUPPORTS_RENAME_COLUMN:
                 return false;
 
@@ -324,7 +322,7 @@ public class TestCassandraConnectorTest
                     " AND typeboolean = false" +
                     " AND typedouble = 16384.0" +
                     " AND typefloat = REAL '2097152.0'" +
-                    " AND typeinet = '127.0.0.1'" +
+                    " AND typeinet = IPADDRESS '127.0.0.1'" +
                     " AND typevarchar = 'varchar 7'" +
                     " AND typetimeuuid = UUID 'd2177dd0-eaa2-11de-a572-001b779c76e7'" +
                     "";
@@ -412,7 +410,7 @@ public class TestCassandraConnectorTest
                     " AND typedecimal = 128.0" +
                     " AND typedouble = 16384.0" +
                     " AND typefloat = REAL '2097152.0'" +
-                    " AND typeinet = '127.0.0.1'" +
+                    " AND typeinet = IPADDRESS '127.0.0.1'" +
                     " AND typevarchar = 'varchar 7'" +
                     " AND typevarint = '10000000'" +
                     " AND typetimeuuid = UUID 'd2177dd0-eaa2-11de-a572-001b779c76e7'" +
@@ -492,7 +490,7 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("['list-value-1%d', 'list-value-2%d']", rowNumber, rowNumber),
                         rowNumber -> format("{%d:%d, %d:%d}", rowNumber, rowNumber + 1, rowNumber + 2, rowNumber + 3),
                         rowNumber -> format("{false, true}"))))) {
-            assertSelect(testCassandraTable.getTableName(), false);
+            assertSelect(testCassandraTable.getTableName());
         }
 
         try (TestCassandraTable testCassandraTable = testTable(
@@ -541,7 +539,7 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("['list-value-1%d', 'list-value-2%d']", rowNumber, rowNumber),
                         rowNumber -> format("{%d:%d, %d:%d}", rowNumber, rowNumber + 1, rowNumber + 2, rowNumber + 3),
                         rowNumber -> format("{false, true}"))))) {
-            assertSelect(testCassandraTable.getTableName(), false);
+            assertSelect(testCassandraTable.getTableName());
         }
     }
 
@@ -553,6 +551,15 @@ public class TestCassandraConnectorTest
         execute("INSERT INTO test_create_table VALUES (12345)");
         assertQuery("SELECT * FROM smoke_test.test_create_table", "VALUES (12345)");
         execute("DROP TABLE test_create_table");
+    }
+
+    @Override
+    public void testCreateTableWithLongColumnName()
+    {
+        // TODO: Find the maximum column name length in Cassandra and enable this test.
+        assertThatThrownBy(super::testCreateTableWithLongColumnName)
+                .hasMessageMatching(".* Mutation of .* bytes is too large.*");
+        throw new SkipException("TODO");
     }
 
     @Test
@@ -606,7 +613,7 @@ public class TestCassandraConnectorTest
                         rowNumber -> format("{false, true}"))))) {
             execute("DROP TABLE IF EXISTS table_all_types_copy");
             execute("CREATE TABLE table_all_types_copy AS SELECT * FROM " + testCassandraTable.getTableName());
-            assertSelect("table_all_types_copy", true);
+            assertSelect("table_all_types_copy");
             execute("DROP TABLE table_all_types_copy");
         }
     }
@@ -1105,7 +1112,7 @@ public class TestCassandraConnectorTest
             assertEquals(execute(sql).getRowCount(), 0);
 
             // TODO Following types are not supported now. We need to change null into the value after fixing it
-            // blob, frozen<set<type>>, inet, list<type>, map<type,type>, set<type>, decimal, varint
+            // blob, frozen<set<type>>, list<type>, map<type,type>, set<type>, decimal, varint
             // timestamp can be inserted but the expected and actual values are not same
             execute("INSERT INTO " + testCassandraTable.getTableName() + " (" +
                     "key," +
@@ -1138,7 +1145,7 @@ public class TestCassandraConnectorTest
                     "null, " +
                     "0.3, " +
                     "cast('0.4' as real), " +
-                    "null, " +
+                    "IPADDRESS '10.10.10.1', " +
                     "'varchar1', " +
                     "null, " +
                     "UUID '50554d6e-29bb-11e5-b345-feff819cdc9f', " +
@@ -1162,7 +1169,7 @@ public class TestCassandraConnectorTest
                     null,
                     0.3,
                     (float) 0.4,
-                    null,
+                    "10.10.10.1",
                     "varchar1",
                     null,
                     java.util.UUID.fromString("50554d6e-29bb-11e5-b345-feff819cdc9f"),
@@ -1334,10 +1341,8 @@ public class TestCassandraConnectorTest
         assertThat(e).hasMessageContaining("Table names shouldn't be more than 48 characters long");
     }
 
-    private void assertSelect(String tableName, boolean createdByTrino)
+    private void assertSelect(String tableName)
     {
-        Type inetType = createdByTrino ? createUnboundedVarcharType() : createVarcharType(45);
-
         String sql = "SELECT " +
                 " key, " +
                 " typeuuid, " +
@@ -1375,7 +1380,7 @@ public class TestCassandraConnectorTest
                 DOUBLE,
                 DOUBLE,
                 REAL,
-                inetType,
+                IPADDRESS,
                 createUnboundedVarcharType(),
                 createUnboundedVarcharType(),
                 UUID,

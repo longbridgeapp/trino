@@ -95,7 +95,7 @@ import static io.trino.plugin.elasticsearch.ElasticsearchTableHandle.Type.QUERY;
 import static io.trino.plugin.elasticsearch.ElasticsearchTableHandle.Type.SCAN;
 import static io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static io.trino.spi.expression.StandardFunctions.LIKE_PATTERN_FUNCTION_NAME;
+import static io.trino.spi.expression.StandardFunctions.LIKE_FUNCTION_NAME;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -145,10 +145,8 @@ public class ElasticsearchMetadata
     @Inject
     public ElasticsearchMetadata(TypeManager typeManager, ElasticsearchClient client, ElasticsearchConfig config)
     {
-        requireNonNull(typeManager, "typeManager is null");
         this.ipAddressType = typeManager.getType(new TypeSignature(StandardTypes.IPADDRESS));
         this.client = requireNonNull(client, "client is null");
-        requireNonNull(config, "config is null");
         this.schemaName = config.getDefaultSchema();
     }
 
@@ -599,7 +597,7 @@ public class ElasticsearchMetadata
 
     protected static boolean isSupportedLikeCall(Call call)
     {
-        if (!LIKE_PATTERN_FUNCTION_NAME.equals(call.getFunctionName())) {
+        if (!LIKE_FUNCTION_NAME.equals(call.getFunctionName())) {
             return false;
         }
 

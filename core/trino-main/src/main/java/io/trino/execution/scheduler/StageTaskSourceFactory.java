@@ -34,19 +34,18 @@ import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.log.Logger;
 import io.airlift.units.DataSize;
 import io.trino.Session;
-import io.trino.connector.CatalogName;
+import io.trino.connector.CatalogHandle;
 import io.trino.execution.ForQueryExecution;
 import io.trino.execution.QueryManagerConfig;
 import io.trino.execution.TableExecuteContext;
 import io.trino.execution.TableExecuteContextManager;
+import io.trino.metadata.InternalNodeManager;
 import io.trino.metadata.Split;
 import io.trino.spi.HostAddress;
+import io.trino.spi.Node;
 import io.trino.spi.QueryId;
 import io.trino.spi.SplitWeight;
-import io.trino.spi.exchange.Exchange;
 import io.trino.spi.exchange.ExchangeSourceHandle;
-import io.trino.spi.exchange.ExchangeSourceSplitter;
-import io.trino.spi.exchange.ExchangeSourceStatistics;
 import io.trino.split.SplitSource;
 import io.trino.split.SplitSource.SplitBatch;
 import io.trino.sql.planner.PartitioningHandle;
@@ -65,7 +64,6 @@ import javax.inject.Inject;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -86,19 +84,19 @@ import static com.google.common.util.concurrent.Futures.allAsList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static io.airlift.concurrent.MoreFutures.addSuccessCallback;
 import static io.airlift.units.DataSize.Unit.BYTE;
+import static io.trino.SystemSessionProperties.getFaultTolerantExecutionDefaultCoordinatorTaskMemory;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionDefaultTaskMemory;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionMaxTaskSplitCount;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionMinTaskSplitCount;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionTargetTaskInputSize;
 import static io.trino.SystemSessionProperties.getFaultTolerantExecutionTargetTaskSplitCount;
 import static io.trino.SystemSessionProperties.getFaultTolerantPreserveInputPartitionsInWriteStage;
-import static io.trino.connector.CatalogName.isInternalSystemConnector;
+import static io.trino.sql.planner.SystemPartitioningHandle.COORDINATOR_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
-import static io.trino.sql.planner.plan.ExchangeNode.Type.GATHER;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPLICATE;
 import static java.util.Objects.requireNonNull;
 
@@ -111,38 +109,42 @@ public class StageTaskSourceFactory
     private final TableExecuteContextManager tableExecuteContextManager;
     private final int splitBatchSize;
     private final Executor executor;
+    private final InternalNodeManager nodeManager;
 
     @Inject
     public StageTaskSourceFactory(
             SplitSourceFactory splitSourceFactory,
             TableExecuteContextManager tableExecuteContextManager,
             QueryManagerConfig queryManagerConfig,
-            @ForQueryExecution ExecutorService executor)
+            @ForQueryExecution ExecutorService executor,
+            InternalNodeManager nodeManager)
     {
         this(
                 splitSourceFactory,
                 tableExecuteContextManager,
-                requireNonNull(queryManagerConfig, "queryManagerConfig is null").getScheduleSplitBatchSize(),
-                executor);
+                queryManagerConfig.getScheduleSplitBatchSize(),
+                executor,
+                nodeManager);
     }
 
     public StageTaskSourceFactory(
             SplitSourceFactory splitSourceFactory,
             TableExecuteContextManager tableExecuteContextManager,
             int splitBatchSize,
-            ExecutorService executor)
+            ExecutorService executor,
+            InternalNodeManager nodeManager)
     {
         this.splitSourceFactory = requireNonNull(splitSourceFactory, "splitSourceFactory is null");
         this.tableExecuteContextManager = requireNonNull(tableExecuteContextManager, "tableExecuteContextManager is null");
         this.splitBatchSize = splitBatchSize;
         this.executor = requireNonNull(executor, "executor is null");
+        this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
     }
 
     @Override
     public TaskSource create(
             Session session,
             PlanFragment fragment,
-            Map<PlanFragmentId, Exchange> sourceExchanges,
             Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles,
             LongConsumer getSplitTimeRecorder,
             Optional<int[]> bucketToPartitionMap,
@@ -150,23 +152,21 @@ public class StageTaskSourceFactory
     {
         PartitioningHandle partitioning = fragment.getPartitioning();
 
-        if (partitioning.equals(SINGLE_DISTRIBUTION)) {
-            return SingleDistributionTaskSource.create(session, fragment, exchangeSourceHandles);
+        if (partitioning.equals(SINGLE_DISTRIBUTION) || partitioning.equals(COORDINATOR_DISTRIBUTION)) {
+            return SingleDistributionTaskSource.create(session, fragment, exchangeSourceHandles, nodeManager, partitioning.equals(COORDINATOR_DISTRIBUTION));
         }
         if (partitioning.equals(FIXED_ARBITRARY_DISTRIBUTION) || partitioning.equals(SCALED_WRITER_DISTRIBUTION)) {
             return ArbitraryDistributionTaskSource.create(
                     session,
                     fragment,
-                    sourceExchanges,
                     exchangeSourceHandles,
                     getFaultTolerantExecutionTargetTaskInputSize(session));
         }
-        if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.getConnectorId().isPresent()) {
+        if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.getCatalogHandle().isPresent()) {
             return HashDistributionTaskSource.create(
                     session,
                     fragment,
                     splitSourceFactory,
-                    sourceExchanges,
                     exchangeSourceHandles,
                     splitBatchSize,
                     getSplitTimeRecorder,
@@ -200,21 +200,34 @@ public class StageTaskSourceFactory
             implements TaskSource
     {
         private final ListMultimap<PlanNodeId, ExchangeSourceHandle> exchangeSourceHandles;
+        private final DataSize taskMemory;
+        private final InternalNodeManager nodeManager;
+        private final boolean coordinatorOnly;
 
         private boolean finished;
-        private DataSize taskMemory;
 
-        public static SingleDistributionTaskSource create(Session session, PlanFragment fragment, Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles)
+        public static SingleDistributionTaskSource create(
+                Session session,
+                PlanFragment fragment,
+                Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles,
+                InternalNodeManager nodeManager,
+                boolean coordinatorOnly)
         {
             checkArgument(fragment.getPartitionedSources().isEmpty(), "no partitioned sources (table scans) expected, got: %s", fragment.getPartitionedSources());
-            return new SingleDistributionTaskSource(getInputsForRemoteSources(fragment.getRemoteSourceNodes(), exchangeSourceHandles), getFaultTolerantExecutionDefaultTaskMemory(session));
+            return new SingleDistributionTaskSource(
+                    getInputsForRemoteSources(fragment.getRemoteSourceNodes(), exchangeSourceHandles),
+                    coordinatorOnly ? getFaultTolerantExecutionDefaultCoordinatorTaskMemory(session) : getFaultTolerantExecutionDefaultTaskMemory(session),
+                    nodeManager,
+                    coordinatorOnly);
         }
 
         @VisibleForTesting
-        SingleDistributionTaskSource(ListMultimap<PlanNodeId, ExchangeSourceHandle> exchangeSourceHandles, DataSize taskMemory)
+        SingleDistributionTaskSource(ListMultimap<PlanNodeId, ExchangeSourceHandle> exchangeSourceHandles, DataSize taskMemory, InternalNodeManager nodeManager, boolean coordinatorOnly)
         {
             this.exchangeSourceHandles = ImmutableListMultimap.copyOf(requireNonNull(exchangeSourceHandles, "exchangeSourceHandles is null"));
             this.taskMemory = requireNonNull(taskMemory, "taskMemory is null");
+            this.nodeManager = requireNonNull(nodeManager, "nodeManager");
+            this.coordinatorOnly = coordinatorOnly;
         }
 
         @Override
@@ -223,11 +236,17 @@ public class StageTaskSourceFactory
             if (finished) {
                 return immediateFuture(ImmutableList.of());
             }
+            ImmutableSet<HostAddress> hostRequirement = ImmutableSet.of();
+            if (coordinatorOnly) {
+                Node currentNode = nodeManager.getCurrentNode();
+                verify(currentNode.isCoordinator(), "current node is expected to be a coordinator");
+                hostRequirement = ImmutableSet.of(currentNode.getHostAndPort());
+            }
             List<TaskDescriptor> result = ImmutableList.of(new TaskDescriptor(
                     0,
                     ImmutableListMultimap.of(),
                     exchangeSourceHandles,
-                    new NodeRequirements(Optional.empty(), ImmutableSet.of(), taskMemory)));
+                    new NodeRequirements(Optional.empty(), hostRequirement, taskMemory)));
             finished = true;
             return immediateFuture(result);
         }
@@ -247,26 +266,21 @@ public class StageTaskSourceFactory
     public static class ArbitraryDistributionTaskSource
             implements TaskSource
     {
-        private final IdentityHashMap<ExchangeSourceHandle, Exchange> sourceExchanges;
         private final Multimap<PlanNodeId, ExchangeSourceHandle> partitionedExchangeSourceHandles;
         private final Multimap<PlanNodeId, ExchangeSourceHandle> replicatedExchangeSourceHandles;
         private final long targetPartitionSizeInBytes;
-        private DataSize taskMemory;
+        private final DataSize taskMemory;
 
         private boolean finished;
 
         public static ArbitraryDistributionTaskSource create(
                 Session session,
                 PlanFragment fragment,
-                Map<PlanFragmentId, Exchange> sourceExchanges,
                 Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles,
                 DataSize targetPartitionSize)
         {
             checkArgument(fragment.getPartitionedSources().isEmpty(), "no partitioned sources (table scans) expected, got: %s", fragment.getPartitionedSources());
-            IdentityHashMap<ExchangeSourceHandle, Exchange> exchangeForHandleMap = getExchangeForHandleMap(sourceExchanges, exchangeSourceHandles);
-
             return new ArbitraryDistributionTaskSource(
-                    exchangeForHandleMap,
                     getPartitionedExchangeSourceHandles(fragment, exchangeSourceHandles),
                     getReplicatedExchangeSourceHandles(fragment, exchangeSourceHandles),
                     targetPartitionSize,
@@ -275,27 +289,15 @@ public class StageTaskSourceFactory
 
         @VisibleForTesting
         ArbitraryDistributionTaskSource(
-                IdentityHashMap<ExchangeSourceHandle, Exchange> sourceExchanges,
                 Multimap<PlanNodeId, ExchangeSourceHandle> partitionedExchangeSourceHandles,
                 Multimap<PlanNodeId, ExchangeSourceHandle> replicatedExchangeSourceHandles,
                 DataSize targetPartitionSize,
                 DataSize taskMemory)
         {
-            this.sourceExchanges = new IdentityHashMap<>(requireNonNull(sourceExchanges, "sourceExchanges is null"));
             this.partitionedExchangeSourceHandles = ImmutableListMultimap.copyOf(requireNonNull(partitionedExchangeSourceHandles, "partitionedExchangeSourceHandles is null"));
             this.replicatedExchangeSourceHandles = ImmutableListMultimap.copyOf(requireNonNull(replicatedExchangeSourceHandles, "replicatedExchangeSourceHandles is null"));
             this.taskMemory = requireNonNull(taskMemory, "taskMemory is null");
-            checkArgument(
-                    sourceExchanges.keySet().containsAll(partitionedExchangeSourceHandles.values()),
-                    "Unexpected entries in partitionedExchangeSourceHandles map: %s; allowed keys: %s",
-                    partitionedExchangeSourceHandles.values(),
-                    sourceExchanges.keySet());
-            checkArgument(
-                    sourceExchanges.keySet().containsAll(replicatedExchangeSourceHandles.values()),
-                    "Unexpected entries in replicatedExchangeSourceHandles map: %s; allowed keys: %s",
-                    replicatedExchangeSourceHandles.values(),
-                    sourceExchanges.keySet());
-            this.targetPartitionSizeInBytes = requireNonNull(targetPartitionSize, "targetPartitionSize is null").toBytes();
+            this.targetPartitionSizeInBytes = targetPartitionSize.toBytes();
         }
 
         @Override
@@ -315,34 +317,20 @@ public class StageTaskSourceFactory
 
             for (Map.Entry<PlanNodeId, ExchangeSourceHandle> entry : partitionedExchangeSourceHandles.entries()) {
                 PlanNodeId remoteSourcePlanNodeId = entry.getKey();
-                ExchangeSourceHandle originalExchangeSourceHandle = entry.getValue();
-                Exchange sourceExchange = sourceExchanges.get(originalExchangeSourceHandle);
+                ExchangeSourceHandle handle = entry.getValue();
+                long handleDataSizeInBytes = handle.getDataSizeInBytes();
 
-                ExchangeSourceSplitter splitter = sourceExchange.split(originalExchangeSourceHandle, targetPartitionSizeInBytes);
-                ImmutableList.Builder<ExchangeSourceHandle> sourceHandles = ImmutableList.builder();
-                while (true) {
-                    checkState(splitter.isBlocked().isDone(), "not supported");
-                    Optional<ExchangeSourceHandle> next = splitter.getNext();
-                    if (next.isEmpty()) {
-                        break;
-                    }
-                    sourceHandles.add(next.get());
+                if (assignedExchangeDataSize != 0 && assignedExchangeDataSize + handleDataSizeInBytes > targetPartitionSizeInBytes) {
+                    assignedExchangeSourceHandles.putAll(replicatedExchangeSourceHandles);
+                    result.add(new TaskDescriptor(currentPartitionId++, ImmutableListMultimap.of(), assignedExchangeSourceHandles.build(), nodeRequirements));
+                    assignedExchangeSourceHandles = ImmutableListMultimap.builder();
+                    assignedExchangeDataSize = 0;
+                    assignedExchangeSourceHandleCount = 0;
                 }
 
-                for (ExchangeSourceHandle handle : sourceHandles.build()) {
-                    ExchangeSourceStatistics statistics = sourceExchange.getExchangeSourceStatistics(handle);
-                    if (assignedExchangeDataSize != 0 && assignedExchangeDataSize + statistics.getSizeInBytes() > targetPartitionSizeInBytes) {
-                        assignedExchangeSourceHandles.putAll(replicatedExchangeSourceHandles);
-                        result.add(new TaskDescriptor(currentPartitionId++, ImmutableListMultimap.of(), assignedExchangeSourceHandles.build(), nodeRequirements));
-                        assignedExchangeSourceHandles = ImmutableListMultimap.builder();
-                        assignedExchangeDataSize = 0;
-                        assignedExchangeSourceHandleCount = 0;
-                    }
-
-                    assignedExchangeSourceHandles.put(remoteSourcePlanNodeId, handle);
-                    assignedExchangeDataSize += statistics.getSizeInBytes();
-                    assignedExchangeSourceHandleCount++;
-                }
+                assignedExchangeSourceHandles.put(remoteSourcePlanNodeId, handle);
+                assignedExchangeDataSize += handleDataSizeInBytes;
+                assignedExchangeSourceHandleCount++;
             }
 
             if (assignedExchangeSourceHandleCount > 0) {
@@ -370,7 +358,6 @@ public class StageTaskSourceFactory
             implements TaskSource
     {
         private final Map<PlanNodeId, SplitSource> splitSources;
-        private final IdentityHashMap<ExchangeSourceHandle, Exchange> exchangeForHandle;
         private final Multimap<PlanNodeId, ExchangeSourceHandle> partitionedExchangeSourceHandles;
         private final Multimap<PlanNodeId, ExchangeSourceHandle> replicatedExchangeSourceHandles;
 
@@ -379,7 +366,7 @@ public class StageTaskSourceFactory
         private final int[] bucketToPartitionMap;
         private final Optional<BucketNodeMap> bucketNodeMap;
         private final DataSize taskMemory;
-        private final Optional<CatalogName> catalogRequirement;
+        private final Optional<CatalogHandle> catalogRequirement;
         private final long targetPartitionSourceSizeInBytes; // compared data read from ExchangeSources
         private final long targetPartitionSplitWeight; // compared against splits from SplitSources
         private final Executor executor;
@@ -395,7 +382,6 @@ public class StageTaskSourceFactory
                 Session session,
                 PlanFragment fragment,
                 SplitSourceFactory splitSourceFactory,
-                Map<PlanFragmentId, Exchange> sourceExchanges,
                 Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles,
                 int splitBatchSize,
                 LongConsumer getSplitTimeRecorder,
@@ -411,14 +397,13 @@ public class StageTaskSourceFactory
 
             return new HashDistributionTaskSource(
                     splitSources,
-                    getExchangeForHandleMap(sourceExchanges, exchangeSourceHandles),
                     getPartitionedExchangeSourceHandles(fragment, exchangeSourceHandles),
                     getReplicatedExchangeSourceHandles(fragment, exchangeSourceHandles),
                     splitBatchSize,
                     getSplitTimeRecorder,
                     bucketToPartitionMap,
                     bucketNodeMap,
-                    fragment.getPartitioning().getConnectorId(),
+                    fragment.getPartitioning().getCatalogHandle(),
                     targetPartitionSplitWeight,
                     (preserveInputPartitionsInWriteStage && isWriteFragment(fragment)) ? DataSize.of(0, BYTE) : targetPartitionSourceSize,
                     getFaultTolerantExecutionDefaultTaskMemory(session),
@@ -453,22 +438,19 @@ public class StageTaskSourceFactory
         @VisibleForTesting
         HashDistributionTaskSource(
                 Map<PlanNodeId, SplitSource> splitSources,
-                IdentityHashMap<ExchangeSourceHandle, Exchange> exchangeForHandle,
                 Multimap<PlanNodeId, ExchangeSourceHandle> partitionedExchangeSourceHandles,
                 Multimap<PlanNodeId, ExchangeSourceHandle> replicatedExchangeSourceHandles,
                 int splitBatchSize,
                 LongConsumer getSplitTimeRecorder,
                 int[] bucketToPartitionMap,
                 Optional<BucketNodeMap> bucketNodeMap,
-                Optional<CatalogName> catalogRequirement,
+                Optional<CatalogHandle> catalogRequirement,
                 long targetPartitionSplitWeight,
                 DataSize targetPartitionSourceSize,
                 DataSize taskMemory,
                 Executor executor)
         {
             this.splitSources = ImmutableMap.copyOf(requireNonNull(splitSources, "splitSources is null"));
-            this.exchangeForHandle = new IdentityHashMap<>();
-            this.exchangeForHandle.putAll(exchangeForHandle);
             this.partitionedExchangeSourceHandles = ImmutableListMultimap.copyOf(requireNonNull(partitionedExchangeSourceHandles, "partitionedExchangeSourceHandles is null"));
             this.replicatedExchangeSourceHandles = ImmutableListMultimap.copyOf(requireNonNull(replicatedExchangeSourceHandles, "replicatedExchangeSourceHandles is null"));
             this.splitBatchSize = splitBatchSize;
@@ -478,7 +460,7 @@ public class StageTaskSourceFactory
             this.taskMemory = requireNonNull(taskMemory, "taskMemory is null");
             checkArgument(bucketNodeMap.isPresent() || splitSources.isEmpty(), "bucketNodeMap is expected to be set when the fragment reads partitioned sources (tables)");
             this.catalogRequirement = requireNonNull(catalogRequirement, "catalogRequirement is null");
-            this.targetPartitionSourceSizeInBytes = requireNonNull(targetPartitionSourceSize, "targetPartitionSourceSize is null").toBytes();
+            this.targetPartitionSourceSizeInBytes = targetPartitionSourceSize.toBytes();
             this.targetPartitionSplitWeight = targetPartitionSplitWeight;
             this.executor = requireNonNull(executor, "executor is null");
         }
@@ -513,8 +495,8 @@ public class StageTaskSourceFactory
                                     int bucket = bucketNodeMap.getBucket(split);
                                     int partition = getPartitionForBucket(bucket);
 
-                                    if (!bucketNodeMap.isDynamic()) {
-                                        HostAddress requiredAddress = bucketNodeMap.getAssignedNode(split).get().getHostAndPort();
+                                    {
+                                        HostAddress requiredAddress = bucketNodeMap.getAssignedNode(split).getHostAndPort();
                                         Set<HostAddress> existingRequirement = partitionToNodeMap.get(partition);
                                         if (existingRequirement.isEmpty()) {
                                             existingRequirement.add(requiredAddress);
@@ -587,7 +569,7 @@ public class StageTaskSourceFactory
         {
             ListMultimap<NodeRequirements, TaskDescriptor> taskGroups = groupCompatibleTasks(tasks);
             ImmutableList.Builder<TaskDescriptor> joinedTasks = ImmutableList.builder();
-            long replicatedExchangeSourcesSize = replicatedExchangeSourceHandles.values().stream().mapToLong(this::sourceHandleSize).sum();
+            long replicatedExchangeSourcesSize = replicatedExchangeSourceHandles.values().stream().mapToLong(ExchangeSourceHandle::getDataSizeInBytes).sum();
             int taskPartitionId = 0;
             for (Map.Entry<NodeRequirements, Collection<TaskDescriptor>> taskGroup : taskGroups.asMap().entrySet()) {
                 NodeRequirements groupNodeRequirements = taskGroup.getKey();
@@ -602,7 +584,7 @@ public class StageTaskSourceFactory
                     ListMultimap<PlanNodeId, Split> taskSplits = task.getSplits();
                     ListMultimap<PlanNodeId, ExchangeSourceHandle> taskExchangeSources = task.getExchangeSourceHandles();
                     long taskSplitWeight = taskSplits.values().stream().mapToLong(split -> split.getSplitWeight().getRawValue()).sum();
-                    long taskExchangeSourcesSize = taskExchangeSources.values().stream().mapToLong(this::sourceHandleSize).sum();
+                    long taskExchangeSourcesSize = taskExchangeSources.values().stream().mapToLong(ExchangeSourceHandle::getDataSizeInBytes).sum();
 
                     if ((splitsWeight > 0 || exchangeSourcesSize > 0)
                             && ((splitsWeight + taskSplitWeight) > targetPartitionSplitWeight || (exchangeSourcesSize + taskExchangeSourcesSize + replicatedExchangeSourcesSize) > targetPartitionSourceSizeInBytes)) {
@@ -631,13 +613,6 @@ public class StageTaskSourceFactory
                 }
             }
             return joinedTasks.build();
-        }
-
-        private long sourceHandleSize(ExchangeSourceHandle handle)
-        {
-            Exchange exchange = exchangeForHandle.get(handle);
-            ExchangeSourceStatistics exchangeSourceStatistics = exchange.getExchangeSourceStatistics(handle);
-            return exchangeSourceStatistics.getSizeInBytes();
         }
 
         private ListMultimap<NodeRequirements, TaskDescriptor> groupCompatibleTasks(List<TaskDescriptor> tasks)
@@ -684,7 +659,7 @@ public class StageTaskSourceFactory
         private final ListMultimap<PlanNodeId, ExchangeSourceHandle> replicatedExchangeSourceHandles;
         private final int splitBatchSize;
         private final LongConsumer getSplitTimeRecorder;
-        private final Optional<CatalogName> catalogRequirement;
+        private final Optional<CatalogHandle> catalogRequirement;
         private final int minPartitionSplitCount;
         private final long targetPartitionSplitWeight;
         private final int maxPartitionSplitCount;
@@ -727,8 +702,8 @@ public class StageTaskSourceFactory
             Map<PlanNodeId, SplitSource> splitSources = splitSourceFactory.createSplitSources(session, fragment);
             SplitSource splitSource = splitSources.get(partitionedSourceNodeId);
 
-            Optional<CatalogName> catalogName = Optional.of(splitSource.getCatalogName())
-                    .filter(catalog -> !isInternalSystemConnector(catalog));
+            Optional<CatalogHandle> catalogName = Optional.of(splitSource.getCatalogHandle())
+                    .filter(catalog -> !catalog.getType().isInternal());
 
             return new SourceDistributionTaskSource(
                     session.getQueryId(),
@@ -755,7 +730,7 @@ public class StageTaskSourceFactory
                 ListMultimap<PlanNodeId, ExchangeSourceHandle> replicatedExchangeSourceHandles,
                 int splitBatchSize,
                 LongConsumer getSplitTimeRecorder,
-                Optional<CatalogName> catalogRequirement,
+                Optional<CatalogHandle> catalogRequirement,
                 int minPartitionSplitCount,
                 long targetPartitionSplitWeight,
                 int maxPartitionSplitCount,
@@ -926,21 +901,6 @@ public class StageTaskSourceFactory
         }
     }
 
-    private static IdentityHashMap<ExchangeSourceHandle, Exchange> getExchangeForHandleMap(
-            Map<PlanFragmentId, Exchange> sourceExchanges,
-            Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles)
-    {
-        IdentityHashMap<ExchangeSourceHandle, Exchange> exchangeForHandle = new IdentityHashMap<>();
-        for (Map.Entry<PlanFragmentId, ExchangeSourceHandle> entry : exchangeSourceHandles.entries()) {
-            PlanFragmentId fragmentId = entry.getKey();
-            ExchangeSourceHandle handle = entry.getValue();
-            Exchange exchange = sourceExchanges.get(fragmentId);
-            requireNonNull(exchange, "Exchange not found for fragment " + fragmentId);
-            exchangeForHandle.put(handle, exchange);
-        }
-        return exchangeForHandle;
-    }
-
     private static ListMultimap<PlanNodeId, ExchangeSourceHandle> getReplicatedExchangeSourceHandles(PlanFragment fragment, Multimap<PlanFragmentId, ExchangeSourceHandle> handles)
     {
         return getInputsForRemoteSources(
@@ -959,17 +919,6 @@ public class StageTaskSourceFactory
                 handles);
     }
 
-    private static Map<PlanFragmentId, PlanNodeId> getSourceFragmentToRemoteSourceNodeIdMap(List<RemoteSourceNode> remoteSourceNodes)
-    {
-        ImmutableMap.Builder<PlanFragmentId, PlanNodeId> result = ImmutableMap.builder();
-        for (RemoteSourceNode node : remoteSourceNodes) {
-            for (PlanFragmentId sourceFragmentId : node.getSourceFragmentIds()) {
-                result.put(sourceFragmentId, node.getId());
-            }
-        }
-        return result.buildOrThrow();
-    }
-
     private static ListMultimap<PlanNodeId, ExchangeSourceHandle> getInputsForRemoteSources(
             List<RemoteSourceNode> remoteSources,
             Multimap<PlanFragmentId, ExchangeSourceHandle> exchangeSourceHandles)
@@ -978,9 +927,6 @@ public class StageTaskSourceFactory
         for (RemoteSourceNode remoteSource : remoteSources) {
             for (PlanFragmentId fragmentId : remoteSource.getSourceFragmentIds()) {
                 Collection<ExchangeSourceHandle> handles = requireNonNull(exchangeSourceHandles.get(fragmentId), () -> "exchange source handle is missing for fragment: " + fragmentId);
-                if (remoteSource.getExchangeType() == GATHER || remoteSource.getExchangeType() == REPLICATE) {
-                    checkArgument(handles.size() <= 1, "at most 1 exchange source handle is expected, got: %s", handles);
-                }
                 result.putAll(remoteSource.getId(), handles);
             }
         }

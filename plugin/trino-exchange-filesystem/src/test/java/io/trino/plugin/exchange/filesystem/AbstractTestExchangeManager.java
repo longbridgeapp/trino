@@ -15,6 +15,7 @@ package io.trino.plugin.exchange.filesystem;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableListMultimap;
+import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Multimap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -36,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
+import static com.google.common.collect.ImmutableListMultimap.toImmutableListMultimap;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.airlift.units.DataSize.Unit.BYTE;
@@ -73,7 +75,7 @@ public abstract class AbstractTestExchangeManager
     public void testHappyPath()
             throws Exception
     {
-        Exchange exchange = exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 2);
+        Exchange exchange = exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 2, false);
         ExchangeSinkHandle sinkHandle0 = exchange.addSink(0);
         ExchangeSinkHandle sinkHandle1 = exchange.addSink(1);
         ExchangeSinkHandle sinkHandle2 = exchange.addSink(2);
@@ -170,7 +172,7 @@ public abstract class AbstractTestExchangeManager
         String largePage = "c".repeat(toIntExact(DataSize.of(5, MEGABYTE).toBytes()) - Integer.BYTES);
         String maxPage = "d".repeat(toIntExact(DataSize.of(16, MEGABYTE).toBytes()) - Integer.BYTES);
 
-        Exchange exchange = exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 3);
+        Exchange exchange = exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 3, false);
         ExchangeSinkHandle sinkHandle0 = exchange.addSink(0);
         ExchangeSinkHandle sinkHandle1 = exchange.addSink(1);
         ExchangeSinkHandle sinkHandle2 = exchange.addSink(2);
@@ -210,10 +212,10 @@ public abstract class AbstractTestExchangeManager
         exchange.sinkFinished(sinkInstanceHandle);
 
         List<ExchangeSourceHandle> partitionHandles = exchange.getSourceHandles().get();
-        assertThat(partitionHandles).hasSize(3);
+        assertThat(partitionHandles).hasSize(10);
 
-        Map<Integer, ExchangeSourceHandle> partitions = partitionHandles.stream()
-                .collect(toImmutableMap(ExchangeSourceHandle::getPartitionId, Function.identity()));
+        ListMultimap<Integer, ExchangeSourceHandle> partitions = partitionHandles.stream()
+                .collect(toImmutableListMultimap(ExchangeSourceHandle::getPartitionId, Function.identity()));
 
         assertThat(readData(partitions.get(0)))
                 .containsExactlyInAnyOrder(smallPage, mediumPage, largePage, maxPage);
@@ -230,14 +232,14 @@ public abstract class AbstractTestExchangeManager
     @Test
     public void testMaxOutputPartitionCountCheck()
     {
-        assertThatThrownBy(() -> exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 51))
+        assertThatThrownBy(() -> exchangeManager.createExchange(new ExchangeContext(new QueryId("query"), createRandomExchangeId()), 51, false))
                 .hasMessageContaining("Max number of output partitions exceeded for exchange")
                 .hasFieldOrPropertyWithValue("errorCode", MAX_OUTPUT_PARTITION_COUNT_EXCEEDED.toErrorCode());
     }
 
     private void writeData(ExchangeSinkInstanceHandle handle, Multimap<Integer, String> data, boolean finish)
     {
-        ExchangeSink sink = exchangeManager.createSink(handle, false);
+        ExchangeSink sink = exchangeManager.createSink(handle);
         data.forEach((key, value) -> {
             sink.add(key, Slices.utf8Slice(value));
         });

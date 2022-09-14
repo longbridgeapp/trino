@@ -66,8 +66,8 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import io.airlift.concurrent.MoreFutures;
 import io.airlift.log.Logger;
-import io.trino.plugin.hive.HdfsEnvironment;
-import io.trino.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.trino.hdfs.HdfsContext;
+import io.trino.hdfs.HdfsEnvironment;
 import io.trino.plugin.hive.HiveType;
 import io.trino.plugin.hive.PartitionNotFoundException;
 import io.trino.plugin.hive.PartitionStatistics;
@@ -101,6 +101,8 @@ import io.trino.spi.security.RoleGrant;
 import io.trino.spi.statistics.ColumnStatisticType;
 import io.trino.spi.type.Type;
 import org.apache.hadoop.fs.Path;
+import org.weakref.jmx.Flatten;
+import org.weakref.jmx.Managed;
 
 import javax.annotation.Nullable;
 import javax.inject.Inject;
@@ -185,7 +187,6 @@ public class GlueHiveMetastore
             @ForGlueHiveMetastore Optional<RequestHandler2> requestHandler,
             @ForGlueHiveMetastore Predicate<com.amazonaws.services.glue.model.Table> tableFilter)
     {
-        requireNonNull(glueConfig, "glueConfig is null");
         requireNonNull(credentialsProvider, "credentialsProvider is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.hdfsContext = new HdfsContext(ConnectorIdentity.ofUser(DEFAULT_METASTORE_USER));
@@ -230,6 +231,8 @@ public class GlueHiveMetastore
         return asyncGlueClientBuilder.build();
     }
 
+    @Managed
+    @Flatten
     public GlueMetastoreStats getStats()
     {
         return stats;
@@ -626,7 +629,50 @@ public class GlueHiveMetastore
     @Override
     public void renameTable(String databaseName, String tableName, String newDatabaseName, String newTableName)
     {
-        throw new TrinoException(NOT_SUPPORTED, "Table rename is not yet supported by Glue service");
+        boolean newTableCreated = false;
+        try {
+            GetTableRequest getTableRequest = new GetTableRequest().withDatabaseName(databaseName)
+                    .withName(tableName);
+            GetTableResult glueTable = glueClient.getTable(getTableRequest);
+            TableInput tableInput = convertGlueTableToTableInput(glueTable.getTable(), newTableName);
+            CreateTableRequest createTableRequest = new CreateTableRequest()
+                    .withDatabaseName(newDatabaseName)
+                    .withTableInput(tableInput);
+            stats.getCreateTable().call(() -> glueClient.createTable(createTableRequest));
+            newTableCreated = true;
+            dropTable(databaseName, tableName, false);
+        }
+        catch (RuntimeException e) {
+            if (newTableCreated) {
+                try {
+                    dropTable(databaseName, tableName, false);
+                }
+                catch (RuntimeException cleanupException) {
+                    if (!cleanupException.equals(e)) {
+                        e.addSuppressed(cleanupException);
+                    }
+                }
+            }
+            throw e;
+        }
+    }
+
+    private TableInput convertGlueTableToTableInput(com.amazonaws.services.glue.model.Table glueTable, String newTableName)
+    {
+        return new TableInput()
+                .withName(newTableName)
+                .withDescription(glueTable.getDescription())
+                .withOwner(glueTable.getOwner())
+                .withLastAccessTime(glueTable.getLastAccessTime())
+                .withLastAnalyzedTime(glueTable.getLastAnalyzedTime())
+                .withRetention(glueTable.getRetention())
+                .withStorageDescriptor(glueTable.getStorageDescriptor())
+                .withPartitionKeys(glueTable.getPartitionKeys())
+                .withViewOriginalText(glueTable.getViewOriginalText())
+                .withViewExpandedText(glueTable.getViewExpandedText())
+                .withTableType(glueTable.getTableType())
+                .withTargetTable(glueTable.getTargetTable())
+                .withParameters(glueTable.getParameters());
     }
 
     @Override

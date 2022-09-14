@@ -24,6 +24,7 @@ import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.buffer.OutputBuffers.OutputBufferId;
 import io.trino.execution.buffer.SerializedPageReference.PagesReleasedListener;
 import io.trino.memory.context.LocalMemoryContext;
+import io.trino.plugin.base.metrics.TDigestHistogram;
 
 import javax.annotation.concurrent.GuardedBy;
 
@@ -88,7 +89,7 @@ public class BroadcastOutputBuffer
         this.taskInstanceId = requireNonNull(taskInstanceId, "taskInstanceId is null");
         this.stateMachine = requireNonNull(stateMachine, "stateMachine is null");
         this.memoryManager = new OutputBufferMemoryManager(
-                requireNonNull(maxBufferSize, "maxBufferSize is null").toBytes(),
+                maxBufferSize.toBytes(),
                 requireNonNull(memoryContextSupplier, "memoryContextSupplier is null"),
                 requireNonNull(notificationExecutor, "notificationExecutor is null"));
         this.onPagesReleased = (releasedPageCount, releasedMemorySizeInBytes) -> {
@@ -142,7 +143,8 @@ public class BroadcastOutputBuffer
                 totalPagesAdded.get(),
                 buffers.stream()
                         .map(ClientBuffer::getInfo)
-                        .collect(toImmutableList()));
+                        .collect(toImmutableList()),
+                Optional.of(new TDigestHistogram(memoryManager.getUtilizationHistogram())));
     }
 
     @Override

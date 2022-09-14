@@ -18,15 +18,15 @@ import io.airlift.slice.Slices;
 import io.trino.parquet.DataPage;
 import io.trino.parquet.DataPageV2;
 import io.trino.parquet.PrimitiveField;
-import io.trino.parquet.RichColumnDescriptor;
 import io.trino.spi.block.Block;
 import org.apache.parquet.bytes.HeapByteBufferAllocator;
 import org.apache.parquet.column.ColumnDescriptor;
-import org.apache.parquet.column.statistics.IntStatistics;
+import org.apache.parquet.column.statistics.Statistics;
 import org.apache.parquet.column.values.plain.PlainValuesWriter;
 import org.apache.parquet.column.values.rle.RunLengthBitPackingHybridEncoder;
 import org.apache.parquet.internal.filter2.columnindex.RowRanges;
 import org.apache.parquet.schema.PrimitiveType;
+import org.apache.parquet.schema.Types;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -64,8 +64,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 public class TestColumnReader
 {
     private static final PrimitiveType TYPE = new PrimitiveType(REQUIRED, INT32, "");
-    private static final PrimitiveField NULLABLE_FIELD = new PrimitiveField(INTEGER, 0, 0, false, new RichColumnDescriptor(new ColumnDescriptor(new String[] {}, TYPE, 0, 0), TYPE), 0);
-    private static final PrimitiveField FIELD = new PrimitiveField(INTEGER, 0, 0, true, new RichColumnDescriptor(new ColumnDescriptor(new String[] {}, TYPE, 0, 0), TYPE), 0);
+    private static final PrimitiveField NULLABLE_FIELD = new PrimitiveField(INTEGER, false, new ColumnDescriptor(new String[] {}, TYPE, 0, 0), 0);
+    private static final PrimitiveField FIELD = new PrimitiveField(INTEGER, true, new ColumnDescriptor(new String[] {}, TYPE, 0, 0), 0);
 
     @Test(dataProvider = "testRowRangesProvider")
     public void testReadFilteredPage(
@@ -147,8 +147,8 @@ public class TestColumnReader
 
     private enum ColumnReaderInput
     {
-        INT_PRIMITIVE_NO_NULLS(() -> new IntColumnReader(FIELD.getDescriptor()), FIELD),
-        INT_PRIMITIVE_NULLABLE(() -> new IntColumnReader(NULLABLE_FIELD.getDescriptor()), NULLABLE_FIELD);
+        INT_PRIMITIVE_NO_NULLS(() -> new IntColumnReader(FIELD), FIELD),
+        INT_PRIMITIVE_NULLABLE(() -> new IntColumnReader(NULLABLE_FIELD), NULLABLE_FIELD);
 
         private final Supplier<PrimitiveColumnReader> columnReader;
         private final PrimitiveField field;
@@ -248,7 +248,7 @@ public class TestColumnReader
                     Slices.wrappedBuffer(encodePlainValues(values)),
                     valueCount * 4,
                     OptionalLong.of(start),
-                    new IntStatistics(),
+                    Statistics.createStats(Types.optional(INT32).named("TestColumn")),
                     false);
         }
 

@@ -17,7 +17,7 @@ create a new metadata file and replace the old metadata with an atomic swap.
 The table metadata file tracks the table schema, partitioning config,
 custom properties, and snapshots of the table contents.
 
-Iceberg data files can be stored in either Parquet or ORC format, as
+Iceberg data files can be stored in either Parquet, ORC or Avro format, as
 determined by the ``format`` property in the table definition.  The
 table ``format`` defaults to ``ORC``.
 
@@ -96,6 +96,7 @@ is used.
 
       * ``PARQUET``
       * ``ORC``
+      * ``AVRO``
     - ``ORC``
   * - ``iceberg.compression-codec``
     - The compression codec to be used when writing files.
@@ -121,7 +122,7 @@ is used.
     - ``1GB``
   * - ``iceberg.unique-table-location``
     - Use randomized, unique table locations.
-    - ``false``
+    - ``true``
   * - ``iceberg.dynamic-filtering.wait-timeout``
     - Maximum duration to wait for completion of dynamic filters during split generation.
     - ``0s``
@@ -214,6 +215,7 @@ supports the following features:
 * :doc:`/sql/insert`
 * :doc:`/sql/delete`, see also :ref:`iceberg-delete`
 * :doc:`/sql/update`
+* :doc:`/sql/merge`
 * :ref:`sql-schema-table-management`, see also :ref:`iceberg-tables`
 * :ref:`sql-materialized-view-management`, see also
   :ref:`iceberg-materialized-views`
@@ -508,17 +510,51 @@ Row level deletion
 Tables using v2 of the Iceberg specification support deletion of individual rows
 by writing position delete files.
 
-Rolling back to a previous snapshot
------------------------------------
+Snapshots
+---------
 
 Iceberg supports a "snapshot" model of data, where table snapshots are
-identified by an snapshot IDs.
+identified by a snapshot ID.
 
-The connector provides a system snapshots table for each Iceberg table.  Snapshots are
-identified by BIGINT snapshot IDs.  You can find the latest snapshot ID for table
-``customer_orders`` by running the following command::
+The connector provides a system table exposing snapshot information for every
+Iceberg table. Snapshots are identified by ``BIGINT`` snapshot IDs.
+For example, you could find the snapshot IDs for the ``customer_orders`` table
+by running the following query::
 
-    SELECT snapshot_id FROM iceberg.testdb."customer_orders$snapshots" ORDER BY committed_at DESC LIMIT 1
+    SELECT snapshot_id
+    FROM iceberg.testdb."customer_orders$snapshots"
+    ORDER BY committed_at DESC
+
+Time travel queries
+^^^^^^^^^^^^^^^^^^^
+
+The connector offers the ability to query historical data.
+This allows you to query the table as it was when a previous snapshot
+of the table was taken, even if the data has since been modified or deleted.
+
+The historical data of the table can be retrieved by specifying the
+snapshot identifier corresponding to the version of the table that
+needs to be retrieved::
+
+   SELECT *
+   FROM iceberg.testdb.customer_orders FOR VERSION AS OF 8954597067493422955
+
+A different approach of retrieving historical data is to specify
+a point in time in the past, such as a day or week ago. The latest snapshot
+of the table taken before or at the specified timestamp in the query is
+internally used for providing the previous state of the table::
+
+   SELECT *
+   FROM iceberg.testdb.customer_orders FOR TIMESTAMP AS OF TIMESTAMP '2022-03-23 09:59:29.803 Europe/Vienna'
+
+Rolling back to a previous snapshot
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Use the ``$snapshots`` metadata table to determine the latest snapshot ID of the table like in the following query::
+
+    SELECT snapshot_id
+    FROM iceberg.testdb."customer_orders$snapshots"
+    ORDER BY committed_at DESC LIMIT 1
 
 A SQL procedure ``system.rollback_to_snapshot`` allows the caller to roll back
 the state of the table to a previous snapshot id::
@@ -549,7 +585,7 @@ Iceberg table properties
 Property name                                      Description
 ================================================== ================================================================
 ``format``                                         Optionally specifies the format of table data files;
-                                                   either ``PARQUET`` or ``ORC``.  Defaults to ``ORC``.
+                                                   either ``PARQUET``, ``ORC`` or ``AVRO```.  Defaults to ``ORC``.
 
 ``partitioning``                                   Optionally specifies table partitioning.
                                                    If a table is partitioned by columns ``c1`` and ``c2``, the
@@ -609,11 +645,13 @@ path metadata as a hidden column in each table:
 
 * ``$path``: Full file system path name of the file for this row
 
-You can use this column in your SQL statements like any other column. This
+* ``$file_modified_time``: Timestamp of the last modification of the file for this row
+
+You can use these columns in your SQL statements like any other column. This
 can be selected directly, or used in conditional statements. For example, you
 can inspect the file path for each record::
 
-    SELECT *, "$path"
+    SELECT *, "$path", "$file_modified_time"
     FROM iceberg.web.page_views;
 
 Retrieve all records that belong to a specific file using ``"$path"`` filter::
@@ -621,6 +659,12 @@ Retrieve all records that belong to a specific file using ``"$path"`` filter::
     SELECT *
     FROM iceberg.web.page_views
     WHERE "$path" = '/usr/iceberg/table/web.page_views/data/file_01.parquet'
+
+Retrieve all records that belong to a specific file using ``"$file_modified_time"`` filter::
+
+    SELECT *
+    FROM iceberg.web.page_views
+    WHERE "$file_modified_time" = CAST('2022-07-01 01:02:03.456 UTC' AS timestamp with time zone)
 
 .. _iceberg-metadata-tables:
 
@@ -775,9 +819,9 @@ You can retrieve the information about the manifests of the Iceberg table
 
 .. code-block:: text
 
-     path                                                                                                           | length          | partition_spec_id    | added_snapshot_id     |  added_data_files_count  | existing_data_files_count   | deleted_data_files_count    | partitions
-    ----------------------------------------------------------------------------------------------------------------+-----------------+----------------------+-----------------------+--------------------------+-----------------------------+-----------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------------------------
-     hdfs://hadoop-master:9000/user/hive/warehouse/test_table/metadata/faa19903-1455-4bb8-855a-61a1bbafbaa7-m0.avro |  6277           |   0                  | 7860805980949777961   |  1                       |   0                         |  0                          |{{contains_null=false, contains_nan= false, lower_bound=1, upper_bound=1},{contains_null=false, contains_nan= false, lower_bound=2021-01-12, upper_bound=2021-01-12}}
+     path                                                                                                           | length          | partition_spec_id    | added_snapshot_id     | added_data_files_count  | added_rows_count | existing_data_files_count   | existing_rows_count | deleted_data_files_count    | deleted_rows_count | partitions
+    ----------------------------------------------------------------------------------------------------------------+-----------------+----------------------+-----------------------+-------------------------+------------------+-----------------------------+---------------------+-----------------------------+--------------------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------
+     hdfs://hadoop-master:9000/user/hive/warehouse/test_table/metadata/faa19903-1455-4bb8-855a-61a1bbafbaa7-m0.avro |  6277           |   0                  | 7860805980949777961   | 1                       | 100              | 0                           | 0                   | 0                           | 0                  | {{contains_null=false, contains_nan= false, lower_bound=1, upper_bound=1},{contains_null=false, contains_nan= false, lower_bound=2021-01-12, upper_bound=2021-01-12}}
 
 
 The output of the query has the following columns:
@@ -804,12 +848,21 @@ The output of the query has the following columns:
   * - ``added_data_files_count``
     - ``integer``
     - The number of data files with status ``ADDED`` in the manifest file
+  * - ``added_rows_count``
+    - ``bigint``
+    - The total number of rows in all data files with status ``ADDED`` in the manifest file.
   * - ``existing_data_files_count``
     - ``integer``
     - The number of data files with status ``EXISTING`` in the manifest file
+  * - ``existing_rows_count``
+    - ``bigint``
+    - The total number of rows in all data files with status ``EXISTING`` in the manifest file.
   * - ``deleted_data_files_count``
     - ``integer``
     - The number of data files with status ``DELETED`` in the manifest file
+  * - ``deleted_rows_count``
+    - ``bigint``
+    - The total number of rows in all data files with status ``DELETED`` in the manifest file.
   * - ``partitions``
     - ``array(row(contains_null boolean, contains_nan boolean, lower_bound varchar, upper_bound varchar))``
     - Partition range metadata

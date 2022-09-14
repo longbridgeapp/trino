@@ -84,6 +84,7 @@ import javax.inject.Inject;
 
 import java.sql.CallableStatement;
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -210,7 +211,7 @@ public class SqlServerClient
     {
         super(config, "\"", connectionFactory, queryBuilder, identifierMapping);
 
-        this.statisticsEnabled = requireNonNull(statisticsConfig, "statisticsConfig is null").isEnabled();
+        this.statisticsEnabled = statisticsConfig.isEnabled();
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
@@ -278,27 +279,58 @@ public class SqlServerClient
     }
 
     @Override
+    protected void verifyTableName(DatabaseMetaData databaseMetadata, String tableName)
+            throws SQLException
+    {
+        // SQL Server truncates table name to the max length silently when renaming a table
+        if (tableName.length() > databaseMetadata.getMaxTableNameLength()) {
+            throw new TrinoException(NOT_SUPPORTED, format("Table name must be shorter than or equal to '%s' characters but got '%s'", databaseMetadata.getMaxTableNameLength(), tableName.length()));
+        }
+    }
+
+    @Override
+    protected void verifyColumnName(DatabaseMetaData databaseMetadata, String columnName)
+            throws SQLException
+    {
+        // SQL Server truncates table name to the max length silently when renaming a column
+        // SQL Server driver doesn't communicate with a server in getMaxColumnNameLength. The cost to call this method per column is low.
+        if (columnName.length() > databaseMetadata.getMaxColumnNameLength()) {
+            throw new TrinoException(NOT_SUPPORTED, format("Column name must be shorter than or equal to '%s' characters but got '%s': '%s'", databaseMetadata.getMaxColumnNameLength(), columnName.length(), columnName));
+        }
+    }
+
+    @Override
     protected void renameTable(ConnectorSession session, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
     {
         if (!schemaName.equals(newTable.getSchemaName())) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming tables across schemas");
         }
 
-        String sql = format(
-                "sp_rename %s, %s",
-                singleQuote(catalogName, schemaName, tableName),
-                singleQuote(newTable.getTableName()));
-        execute(session, sql);
+        super.renameTable(session, catalogName, schemaName, tableName, newTable);
     }
 
     @Override
-    public void renameColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
     {
-        String sql = format(
+        return format(
+                "sp_rename %s, %s",
+                singleQuote(catalogName, remoteSchemaName, remoteTableName),
+                singleQuote(newRemoteTableName));
+    }
+
+    @Override
+    protected String renameColumnSql(JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newRemoteColumnName)
+    {
+        RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
+        return format(
                 "sp_rename %s, %s, 'COLUMN'",
-                singleQuote(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName(), jdbcColumn.getColumnName()),
-                singleQuote(newColumnName));
-        execute(session, sql);
+                singleQuote(remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName(), "[" + escape(jdbcColumn.getColumnName()) + "]"),
+                "[" + newRemoteColumnName + "]");
+    }
+
+    private static String escape(String name)
+    {
+        return name.replace("'", "''");
     }
 
     @Override
@@ -528,9 +560,10 @@ public class SqlServerClient
 
         try (Connection connection = connectionFactory.openConnection(session);
                 Handle handle = Jdbi.open(connection)) {
-            String catalog = table.getCatalogName();
-            String schema = table.getSchemaName();
-            String tableName = table.getTableName();
+            RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
+            String catalog = remoteTableName.getCatalogName().orElse(null);
+            String schema = remoteTableName.getSchemaName().orElse(null);
+            String tableName = remoteTableName.getTableName();
 
             StatisticsDao statisticsDao = new StatisticsDao(handle);
             Long tableObjectId = statisticsDao.getTableObjectId(catalog, schema, tableName);
@@ -982,6 +1015,7 @@ public class SqlServerClient
 
     private static Optional<DataCompression> getTableDataCompression(Handle handle, JdbcTableHandle table)
     {
+        RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
         return handle.createQuery("" +
                         "SELECT data_compression_desc FROM sys.partitions p " +
                         "INNER JOIN sys.tables t ON p.object_id = t.object_id " +
@@ -991,8 +1025,8 @@ public class SqlServerClient
                         "AND p.index_id = 0 " + // Heap
                         "AND i.type = 0 " + // Heap index type
                         "AND i.data_space_id NOT IN (SELECT data_space_id FROM sys.partition_schemes)")
-                .bind("schema", table.getSchemaName())
-                .bind("table_name", table.getTableName())
+                .bind("schema", remoteTableName.getSchemaName().orElse(null))
+                .bind("table_name", remoteTableName.getTableName())
                 .mapTo(String.class)
                 .findOne()
                 .flatMap(dataCompression -> Enums.getIfPresent(DataCompression.class, dataCompression).toJavaUtil());

@@ -32,6 +32,9 @@ import static java.lang.String.format;
 
 public class MetadataEntry
 {
+    public static final String DELTA_CHECKPOINT_WRITE_STATS_AS_JSON_PROPERTY = "delta.checkpoint.writeStatsAsJson";
+    public static final String DELTA_CHECKPOINT_WRITE_STATS_AS_STRUCT_PROPERTY = "delta.checkpoint.writeStatsAsStruct";
+
     private static final String DELTA_CHECKPOINT_INTERVAL_PROPERTY = "delta.checkpointInterval";
 
     private final String id;
@@ -153,7 +156,7 @@ public class MetadataEntry
         }
     }
 
-    public static Map<String, String> buildDeltaMetadataConfiguration(Optional<Long> checkpointInterval)
+    public static Map<String, String> configurationForNewTable(Optional<Long> checkpointInterval)
     {
         return checkpointInterval
                 .map(value -> ImmutableMap.of(DELTA_CHECKPOINT_INTERVAL_PROPERTY, String.valueOf(value)))

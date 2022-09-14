@@ -16,7 +16,7 @@ Requirements
 
 To connect to Databricks Delta Lake, you need:
 
-* Tables written by Databricks Runtime 7.3 LTS and 9.1 LTS are supported.
+* Tables written by Databricks Runtime 7.3 LTS, 9.1 LTS and 10.4 LTS are supported.
 * Deployments using AWS, HDFS, and Azure Storage are fully supported. Google
   Cloud Storage (GCS) is :ref:`partially supported<delta-lake-gcs-support>`.
 * Network access from the coordinator and workers to the Delta Lake storage.
@@ -95,6 +95,10 @@ values. Typical usage does not require you to configure them.
         to be specified in :ref:`prop-type-data-size` values such as ``64MB``.
         Default is calculated to 10% of the maximum memory allocated to the JVM.
       -
+    * - ``delta.metadata.live-files.cache-ttl``
+      - Caching duration for active files which correspond to the Delta Lake
+        tables.
+      - ``30m``
     * - ``delta.compression-codec``
       - The compression codec to be used when writing new data files.
         Possible values are
@@ -153,6 +157,9 @@ values. Typical usage does not require you to configure them.
     * - ``delta.target-max-file-size``
       - Target maximum size of written files; the actual size may be larger.
       - ``1GB``
+    * - ``delta.unique-table-location``
+      - Use randomized, unique table locations.
+      - ``true``
 
 The following table describes performance tuning catalog properties for the
 connector.
@@ -230,19 +237,53 @@ configure processing of Parquet files.
     * - ``parquet_writer_page_size``
       - The maximum page size created by the Parquet writer.
 
+.. _delta-lake-authorization:
+
+Authorization checks
+^^^^^^^^^^^^^^^^^^^^
+
+You can enable authorization checks for the connector by setting
+the ``delta.security`` property in the catalog properties file. This
+property must be one of the following values:
+
+.. list-table:: Delta Lake security values
+  :widths: 30, 60
+  :header-rows: 1
+
+  * - Property value
+    - Description
+  * - ``ALLOW_ALL`` (default value)
+    - No authorization checks are enforced.
+  * - ``SYSTEM``
+    - The connector relies on system-level access control.
+  * - ``READ_ONLY``
+    - Operations that read data or metadata, such as :doc:`/sql/select` are
+      permitted. No operations that write data or metadata, such as
+      :doc:`/sql/create-table`, :doc:`/sql/insert`, or :doc:`/sql/delete` are
+      allowed.
+  * - ``FILE``
+    - Authorization checks are enforced using a catalog-level access control
+      configuration file whose path is specified in the ``security.config-file``
+      catalog configuration property. See
+      :ref:`catalog-file-based-access-control` for information on the
+      authorization configuration file.
+
 .. _delta-lake-type-mapping:
 
 Type mapping
 ------------
 
 Because Trino and Delta Lake each support types that the other does not, this
-connector modifies some types when reading or writing data.
+connector :ref:`modifies some types <type-mapping-overview>` when reading or
+writing data. Data types may not map the same way in both directions between
+Trino and the data source. Refer to the following sections for type mapping in
+each direction.
 
 Delta Lake to Trino type mapping
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Trino supports selecting Delta Lake data types. The following table shows the
-Delta Lake to Trino type mapping:
+The connector maps Delta Lake types to the corresponding Trino types following
+this table:
 
 .. list-table:: Delta Lake to Trino type mapping
   :widths: 40, 60
@@ -281,15 +322,16 @@ Delta Lake to Trino type mapping:
   * - ``STRUCT(...)``
     - ``ROW(...)``
 
+No other types are supported.
+
 Trino to Delta Lake type mapping
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Trino supports creating tables with the following types in Delta Lake. The table
-shows the mappings from Trino to Delta Lake data types:
-
+The connector maps Trino types to the corresponding Delta Lake types following
+this table:
 
 .. list-table:: Trino to Delta Lake type mapping
-  :widths: 25, 30
+  :widths: 60, 40
   :header-rows: 1
 
   * - Trino type
@@ -324,6 +366,8 @@ shows the mappings from Trino to Delta Lake data types:
     - ``MAP``
   * - ``ROW(...)``
     - ``STRUCT(...)``
+
+No other types are supported.
 
 .. _delta-lake-sql-support:
 
@@ -486,8 +530,8 @@ The following example uses all three table properties::
 Updating data
 ^^^^^^^^^^^^^
 
-You can use the connector to :doc:`/sql/insert`, :doc:`/sql/delete` and
-:doc:`/sql/update` data in Delta Lake tables.
+You can use the connector to :doc:`/sql/insert`, :doc:`/sql/delete`,
+:doc:`/sql/update`, and :doc:`/sql/merge` data in Delta Lake tables.
 
 Write operations are supported for tables stored on the following systems:
 

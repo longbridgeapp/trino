@@ -62,6 +62,7 @@ public class FileSystemExchangeManager
     private final int exchangeSourceConcurrentReaders;
     private final int maxOutputPartitionCount;
     private final int exchangeFileListingParallelism;
+    private final long exchangeSourceHandleTargetDataSizeInBytes;
     private final ExecutorService executor;
 
     @Inject
@@ -70,8 +71,6 @@ public class FileSystemExchangeManager
             FileSystemExchangeStats stats,
             FileSystemExchangeConfig fileSystemExchangeConfig)
     {
-        requireNonNull(fileSystemExchangeConfig, "fileSystemExchangeConfig is null");
-
         this.exchangeStorage = requireNonNull(exchangeStorage, "exchangeStorage is null");
         this.stats = requireNonNull(stats, "stats is null");
         this.baseDirectories = ImmutableList.copyOf(requireNonNull(fileSystemExchangeConfig.getBaseDirectories(), "baseDirectories is null"));
@@ -83,11 +82,12 @@ public class FileSystemExchangeManager
         this.exchangeSourceConcurrentReaders = fileSystemExchangeConfig.getExchangeSourceConcurrentReaders();
         this.maxOutputPartitionCount = fileSystemExchangeConfig.getMaxOutputPartitionCount();
         this.exchangeFileListingParallelism = fileSystemExchangeConfig.getExchangeFileListingParallelism();
+        this.exchangeSourceHandleTargetDataSizeInBytes = fileSystemExchangeConfig.getExchangeSourceHandleTargetDataSize().toBytes();
         this.executor = newCachedThreadPool(daemonThreadsNamed("exchange-source-handles-creation-%s"));
     }
 
     @Override
-    public Exchange createExchange(ExchangeContext context, int outputPartitionCount)
+    public Exchange createExchange(ExchangeContext context, int outputPartitionCount, boolean preserveOrderWithinPartition)
     {
         if (outputPartitionCount > maxOutputPartitionCount) {
             throw new TrinoException(
@@ -112,13 +112,15 @@ public class FileSystemExchangeManager
                 stats,
                 context,
                 outputPartitionCount,
+                preserveOrderWithinPartition,
                 exchangeFileListingParallelism,
                 secretKey,
+                exchangeSourceHandleTargetDataSizeInBytes,
                 executor);
     }
 
     @Override
-    public ExchangeSink createSink(ExchangeSinkInstanceHandle handle, boolean preserveRecordsOrder)
+    public ExchangeSink createSink(ExchangeSinkInstanceHandle handle)
     {
         FileSystemExchangeSinkInstanceHandle instanceHandle = (FileSystemExchangeSinkInstanceHandle) handle;
         return new FileSystemExchangeSink(
@@ -127,7 +129,7 @@ public class FileSystemExchangeManager
                 instanceHandle.getOutputDirectory(),
                 instanceHandle.getOutputPartitionCount(),
                 instanceHandle.getSinkHandle().getSecretKey().map(key -> new SecretKeySpec(key, 0, key.length, "AES")),
-                preserveRecordsOrder,
+                instanceHandle.isPreserveOrderWithinPartition(),
                 maxPageStorageSizeInBytes,
                 exchangeSinkBufferPoolMinSize,
                 exchangeSinkBuffersPerPartition,

@@ -13,7 +13,7 @@
  */
 package io.trino.spi.exchange;
 
-import io.airlift.slice.Slice;
+import io.trino.spi.Experimental;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 @ThreadSafe
+@Experimental(eta = "2023-01-01")
 public interface Exchange
         extends Closeable
 {
@@ -55,7 +56,7 @@ public interface Exchange
      * @param sinkHandle - handle returned by <code>addSink</code>
      * @param taskAttemptId - attempt id
      * @return ExchangeSinkInstanceHandle to be sent to a worker that is needed to create an {@link ExchangeSink} instance using
-     * {@link ExchangeManager#createSink(ExchangeSinkInstanceHandle, boolean)}
+     * {@link ExchangeManager#createSink(ExchangeSinkInstanceHandle)}
      */
     ExchangeSinkInstanceHandle instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId);
 
@@ -70,37 +71,11 @@ public interface Exchange
      * Returns a future containing handles to be used to read data from an exchange.
      * <p>
      * Future must be resolved when the data is available to be read.
-     * <p>
-     * The implementation is expected to return one handle per output partition (see {@link ExchangeSink#add(int, Slice)})
-     * <p>
-     * Partitions can be further split if needed by calling {@link #split(ExchangeSourceHandle, long)}
      *
      * @return Future containing a list of {@link ExchangeSourceHandle} to be sent to a
      * worker that is needed to create an {@link ExchangeSource} using {@link ExchangeManager#createSource(List)}
      */
     CompletableFuture<List<ExchangeSourceHandle>> getSourceHandles();
-
-    /**
-     * Splits an {@link ExchangeSourceHandle} into a number of smaller partitions.
-     * <p>
-     * Exchange implementation is allowed to return {@link ExchangeSourceHandle} even before all the data
-     * is written to an exchange. At the moment when the method is called it may not be possible to
-     * complete the split operation. This methods returns a {@link ExchangeSourceSplitter} object
-     * that allows an iterative splitting while the data is still being written to an exchange.
-     *
-     * @param handle returned by the {@link #getSourceHandles()}
-     * @param targetSizeInBytes desired maximum size of a single partition produced by {@link ExchangeSourceSplitter}
-     * @return {@link ExchangeSourceSplitter} to be used for iterative splitting of a given partition
-     */
-    ExchangeSourceSplitter split(ExchangeSourceHandle handle, long targetSizeInBytes);
-
-    /**
-     * Returns statistics (such as size in bytes) for a partition represented by a {@link ExchangeSourceHandle}
-     *
-     * @param handle returned by the {@link #getSourceHandles()} or {@link ExchangeSourceSplitter#getNext()}
-     * @return object containing statistics for a given {@link ExchangeSourceHandle}
-     */
-    ExchangeSourceStatistics getExchangeSourceStatistics(ExchangeSourceHandle handle);
 
     @Override
     void close();

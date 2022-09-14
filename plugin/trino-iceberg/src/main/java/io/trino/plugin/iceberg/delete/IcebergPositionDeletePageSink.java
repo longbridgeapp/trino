@@ -15,8 +15,7 @@ package io.trino.plugin.iceberg.delete;
 
 import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
-import io.trino.plugin.hive.HdfsEnvironment;
-import io.trino.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.trino.filesystem.TrinoFileSystem;
 import io.trino.plugin.iceberg.CommitTaskData;
 import io.trino.plugin.iceberg.IcebergFileFormat;
 import io.trino.plugin.iceberg.IcebergFileWriter;
@@ -28,8 +27,6 @@ import io.trino.spi.block.Block;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.connector.ConnectorPageSink;
 import io.trino.spi.connector.ConnectorSession;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobConf;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.PartitionSpecParser;
@@ -44,7 +41,6 @@ import java.util.concurrent.CompletableFuture;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
-import static io.trino.plugin.hive.util.ConfigurationUtils.toJobConf;
 import static io.trino.spi.predicate.Utils.nativeValueToBlock;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.util.Objects.requireNonNull;
@@ -61,11 +57,9 @@ public class IcebergPositionDeletePageSink
     private final JsonCodec<CommitTaskData> jsonCodec;
     private final IcebergFileWriter writer;
     private final IcebergFileFormat fileFormat;
-    private final long fileRecordCount;
 
     private long validationCpuNanos;
     private boolean writtenData;
-    private long deletedRowCount;
 
     public IcebergPositionDeletePageSink(
             String dataFilePath,
@@ -73,28 +67,24 @@ public class IcebergPositionDeletePageSink
             Optional<PartitionData> partition,
             LocationProvider locationProvider,
             IcebergFileWriterFactory fileWriterFactory,
-            HdfsEnvironment hdfsEnvironment,
-            HdfsContext hdfsContext,
+            TrinoFileSystem fileSystem,
             JsonCodec<CommitTaskData> jsonCodec,
             ConnectorSession session,
             IcebergFileFormat fileFormat,
-            Map<String, String> storageProperties,
-            long fileRecordCount)
+            Map<String, String> storageProperties)
     {
         this.dataFilePath = requireNonNull(dataFilePath, "dataFilePath is null");
         this.jsonCodec = requireNonNull(jsonCodec, "jsonCodec is null");
         this.partitionSpec = requireNonNull(partitionSpec, "partitionSpec is null");
         this.partition = requireNonNull(partition, "partition is null");
         this.fileFormat = requireNonNull(fileFormat, "fileFormat is null");
-        this.fileRecordCount = fileRecordCount;
         // prepend query id to a file name so we can determine which files were written by which query. This is needed for opportunistic cleanup of extra files
         // which may be present for successfully completing query in presence of failure recovery mechanisms.
         String fileName = fileFormat.toIceberg().addExtension(session.getQueryId() + "-" + randomUUID());
         this.outputPath = partition
                 .map(partitionData -> locationProvider.newDataLocation(partitionSpec, partitionData, fileName))
                 .orElseGet(() -> locationProvider.newDataLocation(fileName));
-        JobConf jobConf = toJobConf(hdfsEnvironment.getConfiguration(hdfsContext, new Path(outputPath)));
-        this.writer = fileWriterFactory.createPositionDeleteWriter(new Path(outputPath), jobConf, session, hdfsContext, fileFormat, storageProperties);
+        this.writer = fileWriterFactory.createPositionDeleteWriter(fileSystem, outputPath, session, fileFormat, storageProperties);
     }
 
     @Override
@@ -126,7 +116,6 @@ public class IcebergPositionDeletePageSink
         writer.appendRows(new Page(blocks));
 
         writtenData = true;
-        deletedRowCount += page.getPositionCount();
         return NOT_BLOCKED;
     }
 
@@ -144,9 +133,7 @@ public class IcebergPositionDeletePageSink
                     PartitionSpecParser.toJson(partitionSpec),
                     partition.map(PartitionData::toJson),
                     FileContent.POSITION_DELETES,
-                    Optional.of(dataFilePath),
-                    Optional.of(fileRecordCount),
-                    Optional.of(deletedRowCount));
+                    Optional.of(dataFilePath));
             Long recordCount = task.getMetrics().recordCount();
             if (recordCount != null && recordCount > 0) {
                 commitTasks.add(wrappedBuffer(jsonCodec.toJsonBytes(task)));

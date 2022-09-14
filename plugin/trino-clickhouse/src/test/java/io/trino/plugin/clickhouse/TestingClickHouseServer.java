@@ -52,7 +52,7 @@ public class TestingClickHouseServer
 
     public TestingClickHouseServer(DockerImageName image)
     {
-        dockerContainer = (ClickHouseContainer) createContainer(image)
+        dockerContainer = createContainer(image)
                 .withCopyFileToContainer(forClasspathResource("custom.xml"), "/etc/clickhouse-server/config.d/custom.xml")
                 .withStartupAttempts(10);
 
@@ -93,7 +93,7 @@ public class TestingClickHouseServer
 
     public String getJdbcUrl()
     {
-        return format("jdbc:clickhouse://%s:%s/", dockerContainer.getContainerIpAddress(),
+        return format("jdbc:clickhouse://%s:%s/", dockerContainer.getHost(),
                 dockerContainer.getMappedPort(HTTP_PORT));
     }
 

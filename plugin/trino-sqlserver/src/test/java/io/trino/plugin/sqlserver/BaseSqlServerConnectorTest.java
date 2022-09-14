@@ -180,6 +180,16 @@ public abstract class BaseSqlServerConnectorTest
     }
 
     @Override
+    protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching(
+                "ALTER TABLE only allows columns to be added that can contain nulls, " +
+                        "or have a DEFAULT definition specified, or the column being added is an identity or timestamp column, " +
+                        "or alternatively if none of the previous conditions are satisfied the table must be empty to allow addition of this column\\. " +
+                        "Column '.*' cannot be added to non-empty table '.*' because it does not satisfy these conditions\\.");
+    }
+
+    @Override
     protected void verifyConcurrentAddColumnFailurePermissible(Exception e)
     {
         assertThat(e).hasMessageContaining("was deadlocked on lock resources");
@@ -552,6 +562,18 @@ public abstract class BaseSqlServerConnectorTest
     }
 
     @Override
+    protected OptionalInt maxSchemaNameLength()
+    {
+        return OptionalInt.of(128);
+    }
+
+    @Override
+    protected void verifySchemaNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("The identifier that starts with '.*' is too long. Maximum length is 128.");
+    }
+
+    @Override
     protected OptionalInt maxTableNameLength()
     {
         return OptionalInt.of(128);
@@ -560,7 +582,19 @@ public abstract class BaseSqlServerConnectorTest
     @Override
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
-        assertThat(e).hasMessageMatching("The identifier that starts with '.*' is too long. Maximum length is 128.");
+        assertThat(e).hasMessageMatching("(The identifier that starts with '.*' is too long. Maximum length is 128.|Table name must be shorter than or equal to '128' characters but got '129')");
+    }
+
+    @Override
+    protected OptionalInt maxColumnNameLength()
+    {
+        return OptionalInt.of(128);
+    }
+
+    @Override
+    protected void verifyColumnNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("Column name must be shorter than or equal to '128' characters but got '129': '.*'");
     }
 
     private String getLongInClause(int start, int length)

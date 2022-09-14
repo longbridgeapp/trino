@@ -16,7 +16,6 @@ package io.trino.plugin.iceberg;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.io.Files;
 import io.trino.Session;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableHandle;
@@ -32,6 +31,9 @@ import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -71,7 +73,12 @@ public class TestIcebergProjectionPushdownPlans
                 .setSchema(SCHEMA)
                 .build();
 
-        metastoreDir = Files.createTempDir();
+        try {
+            metastoreDir = Files.createTempDirectory(null).toFile();
+        }
+        catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
         HiveMetastore metastore = createTestingFileHiveMetastore(metastoreDir);
         LocalQueryRunner queryRunner = LocalQueryRunner.create(session);
 
@@ -129,7 +136,7 @@ public class TestIcebergProjectionPushdownPlans
 
         getQueryRunner().execute(format(
                 "CREATE TABLE %s (col0, col1) WITH (partitioning = ARRAY['col1']) AS" +
-                        " SELECT CAST(row(5, 6) AS row(x bigint, y bigint)) AS col0, 5 AS col1 WHERE false",
+                        " SELECT CAST(row(5, 6) AS row(x bigint, y bigint)) AS col0, 5 AS col1",
                 testTable));
 
         Session session = getQueryRunner().getDefaultSession();

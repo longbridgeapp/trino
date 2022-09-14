@@ -70,17 +70,21 @@ public abstract class AbstractTestBlock
         assertBlockPositions(block, newBlockBuilder, expectedValues);
         assertBlockPositions(copyBlockViaBlockSerde(block), newBlockBuilder, expectedValues);
 
+        Block blockWithNull = copyBlockViaBlockSerde(block).copyWithAppendedNull();
+        T[] expectedValuesWithNull = Arrays.copyOf(expectedValues, expectedValues.length + 1);
+        assertBlockPositions(blockWithNull, newBlockBuilder, expectedValuesWithNull);
+
         assertBlockSize(block);
         assertRetainedSize(block);
 
         if (block.mayHaveNull()) {
             assertThatThrownBy(() -> block.isNull(-1))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageMatching(format("(position is not valid|Invalid position -1 in block with %d positions)", block.getPositionCount()));
+                    .hasMessage("Invalid position -1 in block with %d positions", block.getPositionCount());
 
             assertThatThrownBy(() -> block.isNull(block.getPositionCount()))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageMatching(format("(position is not valid|Invalid position %d in block with %d positions)", block.getPositionCount(), block.getPositionCount()));
+                    .hasMessage("Invalid position %d in block with %d positions", block.getPositionCount(), block.getPositionCount());
         }
     }
 
@@ -400,9 +404,7 @@ public abstract class AbstractTestBlock
             // dictionary blocks might become unwrapped when copyRegion is called on a block that is already compact
             return ((DictionaryBlock) block).compact().getSizeInBytes();
         }
-        else {
-            return copyBlockViaCopyRegion(block).getSizeInBytes();
-        }
+        return copyBlockViaCopyRegion(block).getSizeInBytes();
     }
 
     private static Block copyBlockViaCopyRegion(Block block)

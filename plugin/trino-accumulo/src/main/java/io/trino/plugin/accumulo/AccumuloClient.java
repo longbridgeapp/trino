@@ -107,7 +107,7 @@ public class AccumuloClient
             throws AccumuloException, AccumuloSecurityException
     {
         this.connector = requireNonNull(connector, "connector is null");
-        this.username = requireNonNull(config, "config is null").getUsername();
+        this.username = config.getUsername();
         this.metaManager = requireNonNull(metaManager, "metaManager is null");
         this.tableManager = requireNonNull(tableManager, "tableManager is null");
         this.indexLookup = requireNonNull(indexLookup, "indexLookup is null");
@@ -852,20 +852,18 @@ public class AccumuloClient
                         location = Optional.of(entry.getValue().toString());
                         break;
                     }
-                    else {
-                        // Chop off some magic nonsense
-                        scannedCompareKey.set(keyBytes, 3, keyBytes.length - 3);
+                    // Chop off some magic nonsense
+                    scannedCompareKey.set(keyBytes, 3, keyBytes.length - 3);
 
-                        // Compare the keys, moving along the tablets until the location is found
-                        if (scannedCompareKey.getLength() > 0) {
-                            int compareTo = splitCompareKey.compareTo(scannedCompareKey);
-                            if (compareTo <= 0) {
-                                location = Optional.of(entry.getValue().toString());
-                            }
-                            else {
-                                // all future tablets will be greater than this key
-                                break;
-                            }
+                    // Compare the keys, moving along the tablets until the location is found
+                    if (scannedCompareKey.getLength() > 0) {
+                        int compareTo = splitCompareKey.compareTo(scannedCompareKey);
+                        if (compareTo <= 0) {
+                            location = Optional.of(entry.getValue().toString());
+                        }
+                        else {
+                            // all future tablets will be greater than this key
+                            break;
                         }
                     }
                 }

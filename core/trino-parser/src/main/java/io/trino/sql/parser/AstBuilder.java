@@ -560,10 +560,14 @@ class AstBuilder
     @Override
     public Node visitMerge(SqlBaseParser.MergeContext context)
     {
+        Table table = new Table(getLocation(context), getQualifiedName(context.qualifiedName()));
+        Relation targetRelation = table;
+        if (context.identifier() != null) {
+            targetRelation = new AliasedRelation(table, (Identifier) visit(context.identifier()), null);
+        }
         return new Merge(
                 getLocation(context),
-                new Table(getLocation(context), getQualifiedName(context.qualifiedName())),
-                visitIfPresent(context.identifier(), Identifier.class),
+                targetRelation,
                 (Relation) visit(context.relation()),
                 (Expression) visit(context.expression()),
                 visit(context.mergeCase(), MergeCase.class));
@@ -632,6 +636,18 @@ class AstBuilder
         }
 
         return new Comment(getLocation(context), Comment.Type.TABLE, getQualifiedName(context.qualifiedName()), comment);
+    }
+
+    @Override
+    public Node visitCommentView(SqlBaseParser.CommentViewContext context)
+    {
+        Optional<String> comment = Optional.empty();
+
+        if (context.string() != null) {
+            comment = Optional.of(((StringLiteral) visit(context.string())).getValue());
+        }
+
+        return new Comment(getLocation(context), Comment.Type.VIEW, getQualifiedName(context.qualifiedName()), comment);
     }
 
     @Override
@@ -1875,7 +1891,7 @@ class AstBuilder
 
         if (context.identifier() != null) {
             Identifier alias = (Identifier) visit(context.identifier());
-            List<Identifier> columnNames = ImmutableList.of();
+            List<Identifier> columnNames = null;
             if (context.columnAliases() != null) {
                 columnNames = visit(context.columnAliases().identifier(), Identifier.class);
             }
@@ -1892,7 +1908,7 @@ class AstBuilder
 
         if (context.identifier() != null) {
             Identifier alias = (Identifier) visit(context.identifier());
-            List<Identifier> columnNames = ImmutableList.of();
+            List<Identifier> columnNames = null;
             if (context.columnAliases() != null) {
                 columnNames = visit(context.columnAliases().identifier(), Identifier.class);
             }
@@ -3658,15 +3674,13 @@ class AstBuilder
         if (context instanceof SqlBaseParser.SpecifiedPrincipalContext) {
             return new GrantorSpecification(GrantorSpecification.Type.PRINCIPAL, Optional.of(getPrincipalSpecification(((SqlBaseParser.SpecifiedPrincipalContext) context).principal())));
         }
-        else if (context instanceof SqlBaseParser.CurrentUserGrantorContext) {
+        if (context instanceof SqlBaseParser.CurrentUserGrantorContext) {
             return new GrantorSpecification(GrantorSpecification.Type.CURRENT_USER, Optional.empty());
         }
-        else if (context instanceof SqlBaseParser.CurrentRoleGrantorContext) {
+        if (context instanceof SqlBaseParser.CurrentRoleGrantorContext) {
             return new GrantorSpecification(GrantorSpecification.Type.CURRENT_ROLE, Optional.empty());
         }
-        else {
-            throw new IllegalArgumentException("Unsupported grantor: " + context);
-        }
+        throw new IllegalArgumentException("Unsupported grantor: " + context);
     }
 
     private PrincipalSpecification getPrincipalSpecification(SqlBaseParser.PrincipalContext context)
@@ -3674,15 +3688,13 @@ class AstBuilder
         if (context instanceof SqlBaseParser.UnspecifiedPrincipalContext) {
             return new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, (Identifier) visit(((SqlBaseParser.UnspecifiedPrincipalContext) context).identifier()));
         }
-        else if (context instanceof SqlBaseParser.UserPrincipalContext) {
+        if (context instanceof SqlBaseParser.UserPrincipalContext) {
             return new PrincipalSpecification(PrincipalSpecification.Type.USER, (Identifier) visit(((SqlBaseParser.UserPrincipalContext) context).identifier()));
         }
-        else if (context instanceof SqlBaseParser.RolePrincipalContext) {
+        if (context instanceof SqlBaseParser.RolePrincipalContext) {
             return new PrincipalSpecification(PrincipalSpecification.Type.ROLE, (Identifier) visit(((SqlBaseParser.RolePrincipalContext) context).identifier()));
         }
-        else {
-            throw new IllegalArgumentException("Unsupported principal: " + context);
-        }
+        throw new IllegalArgumentException("Unsupported principal: " + context);
     }
 
     private static void check(boolean condition, String message, ParserRuleContext context)

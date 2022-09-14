@@ -25,7 +25,6 @@ import io.trino.operator.InterpretedHashGenerator;
 import io.trino.operator.PartitionFunction;
 import io.trino.operator.PrecomputedHashGenerator;
 import io.trino.spi.Page;
-import io.trino.spi.connector.ConnectorBucketNodeMap;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.NodePartitioningManager;
 import io.trino.sql.planner.PartitioningHandle;
@@ -53,6 +52,7 @@ import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_ARBITRARY_DIST
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_BROADCAST_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_PASSTHROUGH_DISTRIBUTION;
+import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static java.util.Objects.requireNonNull;
 import static java.util.function.Function.identity;
@@ -90,7 +90,9 @@ public class LocalExchange
             List<Type> types,
             Optional<Integer> partitionHashChannel,
             DataSize maxBufferedBytes,
-            BlockTypeOperators blockTypeOperators)
+            BlockTypeOperators blockTypeOperators,
+            Supplier<Long> physicalWrittenBytesSupplier,
+            DataSize writerMinSize)
     {
         ImmutableList.Builder<LocalExchangeSource> sources = ImmutableList.builder();
         int bufferCount = computeBufferCount(partitioning, defaultConcurrency, partitionChannels);
@@ -124,7 +126,15 @@ public class LocalExchange
                 return new PassthroughExchanger(sourceIterator.next(), maxBufferedBytes.toBytes() / bufferCount, memoryManager::updateMemoryUsage);
             };
         }
-        else if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.getConnectorId().isPresent()) {
+        else if (partitioning.equals(SCALED_WRITER_DISTRIBUTION)) {
+            exchangerSupplier = () -> new ScaleWriterExchanger(
+                    buffers,
+                    memoryManager,
+                    maxBufferedBytes.toBytes(),
+                    physicalWrittenBytesSupplier,
+                    writerMinSize);
+        }
+        else if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.getCatalogHandle().isPresent()) {
             exchangerSupplier = () -> {
                 PartitionFunction partitionFunction = createPartitionFunction(
                         nodePartitioningManager,
@@ -214,8 +224,7 @@ public class LocalExchange
         // The same bucket function (with the same bucket count) as for node
         // partitioning must be used. This way rows within a single bucket
         // will be being processed by single thread.
-        ConnectorBucketNodeMap connectorBucketNodeMap = nodePartitioningManager.getConnectorBucketNodeMap(session, partitioning);
-        int bucketCount = connectorBucketNodeMap.getBucketCount();
+        int bucketCount = nodePartitioningManager.getBucketNodeMap(session, partitioning).getBucketCount();
         int[] bucketToPartition = new int[bucketCount];
         for (int bucket = 0; bucket < bucketCount; bucket++) {
             // mix the bucket bits so we don't use the same bucket number used to distribute between stages
@@ -343,7 +352,13 @@ public class LocalExchange
             bufferCount = defaultConcurrency;
             checkArgument(partitionChannels.isEmpty(), "Passthrough exchange must not have partition channels");
         }
-        else if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.getConnectorId().isPresent()) {
+        else if (partitioning.equals(SCALED_WRITER_DISTRIBUTION)) {
+            // Even when scale writers is enabled, the buffer count or the number of drivers will remain constant.
+            // However, only some of them are actively doing the work.
+            bufferCount = defaultConcurrency;
+            checkArgument(partitionChannels.isEmpty(), "Scaled writer exchange must not have partition channels");
+        }
+        else if (partitioning.equals(FIXED_HASH_DISTRIBUTION) || partitioning.getCatalogHandle().isPresent()) {
             // partitioned exchange
             bufferCount = defaultConcurrency;
         }

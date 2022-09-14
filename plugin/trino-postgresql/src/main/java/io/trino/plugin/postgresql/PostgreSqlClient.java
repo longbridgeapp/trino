@@ -43,6 +43,7 @@ import io.trino.plugin.jdbc.PredicatePushdownController;
 import io.trino.plugin.jdbc.PreparedQuery;
 import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.ReadFunction;
+import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.plugin.jdbc.SliceReadFunction;
 import io.trino.plugin.jdbc.SliceWriteFunction;
 import io.trino.plugin.jdbc.UnsupportedTypeHandling;
@@ -65,6 +66,7 @@ import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
 import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
+import io.trino.plugin.jdbc.expression.RewriteIn;
 import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.plugin.postgresql.PostgreSqlConfig.ArrayMapping;
 import io.trino.spi.TrinoException;
@@ -294,12 +296,13 @@ public class PostgreSqlClient
         }
         this.tableTypes = tableTypes.build();
 
-        this.statisticsEnabled = requireNonNull(statisticsConfig, "statisticsConfig is null").isEnabled();
+        this.statisticsEnabled = statisticsConfig.isEnabled();
 
         this.connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
                 // TODO allow all comparison operators for numeric types
                 .add(new RewriteComparison(ImmutableSet.of(RewriteComparison.ComparisonOperator.EQUAL, RewriteComparison.ComparisonOperator.NOT_EQUAL)))
+                .add(new RewriteIn())
                 .withTypeClass("integer_type", ImmutableSet.of("tinyint", "smallint", "integer", "bigint"))
                 .map("$add(left: integer_type, right: integer_type)").to("left + right")
                 .map("$subtract(left: integer_type, right: integer_type)").to("left - right")
@@ -307,8 +310,8 @@ public class PostgreSqlClient
                 .map("$divide(left: integer_type, right: integer_type)").to("left / right")
                 .map("$modulus(left: integer_type, right: integer_type)").to("left % right")
                 .map("$negate(value: integer_type)").to("-value")
-                .map("$like_pattern(value: varchar, pattern: varchar): boolean").to("value LIKE pattern")
-                .map("$like_pattern(value: varchar, pattern: varchar, escape: varchar(1)): boolean").to("value LIKE pattern ESCAPE escape")
+                .map("$like(value: varchar, pattern: varchar): boolean").to("value LIKE pattern")
+                .map("$like(value: varchar, pattern: varchar, escape: varchar(1)): boolean").to("value LIKE pattern ESCAPE escape")
                 .map("$not($is_null(value))").to("value IS NOT NULL")
                 .map("$not(value: boolean)").to("NOT value")
                 .map("$is_null(value)").to("value IS NULL")
@@ -365,11 +368,16 @@ public class PostgreSqlClient
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming tables across schemas");
         }
 
-        String sql = format(
+        super.renameTable(session, catalogName, schemaName, tableName, newTable);
+    }
+
+    @Override
+    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
+    {
+        return format(
                 "ALTER TABLE %s RENAME TO %s",
-                quoted(catalogName, schemaName, tableName),
-                quoted(newTable.getTableName()));
-        execute(session, sql);
+                quoted(catalogName, remoteSchemaName, remoteTableName),
+                quoted(newRemoteTableName));
     }
 
     @Override
@@ -442,8 +450,8 @@ public class PostgreSqlClient
                 if (columns.isEmpty()) {
                     // A table may have no supported columns. In rare cases a table might have no columns at all.
                     throw new TableNotFoundException(
-                            tableHandle.getSchemaTableName(),
-                            format("Table '%s' has no supported columns (all %s columns are not supported)", tableHandle.getSchemaTableName(), allColumns));
+                            schemaTableName,
+                            format("Table '%s' has no supported columns (all %s columns are not supported)", schemaTableName, allColumns));
                 }
                 return ImmutableList.copyOf(columns);
             }
@@ -466,8 +474,9 @@ public class PostgreSqlClient
                 "AND tbl.relname = ? " +
                 "AND attyp.typcategory = 'A' ";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, tableHandle.getSchemaName());
-            statement.setString(2, tableHandle.getTableName());
+            RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
+            statement.setString(1, remoteTableName.getSchemaName().orElse(null));
+            statement.setString(2, remoteTableName.getTableName());
 
             Map<String, Integer> arrayColumnDimensions = new HashMap<>();
             try (ResultSet resultSet = statement.executeQuery()) {
@@ -901,7 +910,8 @@ public class PostgreSqlClient
                 return tableStatistics.build();
             }
 
-            Map<String, ColumnStatisticsResult> columnStatistics = statisticsDao.getColumnStatistics(table.getSchemaName(), table.getTableName()).stream()
+            RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
+            Map<String, ColumnStatisticsResult> columnStatistics = statisticsDao.getColumnStatistics(remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName()).stream()
                     .collect(toImmutableMap(ColumnStatisticsResult::getColumnName, identity()));
 
             for (JdbcColumnHandle column : this.getColumns(session, table)) {
@@ -939,25 +949,27 @@ public class PostgreSqlClient
 
     private static Optional<Long> readRowCountTableStat(StatisticsDao statisticsDao, JdbcTableHandle table)
     {
-        Optional<Long> rowCount = statisticsDao.getRowCountFromPgClass(table.getSchemaName(), table.getTableName());
+        RemoteTableName remoteTableName = table.getRequiredNamedRelation().getRemoteTableName();
+        String schemaName = remoteTableName.getSchemaName().orElse(null);
+        Optional<Long> rowCount = statisticsDao.getRowCountFromPgClass(schemaName, remoteTableName.getTableName());
         if (rowCount.isEmpty()) {
             // Table not found
             return Optional.empty();
         }
 
-        if (statisticsDao.isPartitionedTable(table.getSchemaName(), table.getTableName())) {
-            Optional<Long> partitionedTableRowCount = statisticsDao.getRowCountPartitionedTableFromPgClass(table.getSchemaName(), table.getTableName());
+        if (statisticsDao.isPartitionedTable(schemaName, remoteTableName.getTableName())) {
+            Optional<Long> partitionedTableRowCount = statisticsDao.getRowCountPartitionedTableFromPgClass(schemaName, remoteTableName.getTableName());
             if (partitionedTableRowCount.isPresent()) {
                 return partitionedTableRowCount;
             }
 
-            return statisticsDao.getRowCountPartitionedTableFromPgStats(table.getSchemaName(), table.getTableName());
+            return statisticsDao.getRowCountPartitionedTableFromPgStats(schemaName, remoteTableName.getTableName());
         }
 
         if (rowCount.get() == 0) {
             // `pg_class.reltuples = 0` may mean an empty table or a recently populated table (CTAS, LOAD or INSERT)
             // `pg_stat_all_tables.n_live_tup` can be way off, so we use it only as a fallback
-            rowCount = statisticsDao.getRowCountFromPgStat(table.getSchemaName(), table.getTableName());
+            rowCount = statisticsDao.getRowCountFromPgStat(schemaName, remoteTableName.getTableName());
         }
 
         return rowCount;
@@ -1010,12 +1022,33 @@ public class PostgreSqlClient
     }
 
     @Override
+    protected void verifySchemaName(DatabaseMetaData databaseMetadata, String schemaName)
+            throws SQLException
+    {
+        // PostgreSQL truncates schema name to 63 chars silently
+        if (schemaName.length() > databaseMetadata.getMaxSchemaNameLength()) {
+            throw new TrinoException(NOT_SUPPORTED, format("Schema name must be shorter than or equal to '%s' characters but got '%s'", databaseMetadata.getMaxSchemaNameLength(), schemaName.length()));
+        }
+    }
+
+    @Override
     protected void verifyTableName(DatabaseMetaData databaseMetadata, String tableName)
             throws SQLException
     {
         // PostgreSQL truncates table name to 63 chars silently
         if (tableName.length() > databaseMetadata.getMaxTableNameLength()) {
             throw new TrinoException(NOT_SUPPORTED, format("Table name must be shorter than or equal to '%s' characters but got '%s'", databaseMetadata.getMaxTableNameLength(), tableName.length()));
+        }
+    }
+
+    @Override
+    protected void verifyColumnName(DatabaseMetaData databaseMetadata, String columnName)
+            throws SQLException
+    {
+        // PostgreSQL truncates table name to 63 chars silently
+        // PostgreSQL driver caches the max column name length in a DatabaseMetaData object. The cost to call this method per column is low.
+        if (columnName.length() > databaseMetadata.getMaxColumnNameLength()) {
+            throw new TrinoException(NOT_SUPPORTED, format("Column name must be shorter than or equal to '%s' characters but got '%s': '%s'", databaseMetadata.getMaxColumnNameLength(), columnName.length(), columnName));
         }
     }
 
@@ -1120,11 +1153,12 @@ public class PostgreSqlClient
     @Override
     public void setColumnComment(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Optional<String> comment)
     {
+        // PostgreSQL doesn't support prepared statement for COMMENT statement
         String sql = format(
                 "COMMENT ON COLUMN %s.%s IS %s",
                 quoted(handle.asPlainTable().getRemoteTableName()),
                 quoted(column.getColumnName()),
-                comment.isPresent() ? format("'%s'", comment.get()) : "NULL");
+                comment.map(BaseJdbcClient::varcharLiteral).orElse("NULL"));
         execute(session, sql);
     }
 

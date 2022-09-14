@@ -66,9 +66,9 @@ import static io.trino.tempto.query.QueryExecutor.param;
 import static io.trino.tests.product.TestGroups.HMS_ONLY;
 import static io.trino.tests.product.TestGroups.STORAGE_FORMATS;
 import static io.trino.tests.product.TestGroups.STORAGE_FORMATS_DETAILED;
-import static io.trino.tests.product.hive.HiveProductTest.ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE;
-import static io.trino.tests.product.hive.HiveProductTest.ERROR_COMMITTING_WRITE_TO_HIVE_MATCH;
 import static io.trino.tests.product.hive.util.TemporaryHiveTable.randomTableSuffix;
+import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE;
+import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_COMMITTING_WRITE_TO_HIVE_MATCH;
 import static io.trino.tests.product.utils.JdbcDriverUtils.setSessionProperty;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
@@ -781,6 +781,7 @@ public class TestHiveStorageFormats
                 "PARQUET",
                 ImmutableMap.of(
                         "hive.parquet_writer_page_size", reducedRowGroupSize.toBytesValueString(),
+                        "task_scale_writers_enabled", "false",
                         "task_writer_count", "1")));
     }
 
@@ -793,6 +794,7 @@ public class TestHiveStorageFormats
                 ImmutableMap.of(
                         "hive.experimental_parquet_optimized_writer_enabled", "true",
                         "hive.parquet_writer_page_size", reducedRowGroupSize.toBytesValueString(),
+                        "task_scale_writers_enabled", "false",
                         "task_writer_count", "1")));
     }
 
@@ -1018,6 +1020,7 @@ public class TestHiveStorageFormats
         try {
             // create more than one split
             setSessionProperty(connection, "task_writer_count", "4");
+            setSessionProperty(connection, "task_scale_writers_enabled", "false");
             setSessionProperty(connection, "redistribute_writes", "false");
             for (Map.Entry<String, String> sessionProperty : sessionProperties.entrySet()) {
                 setSessionProperty(connection, sessionProperty.getKey(), sessionProperty.getValue());

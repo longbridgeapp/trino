@@ -52,9 +52,7 @@ import static java.net.HttpURLConnection.HTTP_FORBIDDEN;
 import static java.net.HttpURLConnection.HTTP_NOT_FOUND;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.SECONDS;
-import static org.apache.hadoop.hive.serde.serdeConstants.FIELD_DELIM;
 import static org.apache.hadoop.hive.serde.serdeConstants.LINE_DELIM;
-import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_FORMAT;
 
 @ThreadSafe
 public abstract class S3SelectLineRecordReader
@@ -75,10 +73,10 @@ public abstract class S3SelectLineRecordReader
     private final Duration maxRetryTime;
     private final Closer closer = Closer.create();
     private final SelectObjectContentRequest selectObjectContentRequest;
-    protected final CompressionCodecFactory compressionCodecFactory;
-    protected final String lineDelimiter;
+    private final CompressionCodecFactory compressionCodecFactory;
+    private final String lineDelimiter;
 
-    S3SelectLineRecordReader(
+    public S3SelectLineRecordReader(
             Configuration configuration,
             Path path,
             long start,
@@ -224,11 +222,6 @@ public abstract class S3SelectLineRecordReader
         return ((float) (position - start)) / (end - start);
     }
 
-    String getFieldDelimiter(Properties schema)
-    {
-        return schema.getProperty(FIELD_DELIM, schema.getProperty(SERIALIZATION_FORMAT));
-    }
-
     /**
      * This exception is for stopping retries for S3 Select calls that shouldn't be retried.
      * For example, "Caused by: com.amazonaws.services.s3.model.AmazonS3Exception: Forbidden (Service: Amazon S3; Status Code: 403 ..."
@@ -242,5 +235,20 @@ public abstract class S3SelectLineRecordReader
             // append bucket and key to the message
             super(format("%s (Bucket: %s, Key: %s)", cause, bucket, key));
         }
+    }
+
+    protected long getStart()
+    {
+        return start;
+    }
+
+    protected long getEnd()
+    {
+        return end;
+    }
+
+    protected String getLineDelimiter()
+    {
+        return lineDelimiter;
     }
 }

@@ -165,6 +165,12 @@ public class TestPostgreSqlConnectorTest
                 "(one bigint, two decimal(50,0), three varchar(10))");
     }
 
+    @Override
+    protected void verifyAddNotNullColumnToNonEmptyTableFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("ERROR: column \".*\" contains null values");
+    }
+
     @Test
     public void testViews()
     {
@@ -828,6 +834,35 @@ public class TestPostgreSqlConnectorTest
         }
     }
 
+    @Test
+    public void testInPredicatePushdown()
+    {
+        try (TestTable table = new TestTable(
+                getQueryRunner()::execute,
+                "test_in_predicate_pushdown",
+                "(id varchar(1), id2 varchar(1))",
+                List.of(
+                        "'a', 'b'",
+                        "'b', 'c'",
+                        "'c', 'c'",
+                        "'d', 'd'",
+                        "'a', 'f'"))) {
+            // IN values cannot be represented as a domain
+            assertThat(query("SELECT id FROM " + table.getName() + " WHERE id IN ('a', id2)"))
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT id FROM " + table.getName() + " WHERE id IN ('a', 'b') OR id2 IN ('c', 'd')"))
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT id FROM " + table.getName() + " WHERE id IN ('a', 'B') OR id2 IN ('c', 'D')"))
+                    .isFullyPushedDown();
+
+            assertThat(query("SELECT id FROM " + table.getName() + " WHERE id IN ('a', 'B', NULL) OR id2 IN ('C', 'd')"))
+                    // NULL constant value is currently not pushed down
+                    .isNotFullyPushedDown(FilterNode.class);
+        }
+    }
+
     @Override
     protected String errorMessageForInsertIntoNotNullColumn(String columnName)
     {
@@ -959,6 +994,18 @@ public class TestPostgreSqlConnectorTest
     }
 
     @Override
+    protected OptionalInt maxSchemaNameLength()
+    {
+        return OptionalInt.of(63);
+    }
+
+    @Override
+    protected void verifySchemaNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessage("Schema name must be shorter than or equal to '63' characters but got '64'");
+    }
+
+    @Override
     protected OptionalInt maxTableNameLength()
     {
         return OptionalInt.of(63);
@@ -968,5 +1015,17 @@ public class TestPostgreSqlConnectorTest
     protected void verifyTableNameLengthFailurePermissible(Throwable e)
     {
         assertThat(e).hasMessage("Table name must be shorter than or equal to '63' characters but got '64'");
+    }
+
+    @Override
+    protected OptionalInt maxColumnNameLength()
+    {
+        return OptionalInt.of(63);
+    }
+
+    @Override
+    protected void verifyColumnNameLengthFailurePermissible(Throwable e)
+    {
+        assertThat(e).hasMessageMatching("Column name must be shorter than or equal to '63' characters but got '64': '.*'");
     }
 }

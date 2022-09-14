@@ -40,8 +40,7 @@ The Hive connector requires a Hive metastore service (HMS), or a compatible
 implementation of the Hive metastore, such as
 `AWS Glue Data Catalog <https://aws.amazon.com/glue/>`_.
 
-Apache Hadoop 2.x and 3.x are supported, along with derivative distributions,
-including Cloudera CDH 5 and Hortonworks Data Platform (HDP).
+Apache Hadoop HDFS 2.x and 3.x are supported.
 
 Many distributed storage systems including HDFS,
 :doc:`Amazon S3 <hive-s3>` or S3-compatible systems,
@@ -248,6 +247,28 @@ The properties that apply to Hive connector security are listed in the
 :doc:`/connector/hive-security` section for a more detailed discussion of the
 security options in the Hive connector.
 
+.. _partition_projection:
+
+Accessing tables with Athena partition projection metadata
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+`Partition projection <https://docs.aws.amazon.com/athena/latest/ug/partition-projection.html>`_
+is a feature of AWS Athena often used to speed up query processing with highly
+partitioned tables.
+
+Trino supports partition projection table properties stored in the metastore,
+and it reimplements this functionality. Currently, there is a limitation in
+comparison to AWS Athena for date projection, as it only supports intervals of
+``DAYS``, ``HOURS``, ``MINUTES``, and ``SECONDS``.
+
+If there are any compatibility issues blocking access to a requested table when
+you have partition projection enabled, you can set the
+``partition_projection_ignore`` table property to ``true`` for a table to bypass
+any errors.
+
+Refer to :ref:`hive_table_properties` and :ref:`hive_column_properties` for
+configuration of partition projection.
+
 .. _hive_configuration_properties:
 
 Hive configuration properties
@@ -393,6 +414,8 @@ Property Name                                      Description                  
                                                    with a leading 0. If set to 'skip', permissions of newly
                                                    created directories will not be set by Trino.
 
+``hive.fs.cache.max-size``                         Maximum number of cached file system objects.                 1000
+
 ``hive.query-partition-filter-required``           Set to ``true`` to force a query to use a partition filter.   ``false``
                                                    You can use the ``query_partition_filter_required`` catalog
                                                    session property for temporary, catalog specific use.
@@ -408,6 +431,8 @@ Property Name                                      Description                  
                                                    managed tables.
                                                    See the :ref:`hive_table_properties` for more information
                                                    on auto_purge.
+
+``hive.partition-projection-enabled``              Enables Athena partition projection support                     ``false``
 ================================================== ============================================================ ============
 
 ORC format configuration properties
@@ -459,6 +484,12 @@ with Parquet files performed by the Hive connector.
         definition. The equivalent catalog session property is
         ``parquet_use_column_names``.
       - ``true``
+    * - ``parquet.optimized-writer.validation-percentage``
+      - Percentage of parquet files to validate after write by re-reading the whole file
+        when ``parquet.experimental-optimized-writer.enabled`` is set to ``true``.
+        The equivalent catalog session property is ``parquet_optimized_writer_validation_percentage``.
+        Validation can be turned off by setting this property to ``0``.
+      - ``5``
 
 
 Metastore configuration properties
@@ -774,8 +805,8 @@ Data management
 ^^^^^^^^^^^^^^^
 
 The :ref:`sql-data-management` functionality includes support for ``INSERT``,
-``UPDATE``, and ``DELETE`` statements, with the exact support depending on the
-storage system, file format, and metastore:
+``UPDATE``, ``DELETE``, and ``MERGE`` statements, with the exact support
+depending on the storage system, file format, and metastore:
 
 When connecting to a Hive metastore version 3.x, the Hive connector supports
 reading from and writing to insert-only and ACID tables, with full support for
@@ -788,6 +819,8 @@ which the ``WHERE`` clause may match arbitrary sets of rows.
 
 :doc:`/sql/update` is only supported for transactional Hive tables with format
 ORC. ``UPDATE`` of partition or bucket columns is not supported.
+
+:doc:`/sql/merge` is only supported for ACID tables.
 
 ACID tables created with `Hive Streaming Ingest <https://cwiki.apache.org/confluence/display/Hive/Streaming+Data+Ingest>`_
 are not supported.
@@ -1038,7 +1071,7 @@ The following procedures are available:
 
   Flush all Hive metadata caches.
 
-* ``system.flush_metadata_cache(schema_name => ..., table_name => ..., partition_columns => ARRAY[...], partition_values => ARRAY[...])``
+* ``system.flush_metadata_cache(schema_name => ..., table_name => ..., partition_column => ARRAY[...], partition_value => ARRAY[...])``
 
   Flush Hive metadata cache entries connected with selected partition.
   Procedure requires named parameters to be passed
@@ -1142,6 +1175,89 @@ See the :ref:`hive_examples` for more information.
     - Set this property to ``true`` to create an ORC ACID transactional table.
       Requires ORC format. This property may be shown as true for insert-only
       tables created using older versions of Hive.
+    -
+  * - ``partition_projection_enabled``
+    - Enables partition projection for selected table.
+      Mapped from AWS Athena table property
+      `projection.enabled <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-setting-up.html>`_.
+    -
+  * - ``partition_projection_ignore``
+    - Ignore any partition projection properties stored in the metastore for
+      the selected table. This is a Trino-only property which allows you to
+      work around compatibility issues on a specific table, and if enabled,
+      Trino ignores all other configuration options related to partition
+      projection.
+    -
+  * - ``partition_projection_location_template``
+    - Projected partition location template, such as
+      ``s3a://test/name=${name}/``. Mapped from the AWS Athena table property
+      `storage.location.template <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-setting-up.html#partition-projection-specifying-custom-s3-storage-locations>`_
+    - ``${table_location}/${partition_name}``
+
+.. _hive_column_properties:
+
+Column properties
+-----------------
+
+.. list-table:: Hive connector column properties
+  :widths: 20, 60, 20
+  :header-rows: 1
+
+  * - Property name
+    - Description
+    - Default
+  * - ``partition_projection_type``
+    - Defines the type of partition projection to use on this column.
+      May be used only on partition columns. Available types:
+      ``ENUM``, ``INTEGER``, ``DATE``, ``INJECTED``.
+      Mapped from the AWS Athena table property
+      `projection.${columnName}.type <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
+    -
+  * - ``partition_projection_values``
+    - Used with ``partition_projection_type`` set to ``ENUM``. Contains a static
+      list of values used to generate partitions.
+      Mapped from the AWS Athena table property
+      `projection.${columnName}.values <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
+    -
+  * - ``partition_projection_range``
+    - Used with ``partition_projection_type`` set to ``INTEGER`` or ``DATE`` to
+      define a range. It is a two-element array, describing the minimum and
+      maximum range values used to generate partitions. Generation starts from
+      the minimum, then increments by the defined
+      ``partition_projection_interval`` to the maximum. For example, the format
+      is ``['1', '4']`` for a ``partition_projection_type`` of ``INTEGER`` and
+      ``['2001-01-01', '2001-01-07']`` or ``['NOW-3DAYS', 'NOW']`` for a
+      ``partition_projection_type`` of ``DATE``. Mapped from the AWS Athena
+      table property
+      `projection.${columnName}.range <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
+    -
+  * - ``partition_projection_interval``
+    - Used with ``partition_projection_type`` set to ``INTEGER`` or ``DATE``. It
+      represents the interval used to generate partitions within
+      the given range ``partition_projection_range``. Mapped from the AWS Athena
+      table property
+      `projection.${columnName}.interval <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
+    -
+  * - ``partition_projection_digits``
+    - Used with ``partition_projection_type`` set to ``INTEGER``.
+      The number of digits to be used with integer column projection.
+      Mapped from the AWS Athena table property
+      `projection.${columnName}.digits <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
+    -
+  * - ``partition_projection_format``
+    - Used with ``partition_projection_type`` set to ``DATE``.
+      The date column projection format, defined as a string such as ``yyyy MM``
+      or ``MM-dd-yy HH:mm:ss`` for use with the
+      `Java DateTimeFormatter class <https://docs.oracle.com/javase/8/docs/api/java/time/format/DateTimeFormatter.html>`_.
+      Mapped from the AWS Athena table property
+      `projection.${columnName}.format <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
+    -
+  * - ``partition_projection_interval_unit``
+    - Used with ``partition_projection_type=DATA``.
+      The date column projection range interval unit
+      given in ``partition_projection_interval``.
+      Mapped from the AWS Athena table property
+      `projection.${columnName}.interval.unit <https://docs.aws.amazon.com/athena/latest/ug/partition-projection-supported-types.html>`_.
     -
 
 .. _hive_special_columns:

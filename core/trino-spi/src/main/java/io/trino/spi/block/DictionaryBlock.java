@@ -36,6 +36,7 @@ public class DictionaryBlock
         implements Block
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(DictionaryBlock.class).instanceSize() + ClassLayout.parseClass(DictionaryId.class).instanceSize();
+    private static final int NULL_NOT_FOUND = -1;
 
     private final int positionCount;
     private final Block dictionary;
@@ -52,7 +53,7 @@ public class DictionaryBlock
 
     public DictionaryBlock(Block dictionary, int[] ids)
     {
-        this(requireNonNull(ids, "ids is null").length, dictionary, ids);
+        this(ids.length, dictionary, ids);
     }
 
     public DictionaryBlock(int positionCount, Block dictionary, int[] ids)
@@ -269,6 +270,12 @@ public class DictionaryBlock
     public long getLogicalSizeInBytes()
     {
         if (logicalSizeInBytes >= 0) {
+            return logicalSizeInBytes;
+        }
+
+        OptionalInt dictionarySizePerPosition = dictionary.fixedSizeInBytesPerPosition();
+        if (dictionarySizePerPosition.isPresent()) {
+            logicalSizeInBytes = dictionarySizePerPosition.getAsInt() * (long) getPositionCount();
             return logicalSizeInBytes;
         }
 
@@ -504,6 +511,36 @@ public class DictionaryBlock
             result.sizeInBytes = dictionary.getPositionsSizeInBytes(usedIds, uniqueIds) + (Integer.BYTES * (long) length);
         }
         return result;
+    }
+
+    @Override
+    public Block copyWithAppendedNull()
+    {
+        int desiredLength = idsOffset + positionCount + 1;
+        int[] newIds = Arrays.copyOf(ids, desiredLength);
+        Block newDictionary = dictionary;
+
+        int nullIndex = NULL_NOT_FOUND;
+
+        if (dictionary.mayHaveNull()) {
+            int dictionaryPositionCount = dictionary.getPositionCount();
+            for (int i = 0; i < dictionaryPositionCount; i++) {
+                if (dictionary.isNull(i)) {
+                    nullIndex = i;
+                    break;
+                }
+            }
+        }
+
+        if (nullIndex == NULL_NOT_FOUND) {
+            newIds[idsOffset + positionCount] = dictionary.getPositionCount();
+            newDictionary = dictionary.copyWithAppendedNull();
+        }
+        else {
+            newIds[idsOffset + positionCount] = nullIndex;
+        }
+
+        return new DictionaryBlock(idsOffset, positionCount + 1, newDictionary, newIds, isCompact(), getDictionarySourceId());
     }
 
     @Override

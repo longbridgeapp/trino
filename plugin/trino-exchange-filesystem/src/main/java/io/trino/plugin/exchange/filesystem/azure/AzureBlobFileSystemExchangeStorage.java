@@ -27,6 +27,8 @@ import com.azure.storage.blob.models.CustomerProvidedKey;
 import com.azure.storage.blob.models.DeleteSnapshotsOptionType;
 import com.azure.storage.blob.models.ListBlobsOptions;
 import com.azure.storage.blob.specialized.BlockBlobAsyncClient;
+import com.azure.storage.common.policy.RequestRetryOptions;
+import com.azure.storage.common.policy.RetryPolicyType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Lists;
@@ -94,11 +96,11 @@ public class AzureBlobFileSystemExchangeStorage
     @Inject
     public AzureBlobFileSystemExchangeStorage(ExchangeAzureConfig config)
     {
-        requireNonNull(config, "config is null");
         this.blockSize = toIntExact(config.getAzureStorageBlockSize().toBytes());
-        Optional<String> connectionString = config.getAzureStorageConnectionString();
 
-        BlobServiceClientBuilder blobServiceClientBuilder = new BlobServiceClientBuilder();
+        BlobServiceClientBuilder blobServiceClientBuilder = new BlobServiceClientBuilder()
+                .retryOptions(new RequestRetryOptions(RetryPolicyType.EXPONENTIAL, config.getMaxErrorRetries(), (Integer) null, null, null, null));
+        Optional<String> connectionString = config.getAzureStorageConnectionString();
         if (connectionString.isPresent()) {
             blobServiceClientBuilder.connectionString(connectionString.get());
         }

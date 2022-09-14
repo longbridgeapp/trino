@@ -18,11 +18,11 @@ import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import io.trino.Session;
 import io.trino.client.NodeVersion;
-import io.trino.connector.CatalogName;
 import io.trino.execution.scheduler.PartitionMemoryEstimator.MemoryRequirements;
 import io.trino.memory.MemoryInfo;
 import io.trino.metadata.InMemoryNodeManager;
 import io.trino.metadata.InternalNode;
+import io.trino.metadata.InternalNodeManager;
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.memory.MemoryPoolInfo;
 import io.trino.testing.TestingSession;
@@ -46,8 +46,7 @@ public class TestExponentialGrowthPartitionMemoryEstimator
     public void testEstimator()
             throws Exception
     {
-        InMemoryNodeManager nodeManager = new InMemoryNodeManager();
-        nodeManager.addNode(new CatalogName("catalog"), new InternalNode("a-node", URI.create("local://blah"), NodeVersion.UNKNOWN, false));
+        InternalNodeManager nodeManager = new InMemoryNodeManager(new InternalNode("a-node", URI.create("local://blah"), NodeVersion.UNKNOWN, false));
         BinPackingNodeAllocatorService nodeAllocatorService = new BinPackingNodeAllocatorService(
                 nodeManager,
                 () -> ImmutableMap.of(new InternalNode("a-node", URI.create("local://blah"), NodeVersion.UNKNOWN, false).getNodeIdentifier(), Optional.of(buildWorkerMemoryInfo(DataSize.ofBytes(0)))),

@@ -98,7 +98,7 @@ public class DictionaryAwarePageProjection
         public DictionaryAwarePageProjectionWork(@Nullable ConnectorSession session, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
         {
             this.session = session;
-            this.block = requireNonNull(page, "page is null").getBlock(0);
+            this.block = page.getBlock(0);
             this.selectedPositions = requireNonNull(selectedPositions, "selectedPositions is null");
             this.produceLazyBlock = DictionaryAwarePageProjection.this.produceLazyBlock && !block.isLoaded();
 
@@ -117,9 +117,7 @@ public class DictionaryAwarePageProjection
             if (produceLazyBlock) {
                 return true;
             }
-            else {
-                return processInternal();
-            }
+            return processInternal();
         }
 
         private boolean processInternal()
@@ -200,10 +198,8 @@ public class DictionaryAwarePageProjection
                     return result.getLoadedBlock();
                 });
             }
-            else {
-                checkState(result != null, "result has not been generated");
-                return result;
-            }
+            checkState(result != null, "result has not been generated");
+            return result;
         }
 
         private void setupDictionaryBlockProjection()

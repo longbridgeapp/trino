@@ -261,7 +261,8 @@ public abstract class BaseJdbcClient
                 Optional.empty(),
                 OptionalLong.empty(),
                 Optional.of(columns.build()),
-                ImmutableSet.of(), // Note: the query is opaque, so we cannot return other referenced tables // TODO https://github.com/trinodb/trino/issues/12526
+                // The query is opaque, so we don't know referenced tables
+                Optional.empty(),
                 0);
     }
 
@@ -345,7 +346,7 @@ public abstract class BaseJdbcClient
         return metadata.getColumns(
                 remoteTableName.getCatalogName().orElse(null),
                 escapeNamePattern(remoteTableName.getSchemaName(), metadata.getSearchStringEscape()).orElse(null),
-                escapeNamePattern(Optional.of(remoteTableName.getTableName()), metadata.getSearchStringEscape()).orElse(null),
+                escapeNamePattern(remoteTableName.getTableName(), metadata.getSearchStringEscape()),
                 null);
     }
 
@@ -564,6 +565,7 @@ public abstract class BaseJdbcClient
 
             for (ColumnMetadata column : columns) {
                 String columnName = identifierMapping.toRemoteColumnName(connection, column.getName());
+                verifyColumnName(connection.getMetaData(), columnName);
                 columnNames.add(columnName);
                 columnTypes.add(column.getType());
                 columnList.add(getColumnDefinitionSql(session, column, columnName));
@@ -687,7 +689,8 @@ public abstract class BaseJdbcClient
     @Override
     public void renameTable(ConnectorSession session, JdbcTableHandle handle, SchemaTableName newTableName)
     {
-        renameTable(session, handle.getCatalogName(), handle.getSchemaName(), handle.getTableName(), newTableName);
+        RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
+        renameTable(session, remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName(), newTableName);
     }
 
     protected void renameTable(ConnectorSession session, String catalogName, String remoteSchemaName, String remoteTableName, SchemaTableName newTable)
@@ -699,15 +702,20 @@ public abstract class BaseJdbcClient
             ConnectorIdentity identity = session.getIdentity();
             String newRemoteSchemaName = identifierMapping.toRemoteSchemaName(identity, connection, newSchemaName);
             String newRemoteTableName = identifierMapping.toRemoteTableName(identity, connection, newRemoteSchemaName, newTableName);
-            String sql = format(
-                    "ALTER TABLE %s RENAME TO %s",
-                    quoted(catalogName, remoteSchemaName, remoteTableName),
-                    quoted(catalogName, newRemoteSchemaName, newRemoteTableName));
+            String sql = renameTableSql(catalogName, remoteSchemaName, remoteTableName, newRemoteSchemaName, newRemoteTableName);
             execute(connection, sql);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
+    }
+
+    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
+    {
+        return format(
+                "ALTER TABLE %s RENAME TO %s",
+                quoted(catalogName, remoteSchemaName, remoteTableName),
+                quoted(catalogName, newRemoteSchemaName, newRemoteTableName));
     }
 
     @Override
@@ -756,6 +764,7 @@ public abstract class BaseJdbcClient
 
         try (Connection connection = connectionFactory.openConnection(session)) {
             String columnName = column.getName();
+            verifyColumnName(connection.getMetaData(), columnName);
             String remoteColumnName = identifierMapping.toRemoteColumnName(connection, columnName);
             String sql = format(
                     "ALTER TABLE %s ADD %s",
@@ -773,11 +782,8 @@ public abstract class BaseJdbcClient
     {
         try (Connection connection = connectionFactory.openConnection(session)) {
             String newRemoteColumnName = identifierMapping.toRemoteColumnName(connection, newColumnName);
-            String sql = format(
-                    "ALTER TABLE %s RENAME COLUMN %s TO %s",
-                    quoted(handle.asPlainTable().getRemoteTableName()),
-                    jdbcColumn.getColumnName(),
-                    newRemoteColumnName);
+            verifyColumnName(connection.getMetaData(), newRemoteColumnName);
+            String sql = renameColumnSql(handle, jdbcColumn, newRemoteColumnName);
             execute(connection, sql);
         }
         catch (SQLException e) {
@@ -785,14 +791,29 @@ public abstract class BaseJdbcClient
         }
     }
 
+    protected String renameColumnSql(JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newRemoteColumnName)
+    {
+        return format(
+                "ALTER TABLE %s RENAME COLUMN %s TO %s",
+                quoted(handle.asPlainTable().getRemoteTableName()),
+                quoted(jdbcColumn.getColumnName()),
+                quoted(newRemoteColumnName));
+    }
+
     @Override
     public void dropColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column)
     {
-        String sql = format(
-                "ALTER TABLE %s DROP COLUMN %s",
-                quoted(handle.asPlainTable().getRemoteTableName()),
-                column.getColumnName());
-        execute(session, sql);
+        try (Connection connection = connectionFactory.openConnection(session)) {
+            String remoteColumnName = identifierMapping.toRemoteColumnName(connection, column.getColumnName());
+            String sql = format(
+                    "ALTER TABLE %s DROP COLUMN %s",
+                    quoted(handle.asPlainTable().getRemoteTableName()),
+                    quoted(remoteColumnName));
+            execute(connection, sql);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
     }
 
     @Override
@@ -813,9 +834,8 @@ public abstract class BaseJdbcClient
         if (handle.getTemporaryTableName().isPresent()) {
             dropTable(session, new JdbcTableHandle(
                     new SchemaTableName(handle.getSchemaName(), handle.getTemporaryTableName().get()),
-                    handle.getCatalogName(),
-                    handle.getSchemaName(),
-                    handle.getTemporaryTableName().get()));
+                    new RemoteTableName(Optional.ofNullable(handle.getCatalogName()), Optional.ofNullable(handle.getSchemaName()), handle.getTemporaryTableName().get()),
+                    Optional.empty()));
         }
     }
 
@@ -883,6 +903,7 @@ public abstract class BaseJdbcClient
         ConnectorIdentity identity = session.getIdentity();
         try (Connection connection = connectionFactory.openConnection(session)) {
             schemaName = identifierMapping.toRemoteSchemaName(identity, connection, schemaName);
+            verifySchemaName(connection.getMetaData(), schemaName);
             execute(connection, createSchemaSql(schemaName));
         }
         catch (SQLException e) {
@@ -920,6 +941,7 @@ public abstract class BaseJdbcClient
         try (Connection connection = connectionFactory.openConnection(session)) {
             String remoteSchemaName = identifierMapping.toRemoteSchemaName(identity, connection, schemaName);
             String newRemoteSchemaName = identifierMapping.toRemoteSchemaName(identity, connection, newSchemaName);
+            verifySchemaName(connection.getMetaData(), newRemoteSchemaName);
             execute(connection, renameSchemaSql(remoteSchemaName, newRemoteSchemaName));
         }
         catch (SQLException e) {
@@ -1078,10 +1100,22 @@ public abstract class BaseJdbcClient
         execute(session, sql);
     }
 
+    protected void verifySchemaName(DatabaseMetaData databaseMetadata, String schemaName)
+            throws SQLException
+    {
+        // expect remote databases throw an exception for unsupported schema names
+    }
+
     protected void verifyTableName(DatabaseMetaData databaseMetadata, String tableName)
             throws SQLException
     {
         // expect remote databases throw an exception for unsupported table names
+    }
+
+    protected void verifyColumnName(DatabaseMetaData databaseMetadata, String columnName)
+            throws SQLException
+    {
+        // expect remote databases throw an exception for unsupported column names
     }
 
     protected String quoted(@Nullable String catalog, @Nullable String schema, String table)
@@ -1095,6 +1129,12 @@ public abstract class BaseJdbcClient
         }
         sb.append(quoted(table));
         return sb.toString();
+    }
+
+    public static String varcharLiteral(String value)
+    {
+        requireNonNull(value, "value is null");
+        return "'" + value.replace("'", "''") + "'";
     }
 
     protected static Optional<String> escapeNamePattern(Optional<String> name, String escape)

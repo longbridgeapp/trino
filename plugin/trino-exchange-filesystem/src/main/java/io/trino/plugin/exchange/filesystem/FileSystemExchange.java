@@ -25,6 +25,7 @@ import io.trino.spi.exchange.ExchangeContext;
 import io.trino.spi.exchange.ExchangeSinkHandle;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandle;
+import io.trino.spi.exchange.ExchangeSourceHandleSource;
 
 import javax.annotation.concurrent.GuardedBy;
 import javax.crypto.SecretKey;
@@ -153,11 +154,18 @@ public class FileSystemExchange
     }
 
     @Override
-    public void sinkFinished(ExchangeSinkInstanceHandle handle)
+    public ExchangeSinkInstanceHandle updateSinkInstanceHandle(ExchangeSinkHandle sinkHandle, int taskAttemptId)
+    {
+        // this implementation never requests an update
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void sinkFinished(ExchangeSinkHandle handle, int taskAttemptId)
     {
         synchronized (this) {
-            FileSystemExchangeSinkInstanceHandle instanceHandle = (FileSystemExchangeSinkInstanceHandle) handle;
-            finishedSinks.add(instanceHandle.getSinkHandle().getPartitionId());
+            FileSystemExchangeSinkHandle sinkHandle = (FileSystemExchangeSinkHandle) handle;
+            finishedSinks.add(sinkHandle.getPartitionId());
         }
         checkInputReady();
     }
@@ -277,9 +285,19 @@ public class FileSystemExchange
     }
 
     @Override
-    public CompletableFuture<List<ExchangeSourceHandle>> getSourceHandles()
+    public ExchangeSourceHandleSource getSourceHandles()
     {
-        return exchangeSourceHandlesFuture;
+        return new ExchangeSourceHandleSource()
+        {
+            @Override
+            public CompletableFuture<ExchangeSourceHandleBatch> getNextBatch()
+            {
+                return exchangeSourceHandlesFuture.thenApply(handles -> new ExchangeSourceHandleBatch(handles, true));
+            }
+
+            @Override
+            public void close() {}
+        };
     }
 
     @Override

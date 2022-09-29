@@ -30,8 +30,9 @@ import io.trino.execution.StateMachine.StateChangeListener;
 import io.trino.execution.TaskId;
 import io.trino.execution.TaskState;
 import io.trino.execution.TaskStatus;
+import io.trino.execution.buffer.OutputBufferStatus;
 import io.trino.execution.buffer.OutputBuffers;
-import io.trino.execution.buffer.OutputBuffers.OutputBufferId;
+import io.trino.execution.buffer.PipelinedOutputBuffers.OutputBufferId;
 import io.trino.failuredetector.FailureDetector;
 import io.trino.metadata.InternalNode;
 import io.trino.metadata.Split;
@@ -105,7 +106,7 @@ public class PipelinedStageExecution
 
     private final PipelinedStageStateMachine stateMachine;
     private final SqlStage stage;
-    private final Map<PlanFragmentId, OutputBufferManager> outputBufferManagers;
+    private final Map<PlanFragmentId, PipelinedOutputBufferManager> outputBufferManagers;
     private final TaskLifecycleListener taskLifecycleListener;
     private final FailureDetector failureDetector;
     private final Optional<int[]> bucketToPartition;
@@ -132,7 +133,7 @@ public class PipelinedStageExecution
 
     public static PipelinedStageExecution createPipelinedStageExecution(
             SqlStage stage,
-            Map<PlanFragmentId, OutputBufferManager> outputBufferManagers,
+            Map<PlanFragmentId, PipelinedOutputBufferManager> outputBufferManagers,
             TaskLifecycleListener taskLifecycleListener,
             FailureDetector failureDetector,
             Executor executor,
@@ -162,7 +163,7 @@ public class PipelinedStageExecution
     private PipelinedStageExecution(
             PipelinedStageStateMachine stateMachine,
             SqlStage stage,
-            Map<PlanFragmentId, OutputBufferManager> outputBufferManagers,
+            Map<PlanFragmentId, PipelinedOutputBufferManager> outputBufferManagers,
             TaskLifecycleListener taskLifecycleListener,
             FailureDetector failureDetector,
             Optional<int[]> bucketToPartition,
@@ -184,7 +185,7 @@ public class PipelinedStageExecution
         stateMachine.addStateChangeListener(state -> {
             if (!state.canScheduleMoreTasks()) {
                 taskLifecycleListener.noMoreTasks(stage.getFragment().getId());
-                updateSourceTasksOutputBuffers(OutputBufferManager::noMoreBuffers);
+                updateSourceTasksOutputBuffers(PipelinedOutputBufferManager::noMoreBuffers);
             }
         });
     }
@@ -433,7 +434,7 @@ public class PipelinedStageExecution
 
         sourceTasks.put(fragmentId, sourceTask);
 
-        OutputBufferManager outputBufferManager = outputBufferManagers.get(fragmentId);
+        PipelinedOutputBufferManager outputBufferManager = outputBufferManagers.get(fragmentId);
         sourceTask.setOutputBuffers(outputBufferManager.getOutputBuffers());
 
         for (RemoteTask destinationTask : getAllTasks()) {
@@ -457,10 +458,10 @@ public class PipelinedStageExecution
         }
     }
 
-    private synchronized void updateSourceTasksOutputBuffers(Consumer<OutputBufferManager> updater)
+    private synchronized void updateSourceTasksOutputBuffers(Consumer<PipelinedOutputBufferManager> updater)
     {
         for (PlanFragmentId sourceFragment : exchangeSources.keySet()) {
-            OutputBufferManager outputBufferManager = outputBufferManagers.get(sourceFragment);
+            PipelinedOutputBufferManager outputBufferManager = outputBufferManagers.get(sourceFragment);
             updater.accept(outputBufferManager);
             for (RemoteTask sourceTask : sourceTasks.get(sourceFragment)) {
                 sourceTask.setOutputBuffers(outputBufferManager.getOutputBuffers());
@@ -485,7 +486,9 @@ public class PipelinedStageExecution
     @Override
     public boolean isAnyTaskBlocked()
     {
-        return getTaskStatuses().stream().anyMatch(TaskStatus::isOutputBufferOverutilized);
+        return getTaskStatuses().stream()
+                .map(TaskStatus::getOutputBufferStatus)
+                .anyMatch(OutputBufferStatus::isOverutilized);
     }
 
     @Override

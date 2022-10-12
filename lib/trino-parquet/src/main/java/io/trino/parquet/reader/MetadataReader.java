@@ -19,20 +19,10 @@ import io.trino.parquet.ParquetDataSource;
 import org.apache.parquet.CorruptStatistics;
 import org.apache.parquet.column.statistics.BinaryStatistics;
 import org.apache.parquet.format.ColumnChunk;
-import org.apache.parquet.format.ColumnMetaData;
-import org.apache.parquet.format.Encoding;
 import org.apache.parquet.format.FileMetaData;
-import org.apache.parquet.format.KeyValue;
-import org.apache.parquet.format.RowGroup;
-import org.apache.parquet.format.SchemaElement;
-import org.apache.parquet.format.Statistics;
-import org.apache.parquet.format.Type;
+import org.apache.parquet.format.*;
 import org.apache.parquet.format.converter.ParquetMetadataConverter;
-import org.apache.parquet.hadoop.metadata.BlockMetaData;
-import org.apache.parquet.hadoop.metadata.ColumnChunkMetaData;
-import org.apache.parquet.hadoop.metadata.ColumnPath;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
-import org.apache.parquet.hadoop.metadata.ParquetMetadata;
+import org.apache.parquet.hadoop.metadata.*;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 import org.apache.parquet.schema.PrimitiveType;
@@ -42,17 +32,7 @@ import org.apache.parquet.schema.Types;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 
 import static io.trino.parquet.ParquetValidationUtils.validateParquet;
 import static java.lang.Boolean.FALSE;
@@ -146,6 +126,8 @@ public final class MetadataReader
                             metaData.total_compressed_size,
                             metaData.total_uncompressed_size);
                     blockMetaData.addColumn(column);
+                    metaData.clear();
+                    columnChunk.clear();
                 }
                 blockMetaData.setPath(filePath);
                 blocks.add(blockMetaData);
@@ -216,6 +198,10 @@ public final class MetadataReader
                 && columnStatistics.genericGetMin() == null && columnStatistics.genericGetMax() == null
                 && !CorruptStatistics.shouldIgnoreStatistics(fileCreatedBy.orElse(null), type.getPrimitiveTypeName())) {
             tryReadOldUtf8Stats(statistics, (BinaryStatistics) columnStatistics);
+        }
+
+        if (statistics != null) {
+            statistics.clear();
         }
 
         return columnStatistics;

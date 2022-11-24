@@ -557,17 +557,4 @@ public class ClickHouseClient
                 ,
                 DISABLE_PUSHDOWN);
     }
-
-    @Override
-    protected void execute(Connection connection, String query)
-    {
-        try (Statement statement = connection.createStatement()) {
-            statement.execute(query);
-        }
-        catch (SQLException e) {
-            TrinoException exception = new TrinoException(JDBC_ERROR, e);
-            exception.addSuppressed(new RuntimeException("Query: " + query));
-            throw exception;
-        }
-    }
 }

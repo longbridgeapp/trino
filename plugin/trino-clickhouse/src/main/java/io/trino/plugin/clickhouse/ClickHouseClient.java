@@ -18,7 +18,7 @@ import cn.hutool.json.JSONArray;
 import cn.hutool.json.JSONUtil;
 import com.clickhouse.client.data.ClickHouseObjectValue;
 import com.clickhouse.client.data.array.ClickHouseDoubleArrayValue;
-import com.clickhouse.client.data.array.ClickHouseIntArrayValue;
+import com.clickhouse.client.data.array.ClickHouseLongArrayValue;
 import com.clickhouse.jdbc.ClickHouseArray;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -384,6 +384,18 @@ public class ClickHouseClient
         return Optional.empty();
     }
 
+    public static SliceWriteFunction varcharWriteFunction()
+    {
+        return (statement, index, value) -> {
+            String data = value.toStringUtf8();
+            System.out.println("-------" + value.toStringUtf8());
+            if (StrUtil.isBlank(data)){
+                data = "";
+            }
+            statement.setString(index, data);
+        };
+    }
+
     @Override
     public WriteMapping toWriteMapping(ConnectorSession session, Type type)
     {
@@ -539,8 +551,8 @@ public class ClickHouseClient
                             statement.setArray(index, arrayOf);
                         }else if (StrUtil.containsIgnoreCase(jsonTypeName, "int")){
                             Long[] json = (Long[]) JSONUtil.parseArray(value.toStringUtf8()).toArray(Long.class);
-                            int[] data = Arrays.stream(json).mapToInt(Long::intValue).toArray();
-                            ClickHouseObjectValue<int[]> of = ClickHouseIntArrayValue.of(data);
+                            long[] data = Arrays.stream(json).mapToLong(Long::intValue).toArray();
+                            ClickHouseObjectValue<long[]> of = ClickHouseLongArrayValue.of(data);
                             Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
                             statement.setArray(index, arrayOf);
                         }else {

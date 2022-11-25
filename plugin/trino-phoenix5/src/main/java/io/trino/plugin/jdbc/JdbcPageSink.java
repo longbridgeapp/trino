@@ -39,7 +39,7 @@ import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
 /**
- * 需要将trino-base-jdbc中JdbcPageSink删掉
+ * 需要将trino-base-jdbc中JdbcPageSink
  * sudo  unzip -l trino-base-jdbc-359.jar  | grep "JdbcPageSink.class" | awk '{printf $4}' | xargs -I {} sudo zip -d trino-base-jdbc-359.jar  {}
  */
 public class JdbcPageSink
@@ -110,7 +110,7 @@ public class JdbcPageSink
                 statement.addBatch();
                 batchSize++;
 
-                if (batchSize >= 100000) {
+                if (batchSize >= 10000) {
                     long millis1 = System.currentTimeMillis();
                     statement.executeBatch();
                     long millis2 = System.currentTimeMillis();

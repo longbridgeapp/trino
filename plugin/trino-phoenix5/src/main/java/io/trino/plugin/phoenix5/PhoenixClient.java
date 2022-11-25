@@ -108,33 +108,7 @@ import java.util.function.BiFunction;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.booleanColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.charWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.dateWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.defaultCharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.defaultVarcharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.doubleWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.integerWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.longDecimalWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.realWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.shortDecimalWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.smallintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.timeWriteFunctionUsingSqlTime;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.tinyintWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varbinaryWriteFunction;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varcharColumnMapping;
-import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
+import static io.trino.plugin.jdbc.StandardColumnMappings.*;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.plugin.phoenix5.MetadataUtil.getEscapedTableName;
@@ -160,6 +134,7 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TimeType.TIME;
 import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
@@ -355,6 +330,7 @@ public class PhoenixClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
+        System.out.println(typeHandle.getJdbcTypeName() + "--" + typeHandle.getJdbcType());
         switch (typeHandle.getJdbcType()) {
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());
@@ -409,10 +385,7 @@ public class PhoenixClient
             case TIMESTAMP:
             case TIME_WITH_TIMEZONE:
             case TIMESTAMP_WITH_TIMEZONE:
-                if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
-                    return mapToUnboundedVarchar(typeHandle);
-                }
-                return Optional.empty();
+                return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MILLIS));
 
             case ARRAY:
                 JdbcTypeHandle elementTypeHandle = getArrayElementTypeHandle(typeHandle);

@@ -386,14 +386,7 @@ public class ClickHouseClient
 
     public static SliceWriteFunction varcharWriteFunction()
     {
-        return (statement, index, value) -> {
-            String data = value.toStringUtf8();
-            System.out.println("-------" + value.toStringUtf8());
-            if (StrUtil.isBlank(data)){
-                data = "";
-            }
-            statement.setString(index, data);
-        };
+        return (statement, index, value) ->  statement.setString(index, value.toStringUtf8());
     }
 
     @Override
@@ -477,9 +470,6 @@ public class ClickHouseClient
                 Optional<ColumnMapping> columnMapping = toColumnMapping(session, connection, typeHandle);
                 // skip unsupported column types
 
-                // TODO: 2022/11/25 nullable逻辑待修改 
-                boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
-
                 // Note: some databases (e.g. SQL Server) do not return column remarks/comment here.
                 Optional<String> comment = Optional.ofNullable(emptyToNull(resultSet.getString("REMARKS")));
                 if (columnMapping.isPresent()) {
@@ -487,7 +477,6 @@ public class ClickHouseClient
                             .setColumnName(columnName)
                             .setJdbcTypeHandle(typeHandle)
                             .setColumnType(columnMapping.get().getType())
-                            .setNullable(nullable)
                             .setComment(comment)
                             .build());
                 }

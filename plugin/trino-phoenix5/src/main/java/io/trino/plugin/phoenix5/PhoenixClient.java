@@ -330,7 +330,6 @@ public class PhoenixClient
     @Override
     public Optional<ColumnMapping> toColumnMapping(ConnectorSession session, Connection connection, JdbcTypeHandle typeHandle)
     {
-        System.out.println(typeHandle.getJdbcTypeName() + "--" + typeHandle.getJdbcType());
         switch (typeHandle.getJdbcType()) {
             case Types.BOOLEAN:
                 return Optional.of(booleanColumnMapping());

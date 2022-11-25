@@ -34,12 +34,7 @@ import io.trino.plugin.jdbc.expression.ImplementMinMax;
 import io.trino.plugin.jdbc.expression.ImplementSum;
 import io.trino.plugin.jdbc.mapping.IdentifierMapping;
 import io.trino.spi.TrinoException;
-import io.trino.spi.connector.AggregateFunction;
-import io.trino.spi.connector.ColumnHandle;
-import io.trino.spi.connector.ColumnMetadata;
-import io.trino.spi.connector.ConnectorSession;
-import io.trino.spi.connector.ConnectorTableMetadata;
-import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.*;
 import io.trino.spi.type.*;
 
 import javax.annotation.Nullable;
@@ -50,6 +45,8 @@ import java.sql.*;
 import java.util.*;
 import java.util.function.BiFunction;
 
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.base.Verify.verify;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
@@ -61,6 +58,8 @@ import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRou
 import static io.trino.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
 import static io.trino.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
 import static io.trino.plugin.jdbc.StandardColumnMappings.*;
+import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
+import static io.trino.plugin.jdbc.UnsupportedTypeHandling.IGNORE;
 import static io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -79,6 +78,7 @@ import static java.lang.Long.reverseBytes;
 import static java.lang.Math.max;
 import static java.lang.String.format;
 import static java.lang.String.join;
+import static java.sql.DatabaseMetaData.columnNoNulls;
 
 public class ClickHouseClient
         extends BaseJdbcClient
@@ -444,6 +444,82 @@ public class ClickHouseClient
             return WriteMapping.sliceMapping("UUID", uuidWriteFunction());
         }
         throw new TrinoException(NOT_SUPPORTED, "Unsupported column type: " + type);
+    }
+
+    @Override
+    public List<JdbcColumnHandle> getColumns(ConnectorSession session, JdbcTableHandle tableHandle)
+    {
+        if (tableHandle.getColumns().isPresent()) {
+            return tableHandle.getColumns().get();
+        }
+        checkArgument(tableHandle.isNamedRelation(), "Cannot get columns for %s", tableHandle);
+        SchemaTableName schemaTableName = tableHandle.getRequiredNamedRelation().getSchemaTableName();
+        RemoteTableName remoteTableName = tableHandle.getRequiredNamedRelation().getRemoteTableName();
+
+        try (Connection connection = connectionFactory.openConnection(session);
+             ResultSet resultSet = getColumns(tableHandle, connection.getMetaData())) {
+            int allColumns = 0;
+            List<JdbcColumnHandle> columns = new ArrayList<>();
+            while (resultSet.next()) {
+                // skip if table doesn't match expected
+                if (!(Objects.equals(remoteTableName, getRemoteTable(resultSet)))) {
+                    continue;
+                }
+                allColumns++;
+                String columnName = resultSet.getString("COLUMN_NAME");
+                JdbcTypeHandle typeHandle = new JdbcTypeHandle(
+                        getInteger(resultSet, "DATA_TYPE").orElseThrow(() -> new IllegalStateException("DATA_TYPE is null")),
+                        Optional.ofNullable(resultSet.getString("TYPE_NAME")),
+                        getInteger(resultSet, "COLUMN_SIZE"),
+                        getInteger(resultSet, "DECIMAL_DIGITS"),
+                        Optional.empty(),
+                        Optional.empty());
+                Optional<ColumnMapping> columnMapping = toColumnMapping(session, connection, typeHandle);
+                // skip unsupported column types
+
+                // TODO: 2022/11/25 nullable逻辑待修改 
+                boolean nullable = (resultSet.getInt("NULLABLE") != columnNoNulls);
+
+                // Note: some databases (e.g. SQL Server) do not return column remarks/comment here.
+                Optional<String> comment = Optional.ofNullable(emptyToNull(resultSet.getString("REMARKS")));
+                if (columnMapping.isPresent()) {
+                    columns.add(JdbcColumnHandle.builder()
+                            .setColumnName(columnName)
+                            .setJdbcTypeHandle(typeHandle)
+                            .setColumnType(columnMapping.get().getType())
+                            .setNullable(nullable)
+                            .setComment(comment)
+                            .build());
+                }
+                if (columnMapping.isEmpty()) {
+                    UnsupportedTypeHandling unsupportedTypeHandling = getUnsupportedTypeHandling(session);
+                    verify(
+                            unsupportedTypeHandling == IGNORE,
+                            "Unsupported type handling is set to %s, but toTrinoType() returned empty for %s",
+                            unsupportedTypeHandling,
+                            typeHandle);
+                }
+            }
+            if (columns.isEmpty()) {
+                // A table may have no supported columns. In rare cases (e.g. PostgreSQL) a table might have no columns at all.
+                throw new TableNotFoundException(
+                        schemaTableName,
+                        format("Table '%s' has no supported columns (all %s columns are not supported)", schemaTableName, allColumns));
+            }
+            return ImmutableList.copyOf(columns);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
+    }
+
+    private static RemoteTableName getRemoteTable(ResultSet resultSet)
+            throws SQLException
+    {
+        return new RemoteTableName(
+                Optional.ofNullable(resultSet.getString("TABLE_CAT")),
+                Optional.ofNullable(resultSet.getString("TABLE_SCHEM")),
+                resultSet.getString("TABLE_NAME"));
     }
 
     /**

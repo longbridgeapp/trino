@@ -70,6 +70,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
+import static io.trino.spi.type.StandardTypes.ARRAY;
 import static io.trino.spi.type.StandardTypes.JSON;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
@@ -608,30 +609,26 @@ public class ClickHouseClient
                 (statement, index, value) -> {
                     if (StrUtil.containsIgnoreCase(jsonTypeName,"array")){
                         JSONArray list = JSONUtil.parseArray(value.toStringUtf8());
+                        Array arrayOf;
                         if (StrUtil.containsIgnoreCase(jsonTypeName, "float")){
-                            Double[] json = (Double[]) JSONUtil.parseArray(value.toStringUtf8()).toArray(Double.class);
-                            double[] data = Arrays.stream(json).mapToDouble(Double::doubleValue).toArray();
+                            double[] data = (double[]) list.toArray(double.class);
                             ClickHouseObjectValue<double[]> of = ClickHouseDoubleArrayValue.of(data);
-                            Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
-                            statement.setArray(index, arrayOf);
+                            arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
                         }else if (StrUtil.containsIgnoreCase(jsonTypeName, "int")){
-                            Long[] json = (Long[]) JSONUtil.parseArray(value.toStringUtf8()).toArray(Long.class);
-                            long[] data = Arrays.stream(json).mapToLong(Long::intValue).toArray();
+                            long[] data = (long[]) list.toArray(long.class);
                             ClickHouseObjectValue<long[]> of = ClickHouseLongArrayValue.of(data);
-                            Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
-                            statement.setArray(index, arrayOf);
+                            arrayOf = statement.getConnection().createArrayOf(jsonTypeName, of.asArray());
                         }else {
-                            Array arrayOf = statement.getConnection().createArrayOf(jsonTypeName, list.toArray());
-                            statement.setArray(index, arrayOf);
+                            arrayOf = statement.getConnection().createArrayOf(jsonTypeName, list.toArray());
                         }
+                        statement.setArray(index, arrayOf);
                     }else if (StrUtil.containsIgnoreCase(jsonTypeName,"map")){
                         Map data = JSONUtil.parseObj(value.toStringUtf8()).toBean(Map.class);
                         statement.setObject(index, data);
                     }else {
                         throw new SQLException("暂不支持");
                     }
-                }
-                ,
+                },
                 DISABLE_PUSHDOWN);
     }
 }

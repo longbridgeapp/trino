@@ -14,6 +14,7 @@
 package io.trino.plugin.impala;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.json.JSONUtil;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.impala.sc.EventTracking;
@@ -281,11 +282,8 @@ public class ImpalaClient
             final Map<String, List<FieldSchema>> tableInfo = eventTracking.getTableInfo();
             for (FieldSchema fieldSchema : tableInfo.get(remoteTableName.getTableName())) {
                 String columnName = fieldSchema.getName();
-                String type = fieldSchema.getType();
-                if ("etl_time".equals(columnName) || "base_time".equals(columnName)) {
-                    type = "bigint";
-                }
-                if ("events".equals(remoteTableName.getTableName()) || "datetime".equals(type)) {
+                String type = fieldSchema.getType().toLowerCase(Locale.ROOT);
+                if ("etl_time".equals(columnName) || "task_deadline".equals(columnName)) {
                     type = "bigint";
                 }
                 JdbcTypeHandle typeHandle = new JdbcTypeHandle(
@@ -340,7 +338,7 @@ public class ImpalaClient
     {
         String jdbcTypeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle)).toLowerCase(Locale.ROOT);
-
+        System.out.println("===----=====" + JSONUtil.toJsonStr(typeHandle));
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;

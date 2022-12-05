@@ -41,7 +41,7 @@ public class EventTracking
     private static final int CONNECTION_TIMEOUT = 60 * 1000;
     private static final int CACHE_TIMEOUT = 60 * CONNECTION_TIMEOUT;
     private static final String TABLE_SCHEMA = "tableSchema";
-    private static final String SC_URL = "{}/api/sql/{}?project={}&token={}";
+    private static final String SC_URL = "{}/api/sql/{}?project={}";
     private String url;
     private String project;
     private String token;
@@ -64,10 +64,10 @@ public class EventTracking
 
     private void init()
     {
-        String urlTable = StrUtil.format(SC_URL, url, "tables", project, token);
+        String urlTable = StrUtil.format(SC_URL, url, "tables", project);
         List<String> tables = JSONUtil.toList(httpRequest(urlTable), String.class);
 
-        String urlField = StrUtil.format(SC_URL, url, "meta", project, token);
+        String urlField = StrUtil.format(SC_URL, url, "meta", project);
         final List<TableSchema> tableSchemas = JSONUtil.toList(httpRequest(urlField), TableSchema.class);
         Map<String, List<FieldSchema>> map = new HashMap<>();
         for (TableSchema tableSchema : tableSchemas) {
@@ -111,7 +111,7 @@ public class EventTracking
                 httpRequest.header(entry.getKey(), entry.getValue());
             }
         }
-
+        httpRequest.header("token", token);
         HttpResponse httpResponse = httpRequest.execute();
 
         if (!httpResponse.isOk() || StrUtil.isBlank(httpResponse.body()) || !JSONUtil.isJson(httpResponse.body())) {

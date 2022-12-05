@@ -14,7 +14,6 @@
 package io.trino.plugin.impala;
 
 import cn.hutool.core.collection.CollUtil;
-import cn.hutool.json.JSONUtil;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import io.trino.plugin.impala.sc.EventTracking;

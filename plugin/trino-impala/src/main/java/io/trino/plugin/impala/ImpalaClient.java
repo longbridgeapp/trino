@@ -338,7 +338,7 @@ public class ImpalaClient
     {
         String jdbcTypeName = typeHandle.getJdbcTypeName()
                 .orElseThrow(() -> new TrinoException(JDBC_ERROR, "Type name is missing: " + typeHandle)).toLowerCase(Locale.ROOT);
-        System.out.println("===----=====" + JSONUtil.toJsonStr(typeHandle));
+
         Optional<ColumnMapping> mapping = getForcedMappingToVarchar(typeHandle);
         if (mapping.isPresent()) {
             return mapping;

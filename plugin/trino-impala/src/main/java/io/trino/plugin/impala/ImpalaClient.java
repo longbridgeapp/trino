@@ -224,10 +224,15 @@ public class ImpalaClient
     public List<SchemaTableName> getTableNames(ConnectorSession session, Optional<String> schema)
     {
         ImmutableList.Builder<SchemaTableName> list = ImmutableList.builder();
-        for (String table : eventTracking.getTables()) {
-            if (filterSchema(schema.get())) {
-                list.add(new SchemaTableName(RAWDATA, table));
+        try {
+            for (String table : eventTracking.getTables()) {
+                if (filterSchema(schema.get())) {
+                    list.add(new SchemaTableName(RAWDATA, table));
+                }
             }
+        }
+        catch (Exception e) {
+            throw new TrinoException(JDBC_ERROR, e);
         }
         return list.build();
     }

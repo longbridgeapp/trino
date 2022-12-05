@@ -45,6 +45,7 @@ public class EventTracking
     private String url;
     private String project;
     private String token;
+    private static boolean state;
 
     private static Map<Header, String> header = new java.util.HashMap<>();
     private static TimedCache<String, Tuple> tableInfo = CacheUtil.newTimedCache(3 * CACHE_TIMEOUT);
@@ -59,7 +60,6 @@ public class EventTracking
         this.url = url;
         this.project = project;
         this.token = token;
-        init();
     }
 
     private void init()
@@ -75,6 +75,7 @@ public class EventTracking
         }
 
         tableInfo.put(TABLE_SCHEMA, new Tuple(tables, map));
+        state = true;
     }
 
     public List<String> getTables()
@@ -89,7 +90,7 @@ public class EventTracking
 
     private Tuple getTuple()
     {
-        if (!this.tableInfo.containsKey(TABLE_SCHEMA)) {
+        if (!state || !this.tableInfo.containsKey(TABLE_SCHEMA)) {
             init();
         }
         return this.tableInfo.get(TABLE_SCHEMA, false);

@@ -1794,9 +1794,10 @@ public class HiveMetadata
             }
         }
 
-        if ((null == partitionUpdates || partitionUpdates.size() == 0) && getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
+        if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
             String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
-            if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)) {
+            Optional<List<String>> partitionNames = metastore.getPartitionNames(new HiveIdentity(session), handle.getSchemaName(), handle.getTableName());
+            if (!partitionNames.isEmpty() && partitionNames.get().size() != 0  && StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt) && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
                 Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
                 removeNonCurrentFiles(session, path.suffix("/"));
             }

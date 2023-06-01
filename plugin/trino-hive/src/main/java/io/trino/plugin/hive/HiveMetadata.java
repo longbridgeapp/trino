@@ -1670,6 +1670,16 @@ public class HiveMetadata
                 && writeInfo.getWriteMode() == DIRECT_TO_TARGET_EXISTING_DIRECTORY) {
             throw new TrinoException(NOT_SUPPORTED, "Overwriting existing partition in transactional tables doesn't support DIRECT_TO_TARGET_EXISTING_DIRECTORY write mode");
         }
+
+        if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
+            String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
+            Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
+            if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt) && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
+                Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
+                removeNonCurrentFiles(session, path.suffix("/"));
+            }
+        }
+
         metastore.declareIntentionToWrite(session, writeInfo.getWriteMode(), writeInfo.getWritePath(), tableName);
         return result;
     }
@@ -1791,15 +1801,6 @@ public class HiveMetadata
             }
             else {
                 throw new IllegalArgumentException(format("Unsupported update mode: %s", partitionUpdate.getUpdateMode()));
-            }
-        }
-
-        if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
-            String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
-            Optional<List<String>> partitionNames = metastore.getPartitionNames(new HiveIdentity(session), handle.getSchemaName(), handle.getTableName());
-            if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt) && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
-                Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
-                removeNonCurrentFiles(session, path.suffix("/"));
             }
         }
 

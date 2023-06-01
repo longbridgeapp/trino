@@ -153,6 +153,8 @@ public class HiveConfig
     private boolean legacyHiveViewTranslation;
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
 
+    private String insertExistingPartitionsBehaviorDelPt = "";
+
     public int getMaxInitialSplits()
     {
         return maxInitialSplits;
@@ -1084,5 +1086,18 @@ public class HiveConfig
     public boolean isLegacyHiveViewTranslation()
     {
         return this.legacyHiveViewTranslation;
+    }
+
+    @Config("hive.insert-existing-partitions-behavior-del-pt")
+    @ConfigDescription("Deleted target directory on insert overwrite with empty select result to an unpartitioned table/static partition to behave similarly to Hive 2.x. Hive config: hive.emr.iow.clean.target.dir, default: false")
+    public HiveConfig setInsertExistingPartitionsBehaviorDelPt(String insertExistingPartitionsBehaviorDelPt)
+    {
+        this.insertExistingPartitionsBehaviorDelPt = insertExistingPartitionsBehaviorDelPt;
+        return this;
+    }
+
+    public String getInsertExistingPartitionsBehaviorDelPt()
+    {
+        return this.insertExistingPartitionsBehaviorDelPt;
     }
 }

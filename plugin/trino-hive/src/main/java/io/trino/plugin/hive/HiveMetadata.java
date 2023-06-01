@@ -105,6 +105,7 @@ import io.trino.spi.type.RowType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Path;
@@ -174,6 +175,7 @@ import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.trino.plugin.hive.HiveSessionProperties.getCompressionCodec;
 import static io.trino.plugin.hive.HiveSessionProperties.getHiveStorageFormat;
 import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehavior;
+import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehaviorDelPt;
 import static io.trino.plugin.hive.HiveSessionProperties.getQueryPartitionFilterRequiredSchemas;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
 import static io.trino.plugin.hive.HiveSessionProperties.isBucketExecutionEnabled;
@@ -1792,6 +1794,14 @@ public class HiveMetadata
             }
         }
 
+        if ((null == partitionUpdates || partitionUpdates.size() == 0) && getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
+            String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
+            if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)) {
+                Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
+                removeNonCurrentFiles(session, path.suffix("/"));
+            }
+        }
+
         if (isFullAcidTable(table.getParameters())) {
             HdfsContext context = new HdfsContext(session);
             for (PartitionUpdate update : partitionUpdates) {
@@ -1805,6 +1815,24 @@ public class HiveMetadata
                 partitionUpdates.stream()
                         .map(PartitionUpdate::getName)
                         .collect(toImmutableList())));
+    }
+
+    private void removeNonCurrentFiles(ConnectorSession session, Path partitionPath)
+    {
+        try {
+            FileSystem fileSystem = hdfsEnvironment.getFileSystem(new HdfsContext(session), partitionPath);
+            RemoteIterator<LocatedFileStatus> iterator = fileSystem.listFiles(partitionPath, false);
+            while (iterator.hasNext()) {
+                Path file = iterator.next().getPath();
+                fileSystem.delete(file, false);
+            }
+        }
+        catch (Exception ex) {
+            throw new TrinoException(
+                    HIVE_FILESYSTEM_ERROR,
+                    format("Failed to delete partition %s files during overwrite", partitionPath),
+                    ex);
+        }
     }
 
     private void removeNonCurrentQueryFiles(ConnectorSession session, Path partitionPath)

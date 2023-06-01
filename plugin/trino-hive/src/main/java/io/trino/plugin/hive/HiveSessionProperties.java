@@ -59,6 +59,7 @@ public final class HiveSessionProperties
     private static final String PARALLEL_PARTITIONED_BUCKETED_WRITES = "parallel_partitioned_bucketed_writes";
     private static final String FORCE_LOCAL_SCHEDULING = "force_local_scheduling";
     private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR = "insert_existing_partitions_behavior";
+    private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR_DEL_PT = "insert_existing_partitions_behavior_del_pt";
     private static final String ORC_BLOOM_FILTERS_ENABLED = "orc_bloom_filters_enabled";
     private static final String ORC_MAX_MERGE_DISTANCE = "orc_max_merge_distance";
     private static final String ORC_MAX_BUFFER_SIZE = "orc_max_buffer_size";
@@ -458,6 +459,11 @@ public final class HiveSessionProperties
                         LEGACY_HIVE_VIEW_TRANSLATION,
                         "Use legacy Hive view translation mechanism",
                         hiveConfig.isLegacyHiveViewTranslation(),
+                        false),
+                stringProperty(
+                        INSERT_EXISTING_PARTITIONS_BEHAVIOR_DEL_PT,
+                        "Deleted target directory on insert overwrite with empty select result to an unpartitioned table/static partition to behave similarly to Hive 2.x. Hive config: hive.emr.iow.clean.target.dir, default: false",
+                        hiveConfig.getInsertExistingPartitionsBehaviorDelPt(),
                         false));
     }
 
@@ -495,6 +501,11 @@ public final class HiveSessionProperties
     public static InsertExistingPartitionsBehavior getInsertExistingPartitionsBehavior(ConnectorSession session)
     {
         return session.getProperty(INSERT_EXISTING_PARTITIONS_BEHAVIOR, InsertExistingPartitionsBehavior.class);
+    }
+
+    public static String getInsertExistingPartitionsBehaviorDelPt(ConnectorSession session)
+    {
+        return session.getProperty(INSERT_EXISTING_PARTITIONS_BEHAVIOR_DEL_PT, String.class);
     }
 
     public static boolean isOrcBloomFiltersEnabled(ConnectorSession session)

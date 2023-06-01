@@ -104,6 +104,7 @@ public class TestHiveConfig
                 .setDynamicFilteringProbeBlockingTimeout(new Duration(0, TimeUnit.MINUTES))
                 .setTimestampPrecision(HiveTimestampPrecision.DEFAULT_PRECISION)
                 .setOptimizeSymlinkListing(true)
+                .setInsertExistingPartitionsBehaviorDelPt("asda")
                 .setLegacyHiveViewTranslation(false));
     }
 
@@ -251,6 +252,7 @@ public class TestHiveConfig
                 .setDynamicFilteringProbeBlockingTimeout(new Duration(10, TimeUnit.SECONDS))
                 .setTimestampPrecision(HiveTimestampPrecision.NANOSECONDS)
                 .setOptimizeSymlinkListing(false)
+                .setInsertExistingPartitionsBehaviorDelPt("asda")
                 .setLegacyHiveViewTranslation(true);
 
         assertFullMapping(properties, expected);

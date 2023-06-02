@@ -1673,7 +1673,7 @@ public class HiveMetadata
 
         if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
             String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
-            if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)){
+            if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)) {
                 Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
                 if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
                     Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);

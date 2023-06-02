@@ -1673,10 +1673,12 @@ public class HiveMetadata
 
         if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
             String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
-            Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
-            if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt) && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
-                Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
-                removeNonCurrentFiles(session, path.suffix("/"));
+            if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)){
+                Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
+                if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
+                    Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
+                    removeNonCurrentFiles(session, path.suffix("/"));
+                }
             }
         }
 

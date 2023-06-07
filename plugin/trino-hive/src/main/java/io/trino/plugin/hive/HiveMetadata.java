@@ -120,6 +120,9 @@ import java.io.File;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -136,6 +139,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -175,6 +180,8 @@ import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.trino.plugin.hive.HiveSessionProperties.getCompressionCodec;
 import static io.trino.plugin.hive.HiveSessionProperties.getHiveStorageFormat;
 import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehavior;
+import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehaviorBatchDelPt;
+import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehaviorDateFormat;
 import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehaviorDelPt;
 import static io.trino.plugin.hive.HiveSessionProperties.getQueryPartitionFilterRequiredSchemas;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
@@ -1671,15 +1678,50 @@ public class HiveMetadata
             throw new TrinoException(NOT_SUPPORTED, "Overwriting existing partition in transactional tables doesn't support DIRECT_TO_TARGET_EXISTING_DIRECTORY write mode");
         }
 
-        if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
-            String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
-            if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)) {
-                Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
-                if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
-                    Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
-                    removeNonCurrentFiles(session, path.suffix("/"));
+        // TODO: 2023/6/7 insert_existing_partitions_behavior_date_format = 'yyyyMMdd'
+        // TODO: 2023/6/7 insert_existing_partitions_behavior_batch_del_pt = 'account_channel=lb/pt=[20230420-1-20230429]'
+        try {
+            if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
+                String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
+                String insertExistingPartitionsBehaviorDateFormat = getInsertExistingPartitionsBehaviorDateFormat(session);
+                String insertExistingPartitionsBehaviorBatchDelPt = getInsertExistingPartitionsBehaviorBatchDelPt(session);
+                if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDelPt)) {
+                    Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
+                    if (!partitionNames.isEmpty() && partitionNames.get().size() != 0 && partitionNames.get().contains(insertExistingPartitionsBehaviorDelPt)) {
+                        Path path = new Path(table.getStorage().getLocation() + "/" + insertExistingPartitionsBehaviorDelPt);
+                        removeNonCurrentFiles(session, path.suffix("/"));
+                    }
+                }
+                else if (StringUtils.isNotBlank(insertExistingPartitionsBehaviorDateFormat) && StringUtils.isNotBlank(insertExistingPartitionsBehaviorBatchDelPt)) {
+                    StringBuilder insertExistingPartitionsBehaviorBatchDelPtBuffer = new StringBuilder(insertExistingPartitionsBehaviorBatchDelPt);
+                    int startIndex = insertExistingPartitionsBehaviorBatchDelPt.indexOf("[");
+                    int endIndex = insertExistingPartitionsBehaviorBatchDelPtBuffer.indexOf("]", startIndex);
+                    String placeholderParenthesized = insertExistingPartitionsBehaviorBatchDelPtBuffer.substring(startIndex, endIndex + 1);
+                    if (StringUtils.isNotBlank(placeholderParenthesized)) {
+                        String placeholder = insertExistingPartitionsBehaviorBatchDelPtBuffer.substring(startIndex + 1, endIndex);
+                        String[] startIntervalEnd = placeholder.split("-");
+                        if (null != startIntervalEnd && startIntervalEnd.length == 3) {
+                            Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
+                            if (!partitionNames.isEmpty() && partitionNames.get().size() != 0) {
+                                DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern(insertExistingPartitionsBehaviorDateFormat);
+                                LocalDate startDate = LocalDate.parse(startIntervalEnd[0], dateTimeFormatter);
+                                Integer interval = Integer.valueOf(startIntervalEnd[1]);
+                                LocalDate endDate = LocalDate.parse(startIntervalEnd[2], dateTimeFormatter);
+                                for (String datePt : Stream.iterate(startDate, date -> date.plusDays(interval)).limit((ChronoUnit.DAYS.between(startDate, endDate) + 1)).map(date -> date.format(dateTimeFormatter)).collect(Collectors.toSet())) {
+                                    String partitionPath = new StringBuilder(insertExistingPartitionsBehaviorBatchDelPt).replace(startIndex, endIndex + 1, datePt).toString();
+                                    if (partitionNames.get().contains(partitionPath)) {
+                                        Path path = new Path(table.getStorage().getLocation() + "/" + partitionPath);
+                                        removeNonCurrentFiles(session, path.suffix("/"));
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
+        }
+        catch (Exception e) {
+            throw new TrinoException(INVALID_TABLE_PROPERTY, "deleted target directory exception", e);
         }
 
         metastore.declareIntentionToWrite(session, writeInfo.getWriteMode(), writeInfo.getWritePath(), tableName);

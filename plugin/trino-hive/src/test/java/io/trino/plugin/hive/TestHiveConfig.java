@@ -105,6 +105,8 @@ public class TestHiveConfig
                 .setTimestampPrecision(HiveTimestampPrecision.DEFAULT_PRECISION)
                 .setOptimizeSymlinkListing(true)
                 .setInsertExistingPartitionsBehaviorDelPt("asda")
+                .setInsertExistingPartitionsBehaviorDateFormat("sadad")
+                .setInsertExistingPartitionsBehaviorBatchDelPt("sadas")
                 .setLegacyHiveViewTranslation(false));
     }
 
@@ -253,6 +255,8 @@ public class TestHiveConfig
                 .setTimestampPrecision(HiveTimestampPrecision.NANOSECONDS)
                 .setOptimizeSymlinkListing(false)
                 .setInsertExistingPartitionsBehaviorDelPt("asda")
+                .setInsertExistingPartitionsBehaviorDateFormat("sadad")
+                .setInsertExistingPartitionsBehaviorBatchDelPt("sadas")
                 .setLegacyHiveViewTranslation(true);
 
         assertFullMapping(properties, expected);

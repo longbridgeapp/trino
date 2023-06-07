@@ -154,6 +154,8 @@ public class HiveConfig
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
 
     private String insertExistingPartitionsBehaviorDelPt = "";
+    private String insertExistingPartitionsBehaviorDateFormat = "";
+    private String insertExistingPartitionsBehaviorBatchDelPt = "";
 
     public int getMaxInitialSplits()
     {
@@ -1099,5 +1101,31 @@ public class HiveConfig
     public String getInsertExistingPartitionsBehaviorDelPt()
     {
         return this.insertExistingPartitionsBehaviorDelPt;
+    }
+
+    public String getInsertExistingPartitionsBehaviorDateFormat()
+    {
+        return insertExistingPartitionsBehaviorDateFormat;
+    }
+
+    @Config("insert-existing-partitions-behavior-date-format")
+    @ConfigDescription("Deleted target directory on insert overwrite with empty select result to an unpartitioned table/static partition to behave similarly to Hive 2.x. Hive config: hive.emr.iow.clean.target.dir, default: false")
+    public HiveConfig setInsertExistingPartitionsBehaviorDateFormat(String insertExistingPartitionsBehaviorDateFormat)
+    {
+        this.insertExistingPartitionsBehaviorDateFormat = insertExistingPartitionsBehaviorDateFormat;
+        return this;
+    }
+
+    public String getInsertExistingPartitionsBehaviorBatchDelPt()
+    {
+        return insertExistingPartitionsBehaviorBatchDelPt;
+    }
+
+    @Config("insert-existing-partitions-behavior-batch-del-pt")
+    @ConfigDescription("Deleted target directory on insert overwrite with empty select result to an unpartitioned table/static partition to behave similarly to Hive 2.x. Hive config: hive.emr.iow.clean.target.dir, default: false")
+    public HiveConfig setInsertExistingPartitionsBehaviorBatchDelPt(String insertExistingPartitionsBehaviorBatchDelPt)
+    {
+        this.insertExistingPartitionsBehaviorBatchDelPt = insertExistingPartitionsBehaviorBatchDelPt;
+        return this;
     }
 }

@@ -124,6 +124,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -1679,7 +1680,7 @@ public class HiveMetadata
         }
 
         // TODO: 2023/6/7 insert_existing_partitions_behavior_date_format = 'yyyyMMdd'
-        // TODO: 2023/6/7 insert_existing_partitions_behavior_batch_del_pt = 'account_channel=lb/pt=[20230420-1-20230429]'
+        // TODO: 2023/6/7 insert_existing_partitions_behavior_batch_del_pt = 'account_channel=lb/pt=[20230420<1>20230429]'
         try {
             if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
                 String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
@@ -1696,18 +1697,23 @@ public class HiveMetadata
                     StringBuilder insertExistingPartitionsBehaviorBatchDelPtBuffer = new StringBuilder(insertExistingPartitionsBehaviorBatchDelPt);
                     int startIndex = insertExistingPartitionsBehaviorBatchDelPt.indexOf("[");
                     int endIndex = insertExistingPartitionsBehaviorBatchDelPtBuffer.indexOf("]", startIndex);
-                    String placeholderParenthesized = insertExistingPartitionsBehaviorBatchDelPtBuffer.substring(startIndex, endIndex + 1);
-                    if (StringUtils.isNotBlank(placeholderParenthesized)) {
-                        String placeholder = insertExistingPartitionsBehaviorBatchDelPtBuffer.substring(startIndex + 1, endIndex);
-                        String[] startIntervalEnd = placeholder.split("-");
-                        if (null != startIntervalEnd && startIntervalEnd.length == 3) {
+                    String placeholder = insertExistingPartitionsBehaviorBatchDelPtBuffer.substring(startIndex + 1, endIndex);
+                    if (StringUtils.isNotBlank(placeholder)) {
+                        List<String> startIntervalEnd = Arrays.stream(placeholder.split("<\\d>")).collect(Collectors.toList());
+                        startIntervalEnd.add(placeholder.replace(startIntervalEnd.get(0) + "<", "").replace(">" + startIntervalEnd.get(1), ""));
+                        if (null != startIntervalEnd && startIntervalEnd.size() == 3) {
                             Optional<List<String>> partitionNames = metastore.getPartitionNames(identity, tableName.getSchemaName(), tableName.getTableName());
                             if (!partitionNames.isEmpty() && partitionNames.get().size() != 0) {
                                 DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern(insertExistingPartitionsBehaviorDateFormat);
-                                LocalDate startDate = LocalDate.parse(startIntervalEnd[0], dateTimeFormatter);
-                                Integer interval = Integer.valueOf(startIntervalEnd[1]);
-                                LocalDate endDate = LocalDate.parse(startIntervalEnd[2], dateTimeFormatter);
-                                for (String datePt : Stream.iterate(startDate, date -> date.plusDays(interval)).limit((ChronoUnit.DAYS.between(startDate, endDate) + 1)).map(date -> date.format(dateTimeFormatter)).collect(Collectors.toSet())) {
+                                LocalDate startDate = LocalDate.parse(startIntervalEnd.get(0), dateTimeFormatter);
+                                LocalDate endDate = LocalDate.parse(startIntervalEnd.get(1), dateTimeFormatter);
+                                Integer interval = Integer.valueOf(startIntervalEnd.get(2));
+                                Set<String> datePts = Stream.iterate(startDate, date -> date.plusDays(interval))
+                                        .limit((ChronoUnit.DAYS.between(startDate, endDate) + 1))
+                                        .filter(date -> (date.isBefore(endDate) || date.isEqual(endDate)))
+                                        .map(date -> date.format(dateTimeFormatter))
+                                        .collect(Collectors.toSet());
+                                for (String datePt : datePts) {
                                     String partitionPath = new StringBuilder(insertExistingPartitionsBehaviorBatchDelPt).replace(startIndex, endIndex + 1, datePt).toString();
                                     if (partitionNames.get().contains(partitionPath)) {
                                         Path path = new Path(table.getStorage().getLocation() + "/" + partitionPath);

@@ -107,6 +107,7 @@ public class TestHiveConfig
                 .setInsertExistingPartitionsBehaviorDelPt("asda")
                 .setInsertExistingPartitionsBehaviorDateFormat("sadad")
                 .setInsertExistingPartitionsBehaviorBatchDelPt("sadas")
+                .setInsertExistingNotPartitionsBehavior("sadas")
                 .setLegacyHiveViewTranslation(false));
     }
 
@@ -257,6 +258,7 @@ public class TestHiveConfig
                 .setInsertExistingPartitionsBehaviorDelPt("asda")
                 .setInsertExistingPartitionsBehaviorDateFormat("sadad")
                 .setInsertExistingPartitionsBehaviorBatchDelPt("sadas")
+                .setInsertExistingNotPartitionsBehavior("sadas")
                 .setLegacyHiveViewTranslation(true);
 
         assertFullMapping(properties, expected);

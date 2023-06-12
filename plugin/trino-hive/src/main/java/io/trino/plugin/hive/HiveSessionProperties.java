@@ -59,6 +59,7 @@ public final class HiveSessionProperties
     private static final String PARALLEL_PARTITIONED_BUCKETED_WRITES = "parallel_partitioned_bucketed_writes";
     private static final String FORCE_LOCAL_SCHEDULING = "force_local_scheduling";
     private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR = "insert_existing_partitions_behavior";
+    private static final String INSERT_EXISTING_NOT_PARTITIONS_BEHAVIOR = "insert_existing_not_partitions_behavior";
     private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR_DEL_PT = "insert_existing_partitions_behavior_del_pt";
     private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR_DATE_FORMAT = "insert_existing_partitions_behavior_date_format";
     private static final String INSERT_EXISTING_PARTITIONS_BEHAVIOR_BATCH_DEL_PT = "insert_existing_partitions_behavior_batch_del_pt";
@@ -463,6 +464,11 @@ public final class HiveSessionProperties
                         hiveConfig.isLegacyHiveViewTranslation(),
                         false),
                 stringProperty(
+                        INSERT_EXISTING_NOT_PARTITIONS_BEHAVIOR,
+                        "del not partition",
+                        hiveConfig.getInsertExistingNotPartitionsBehavior(),
+                        false),
+                stringProperty(
                         INSERT_EXISTING_PARTITIONS_BEHAVIOR_DEL_PT,
                         "Deleted target directory on insert overwrite with empty select result to an unpartitioned table/static partition to behave similarly to Hive 2.x. Hive config: hive.emr.iow.clean.target.dir, default: false",
                         hiveConfig.getInsertExistingPartitionsBehaviorDelPt(),
@@ -528,6 +534,11 @@ public final class HiveSessionProperties
     public static String getInsertExistingPartitionsBehaviorBatchDelPt(ConnectorSession session)
     {
         return session.getProperty(INSERT_EXISTING_PARTITIONS_BEHAVIOR_BATCH_DEL_PT, String.class);
+    }
+
+    public static String getInsertExistingNotPartitionsBehavior(ConnectorSession session)
+    {
+        return session.getProperty(INSERT_EXISTING_NOT_PARTITIONS_BEHAVIOR, String.class);
     }
 
     public static boolean isOrcBloomFiltersEnabled(ConnectorSession session)

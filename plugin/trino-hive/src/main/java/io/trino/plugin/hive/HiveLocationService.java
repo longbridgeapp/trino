@@ -108,7 +108,7 @@ public class HiveLocationService
     @Override
     public WriteInfo getTableWriteInfo(LocationHandle locationHandle, boolean overwrite)
     {
-        if (overwrite && locationHandle.getWriteMode() != STAGE_AND_MOVE_TO_TARGET_DIRECTORY) {
+        if (overwrite && locationHandle.getWriteMode() != STAGE_AND_MOVE_TO_TARGET_DIRECTORY && false) {
             throw new TrinoException(NOT_SUPPORTED, "Overwriting unpartitioned table not supported when writing directly to target directory");
         }
         return new WriteInfo(locationHandle.getTargetPath(), locationHandle.getWritePath(), locationHandle.getWriteMode());

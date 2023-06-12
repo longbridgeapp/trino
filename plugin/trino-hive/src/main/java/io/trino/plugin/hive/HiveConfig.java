@@ -153,6 +153,7 @@ public class HiveConfig
     private boolean legacyHiveViewTranslation;
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
 
+    private String insertExistingNotPartitionsBehavior = "";
     private String insertExistingPartitionsBehaviorDelPt = "";
     private String insertExistingPartitionsBehaviorDateFormat = "";
     private String insertExistingPartitionsBehaviorBatchDelPt = "";
@@ -1126,6 +1127,19 @@ public class HiveConfig
     public HiveConfig setInsertExistingPartitionsBehaviorBatchDelPt(String insertExistingPartitionsBehaviorBatchDelPt)
     {
         this.insertExistingPartitionsBehaviorBatchDelPt = insertExistingPartitionsBehaviorBatchDelPt;
+        return this;
+    }
+
+    public String getInsertExistingNotPartitionsBehavior()
+    {
+        return insertExistingNotPartitionsBehavior;
+    }
+
+    @Config("insert-existing-not-partitions-behavior")
+    @ConfigDescription("insert-existing-not-partitions-behavior")
+    public HiveConfig setInsertExistingNotPartitionsBehavior(String insertExistingNotPartitionsBehavior)
+    {
+        this.insertExistingNotPartitionsBehavior = insertExistingNotPartitionsBehavior;
         return this;
     }
 }

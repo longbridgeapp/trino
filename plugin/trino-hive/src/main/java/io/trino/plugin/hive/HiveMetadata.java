@@ -25,6 +25,7 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import io.airlift.json.JsonCodec;
+import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.hive.HdfsEnvironment.HdfsContext;
@@ -180,6 +181,7 @@ import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
 import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.trino.plugin.hive.HiveSessionProperties.getCompressionCodec;
 import static io.trino.plugin.hive.HiveSessionProperties.getHiveStorageFormat;
+import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingNotPartitionsBehavior;
 import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehavior;
 import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehaviorBatchDelPt;
 import static io.trino.plugin.hive.HiveSessionProperties.getInsertExistingPartitionsBehaviorDateFormat;
@@ -300,6 +302,8 @@ import static org.apache.hadoop.hive.ql.io.AcidUtils.isTransactionalTable;
 public class HiveMetadata
         implements TransactionalMetadata
 {
+    private static final Logger log = Logger.get(HiveMetadata.class);
+
     public static final String PRESTO_VERSION_NAME = "presto_version";
     public static final String TRINO_CREATED_BY = "trino_created_by";
     public static final String PRESTO_QUERY_ID_NAME = "presto_query_id";
@@ -1635,7 +1639,7 @@ public class HiveMetadata
         SchemaTableName tableName = ((HiveTableHandle) tableHandle).getSchemaTableName();
         Table table = metastore.getTable(identity, tableName.getSchemaName(), tableName.getTableName())
                 .orElseThrow(() -> new TableNotFoundException(tableName));
-
+        // TODO: 2023/6/12 table.getPartitionColumns()
         checkTableIsWritable(table, writesToNonManagedTablesEnabled);
 
         for (Column column : table.getDataColumns()) {
@@ -1682,6 +1686,8 @@ public class HiveMetadata
         // TODO: 2023/6/7 insert_existing_partitions_behavior_date_format = 'yyyyMMdd'
         // TODO: 2023/6/7 insert_existing_partitions_behavior_batch_del_pt = 'account_channel=lb/pt=[20230420<1>20230429]'
         try {
+            List<Column> partitionColumns = table.getPartitionColumns();
+            String insertExistingNotPartitionsBehavior = getInsertExistingNotPartitionsBehavior(session);
             if (getInsertExistingPartitionsBehavior(session) == InsertExistingPartitionsBehavior.OVERWRITE) {
                 String insertExistingPartitionsBehaviorDelPt = getInsertExistingPartitionsBehaviorDelPt(session);
                 String insertExistingPartitionsBehaviorDateFormat = getInsertExistingPartitionsBehaviorDateFormat(session);
@@ -1724,6 +1730,10 @@ public class HiveMetadata
                         }
                     }
                 }
+            }
+            else if (null == partitionColumns && partitionColumns.isEmpty() && StringUtils.isNotBlank(insertExistingNotPartitionsBehavior) && StringUtils.endsWithIgnoreCase(insertExistingNotPartitionsBehavior, "overwrite")) {
+                Path path = new Path(table.getStorage().getLocation());
+                removeNonCurrentFiles(session, path.suffix("/"));
             }
         }
         catch (Exception e) {
@@ -1786,7 +1796,8 @@ public class HiveMetadata
                         columnTypes,
                         getColumnStatistics(partitionComputedStatistics, ImmutableList.of()));
 
-                if (partitionUpdate.getUpdateMode() == OVERWRITE) {
+                List<Column> partitionColumns = table.getPartitionColumns();
+                if (partitionUpdate.getUpdateMode() == OVERWRITE && null != partitionColumns && !partitionColumns.isEmpty()) {
                     // get privileges from existing table
                     PrincipalPrivileges principalPrivileges = fromHivePrivilegeInfos(metastore.listTablePrivileges(new HiveIdentity(session), handle.getSchemaName(), handle.getTableName(), Optional.empty()));
 
@@ -1805,6 +1816,9 @@ public class HiveMetadata
                             partitionUpdate.getWritePath(),
                             partitionUpdate.getFileNames(),
                             partitionStatistics);
+                }
+                else if (null == partitionColumns || partitionColumns.isEmpty()) {
+                    log.warn("update mode: " + partitionUpdate.getUpdateMode());
                 }
                 else {
                     throw new IllegalArgumentException("Unsupported update mode: " + partitionUpdate.getUpdateMode());

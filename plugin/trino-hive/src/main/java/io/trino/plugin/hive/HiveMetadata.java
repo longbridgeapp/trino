@@ -1731,7 +1731,7 @@ public class HiveMetadata
                     }
                 }
             }
-            else if (null == partitionColumns && partitionColumns.isEmpty() && StringUtils.isNotBlank(insertExistingNotPartitionsBehavior) && StringUtils.endsWithIgnoreCase(insertExistingNotPartitionsBehavior, "overwrite")) {
+            else if ((null == partitionColumns || partitionColumns.isEmpty()) && StringUtils.isNotBlank(insertExistingNotPartitionsBehavior) && StringUtils.endsWithIgnoreCase(insertExistingNotPartitionsBehavior, "overwrite")) {
                 Path path = new Path(table.getStorage().getLocation());
                 removeNonCurrentFiles(session, path.suffix("/"));
             }

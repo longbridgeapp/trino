@@ -194,9 +194,15 @@ abstract class AbstractTrinoResultSet
     private final Optional<Statement> statement;
 
     AbstractTrinoResultSet(Optional<Statement> statement, List<Column> columns, Iterator<List<Object>> results)
-    {
+            throws SQLException {
         this.statement = requireNonNull(statement, "statement is null");
-        this.resultTimeZone = DateTimeZone.forID(ZoneId.systemDefault().getId());
+        String timeZoneId;
+        if (statement.isPresent()) {
+            timeZoneId = statement.get().unwrap(TrinoStatement.class).getTimeZoneId();
+        } else {
+            timeZoneId = ZoneId.systemDefault().getId();
+        }
+        this.resultTimeZone = DateTimeZone.forID(timeZoneId);
 
         requireNonNull(columns, "columns is null");
         this.fieldMap = getFieldMap(columns);

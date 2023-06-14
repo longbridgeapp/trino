@@ -25,7 +25,7 @@ class InMemoryTrinoResultSet
         extends AbstractTrinoResultSet
 {
     public InMemoryTrinoResultSet(List<Column> columns, List<List<Object>> results)
-    {
+            throws SQLException {
         super(Optional.empty(), columns, requireNonNull(results, "results is null").iterator());
     }
 

@@ -46,6 +46,7 @@ public class TrinoStatement
     private final AtomicBoolean escapeProcessing = new AtomicBoolean(true);
     private final AtomicBoolean closeOnCompletion = new AtomicBoolean();
     private final AtomicReference<TrinoConnection> connection;
+    private final AtomicReference<String> timeZoneId;
     private final Consumer<TrinoStatement> onClose;
     private final AtomicReference<StatementClient> executingClient = new AtomicReference<>();
     private final AtomicReference<TrinoResultSet> currentResult = new AtomicReference<>();
@@ -58,7 +59,13 @@ public class TrinoStatement
     TrinoStatement(TrinoConnection connection, Consumer<TrinoStatement> onClose)
     {
         this.connection = new AtomicReference<>(requireNonNull(connection, "connection is null"));
+        this.timeZoneId = new AtomicReference<>(connection.getTimeZoneId());
         this.onClose = requireNonNull(onClose, "onClose is null");
+    }
+
+    public String getTimeZoneId()
+    {
+        return timeZoneId.get();
     }
 
     public void setProgressMonitor(Consumer<QueryStats> progressMonitor)

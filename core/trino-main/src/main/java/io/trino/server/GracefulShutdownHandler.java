@@ -13,6 +13,10 @@
  */
 package io.trino.server;
 
+import cn.hutool.core.io.FileUtil;
+import cn.hutool.http.HttpRequest;
+import cn.hutool.http.HttpResponse;
+import cn.hutool.json.JSONUtil;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
@@ -52,6 +56,7 @@ public class GracefulShutdownHandler
     private final boolean isCoordinator;
     private final ShutdownAction shutdownAction;
     private final Duration gracePeriod;
+    private ServerConfig serverConfig;
 
     @GuardedBy("this")
     private boolean shutdownRequested;
@@ -68,6 +73,7 @@ public class GracefulShutdownHandler
         this.lifeCycleManager = requireNonNull(lifeCycleManager, "lifeCycleManager is null");
         this.isCoordinator = requireNonNull(serverConfig, "serverConfig is null").isCoordinator();
         this.gracePeriod = serverConfig.getGracePeriod();
+        this.serverConfig = serverConfig;
     }
 
     public synchronized void requestShutdown()
@@ -140,7 +146,20 @@ public class GracefulShutdownHandler
             log.warn(e, "Problem stopping the life cycle");
         }
 
+        log.warn("要关机咯...");
+        emrControls();
         shutdownAction.onShutdown();
+    }
+
+    private void emrControls()
+    {
+        if (serverConfig.isDecreaseInstanceGroupsLeisure()) {
+            String emrInfoUrl = FileUtil.readUtf8String("/mnt/dss/trino/emr_info.ini");
+            HttpResponse httpRequest = HttpRequest.get(emrInfoUrl).timeout(120000).execute();
+            if (!httpRequest.isOk() || JSONUtil.parseObj(httpRequest).getInt("code") != 200) {
+                log.error("调用缩容接口失败,返回:" + httpRequest.body());
+            }
+        }
     }
 
     private List<TaskInfo> getActiveTasks()

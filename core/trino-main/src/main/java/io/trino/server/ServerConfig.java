@@ -29,6 +29,19 @@ public class ServerConfig
     private Duration gracePeriod = new Duration(2, MINUTES);
     private boolean queryResultsCompressionEnabled = true;
     private Optional<String> queryInfoUrlTemplate = Optional.empty();
+    private boolean decreaseInstanceGroupsLeisure = false;
+
+    public boolean isDecreaseInstanceGroupsLeisure()
+    {
+        return decreaseInstanceGroupsLeisure;
+    }
+
+    @Config("decrease.instance.groups.leisure")
+    public ServerConfig setDecreaseInstanceGroupsLeisure(boolean decreaseInstanceGroupsLeisure)
+    {
+        this.decreaseInstanceGroupsLeisure = decreaseInstanceGroupsLeisure;
+        return this;
+    }
 
     public boolean isCoordinator()
     {

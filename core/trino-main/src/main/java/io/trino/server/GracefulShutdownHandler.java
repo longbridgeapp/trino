@@ -155,7 +155,7 @@ public class GracefulShutdownHandler
     private void emrControls()
     {
         String path = "/mnt/dss/trino/emr_info.ini";
-        if (serverConfig.isDecreaseInstanceGroupsLeisure() && FileUtil.exist(path)) {
+        if (FileUtil.exist(path)) {
             String emrInfoUrl = FileUtil.readUtf8String("/mnt/dss/trino/emr_info.ini");
             if (StrUtil.isNotBlank(emrInfoUrl)) {
                 log.info("api url: " + emrInfoUrl);

@@ -31,7 +31,6 @@ public class TestServerConfig
     {
         assertRecordedDefaults(recordDefaults(ServerConfig.class)
                 .setCoordinator(true)
-                .setDecreaseInstanceGroupsLeisure(false)
                 .setIncludeExceptionInResponse(true)
                 .setGracePeriod(new Duration(2, MINUTES))
                 .setQueryResultsCompressionEnabled(true)

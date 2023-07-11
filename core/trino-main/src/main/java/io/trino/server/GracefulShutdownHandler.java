@@ -158,9 +158,12 @@ public class GracefulShutdownHandler
         if (serverConfig.isDecreaseInstanceGroupsLeisure() && FileUtil.exist(path)) {
             String emrInfoUrl = FileUtil.readUtf8String("/mnt/dss/trino/emr_info.ini");
             if (StrUtil.isNotBlank(emrInfoUrl)) {
+                log.info("api url: " + emrInfoUrl);
                 HttpResponse httpRequest = HttpRequest.get(emrInfoUrl).timeout(120000).execute();
                 if (!httpRequest.isOk() || JSONUtil.parseObj(httpRequest).getInt("code") != 200) {
                     log.error("调用缩容接口失败,返回:" + httpRequest.body());
+                }else {
+                    log.info(httpRequest.body());
                 }
             }
         }

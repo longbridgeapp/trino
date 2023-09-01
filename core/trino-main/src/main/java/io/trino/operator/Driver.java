@@ -21,6 +21,7 @@ import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
 import com.google.errorprone.annotations.FormatMethod;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 import io.trino.execution.ScheduledSplit;
@@ -28,10 +29,6 @@ import io.trino.execution.SplitAssignment;
 import io.trino.metadata.Split;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
-import io.trino.spi.connector.UpdatablePageSource;
-import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.io.Closeable;
 import java.util.ArrayList;
@@ -76,8 +73,6 @@ public class Driver
     @SuppressWarnings("unused")
     private final List<Operator> allOperators;
     private final Optional<SourceOperator> sourceOperator;
-    private final Optional<DeleteOperator> deleteOperator;
-    private final Optional<UpdateOperator> updateOperator;
 
     // This variable acts as a staging area. When new splits (encapsulated in SplitAssignment) are
     // provided to a Driver, the Driver will not process them right away. Instead, the splits are
@@ -87,8 +82,9 @@ public class Driver
     private final Map<Operator, ListenableFuture<Void>> revokingOperators = new HashMap<>();
 
     private final AtomicReference<State> state = new AtomicReference<>(State.ALIVE);
+    private final SettableFuture<Void> destroyedFuture = SettableFuture.create();
 
-    private final DriverLock exclusiveLock = new DriverLock();
+    private final DriverLock exclusiveLock = new DriverLock(state, destroyedFuture);
 
     @GuardedBy("exclusiveLock")
     private SplitAssignment currentSplitAssignment;
@@ -97,7 +93,7 @@ public class Driver
 
     private enum State
     {
-        ALIVE, NEED_DESTRUCTION, DESTROYED
+        ALIVE, NEED_DESTRUCTION, DESTROYING, DESTROYED
     }
 
     public static Driver createDriver(DriverContext driverContext, List<Operator> operators)
@@ -131,25 +127,13 @@ public class Driver
         checkArgument(!operators.isEmpty(), "There must be at least one operator");
 
         Optional<SourceOperator> sourceOperator = Optional.empty();
-        Optional<DeleteOperator> deleteOperator = Optional.empty();
-        Optional<UpdateOperator> updateOperator = Optional.empty();
         for (Operator operator : operators) {
             if (operator instanceof SourceOperator) {
                 checkArgument(sourceOperator.isEmpty(), "There must be at most one SourceOperator");
                 sourceOperator = Optional.of((SourceOperator) operator);
             }
-            else if (operator instanceof DeleteOperator) {
-                checkArgument(deleteOperator.isEmpty(), "There must be at most one DeleteOperator");
-                deleteOperator = Optional.of((DeleteOperator) operator);
-            }
-            else if (operator instanceof UpdateOperator) {
-                checkArgument(updateOperator.isEmpty(), "There must be at most one UpdateOperator");
-                updateOperator = Optional.of((UpdateOperator) operator);
-            }
         }
         this.sourceOperator = sourceOperator;
-        this.deleteOperator = deleteOperator;
-        this.updateOperator = updateOperator;
 
         currentSplitAssignment = sourceOperator.map(operator -> new SplitAssignment(operator.getSourceId(), ImmutableSet.of(), false)).orElse(null);
         // initially the driverBlockedFuture is not blocked (it is completed)
@@ -173,9 +157,9 @@ public class Driver
         return driverContext;
     }
 
-    public Optional<PlanNodeId> getSourceId()
+    public ListenableFuture<Void> getDestroyedFuture()
     {
-        return sourceOperator.map(SourceOperator::getSourceId);
+        return destroyedFuture;
     }
 
     @Override
@@ -186,6 +170,8 @@ public class Driver
             return;
         }
 
+        // set the yield signal and interrupt any actively running driver to stop them as soon as possible
+        driverContext.getYieldSignal().yieldImmediatelyForTermination();
         exclusiveLock.interruptCurrentOwner();
 
         // if we can get the lock, attempt a clean shutdown; otherwise someone else will shutdown
@@ -197,20 +183,20 @@ public class Driver
         checkLockNotHeld("Cannot check finished status while holding the driver lock");
 
         // if we can get the lock, attempt a clean shutdown; otherwise someone else will shutdown
-        Optional<Boolean> result = tryWithLockUninterruptibly(this::isFinishedInternal);
-        return result.orElseGet(() -> state.get() != State.ALIVE || driverContext.isDone());
+        Optional<Boolean> result = tryWithLockUninterruptibly(this::isTerminatingOrDoneInternal);
+        return result.orElseGet(() -> state.get() != State.ALIVE || driverContext.isTerminatingOrDone());
     }
 
     @GuardedBy("exclusiveLock")
-    private boolean isFinishedInternal()
+    private boolean isTerminatingOrDoneInternal()
     {
-        checkLockHeld("Lock must be held to call isFinishedInternal");
+        checkLockHeld("Lock must be held to call isTerminatingOrDoneInternal");
 
-        boolean finished = state.get() != State.ALIVE || driverContext.isDone() || activeOperators.isEmpty() || activeOperators.get(activeOperators.size() - 1).isFinished();
-        if (finished) {
+        boolean terminatingOrDone = state.get() != State.ALIVE || activeOperators.isEmpty() || activeOperators.get(activeOperators.size() - 1).isFinished() || driverContext.isTerminatingOrDone();
+        if (terminatingOrDone) {
             state.compareAndSet(State.ALIVE, State.NEED_DESTRUCTION);
         }
-        return finished;
+        return terminatingOrDone;
     }
 
     public void updateSplitAssignment(SplitAssignment splitAssignment)
@@ -259,9 +245,7 @@ public class Driver
         for (ScheduledSplit newSplit : newSplits) {
             Split split = newSplit.getSplit();
 
-            Supplier<Optional<UpdatablePageSource>> pageSource = sourceOperator.addSplit(split);
-            deleteOperator.ifPresent(deleteOperator -> deleteOperator.setPageSource(pageSource));
-            updateOperator.ifPresent(updateOperator -> updateOperator.setPageSource(pageSource));
+            sourceOperator.addSplit(split);
         }
 
         // set no more splits
@@ -310,7 +294,7 @@ public class Driver
             try {
                 long start = System.nanoTime();
                 int iterations = 0;
-                while (!isFinishedInternal()) {
+                while (!isTerminatingOrDoneInternal()) {
                     ListenableFuture<Void> future = processInternal(operationTimer);
                     iterations++;
                     if (!future.isDone()) {
@@ -331,7 +315,7 @@ public class Driver
                 // Driver thread was interrupted which should only happen if the task is already finished.
                 // If this becomes the actual cause of a failed query there is a bug in the task state machine.
                 Exception exception = new Exception("Interrupted By");
-                exception.setStackTrace(interrupterStack.stream().toArray(StackTraceElement[]::new));
+                exception.setStackTrace(interrupterStack.toArray(StackTraceElement[]::new));
                 TrinoException newException = new TrinoException(GENERIC_INTERNAL_ERROR, "Driver was interrupted", exception);
                 newException.addSuppressed(t);
                 driverContext.failed(newException);
@@ -385,7 +369,7 @@ public class Driver
 
         processNewSources();
 
-        // If there is only one operator, finish it
+        // One of the operators is already finished (and removed from activeOperators list). Finish bottommost operator.
         // Some operators (LookupJoinOperator and HashBuildOperator) are broken and requires finish to be called continuously
         // TODO remove the second part of the if statement, when these operators are fixed
         // Note: finish should not be called on the natural source of the pipeline as this could cause the task to finish early
@@ -396,7 +380,7 @@ public class Driver
         }
 
         boolean movedPage = false;
-        for (int i = 0; i < activeOperators.size() - 1 && !driverContext.isDone(); i++) {
+        for (int i = 0; i < activeOperators.size() - 1 && !driverContext.isTerminatingOrDone(); i++) {
             Operator current = activeOperators.get(i);
             Operator next = activeOperators.get(i + 1);
 
@@ -488,7 +472,7 @@ public class Driver
     @GuardedBy("exclusiveLock")
     private void handleMemoryRevoke()
     {
-        for (int i = 0; i < activeOperators.size() && !driverContext.isDone(); i++) {
+        for (int i = 0; i < activeOperators.size() && !driverContext.isTerminatingOrDone(); i++) {
             Operator operator = activeOperators.get(i);
 
             if (revokingOperators.containsKey(operator)) {
@@ -519,7 +503,7 @@ public class Driver
     {
         checkLockHeld("Lock must be held to call destroyIfNecessary");
 
-        if (!state.compareAndSet(State.NEED_DESTRUCTION, State.DESTROYED)) {
+        if (!state.compareAndSet(State.NEED_DESTRUCTION, State.DESTROYING)) {
             return;
         }
 
@@ -542,6 +526,10 @@ public class Driver
                     t,
                     "Error destroying driver for task %s",
                     driverContext.getTaskId());
+        }
+        finally {
+            // Mark destruction as having completed after driverContext.finished() is complete
+            state.set(State.DESTROYED);
         }
 
         if (inFlightException != null) {
@@ -619,7 +607,7 @@ public class Driver
     }
 
     @FormatMethod
-    private static Throwable addSuppressedException(Throwable inFlightException, Throwable newException, String message, Object... args)
+    private static Throwable addSuppressedException(Throwable inFlightException, Throwable newException, String message, final Object... args)
     {
         if (newException instanceof Error) {
             if (inFlightException == null) {
@@ -767,6 +755,15 @@ public class Driver
     {
         private final ReentrantLock lock = new ReentrantLock();
 
+        private final AtomicReference<State> state;
+        private final SettableFuture<Void> destroyedFuture;
+
+        private DriverLock(AtomicReference<State> state, SettableFuture<Void> destroyedFuture)
+        {
+            this.state = requireNonNull(state, "state is null");
+            this.destroyedFuture = requireNonNull(destroyedFuture, "destroyedFuture is null");
+        }
+
         @GuardedBy("this")
         private Thread currentOwner;
         @GuardedBy("this")
@@ -813,12 +810,19 @@ public class Driver
             // state to prevent further processing in the Driver.
         }
 
-        public synchronized void unlock()
+        public void unlock()
         {
             checkState(lock.isHeldByCurrentThread(), "Current thread does not hold lock");
-            currentOwner = null;
-            currentOwnerInterruptionAllowed = false;
+            synchronized (this) {
+                currentOwner = null;
+                currentOwnerInterruptionAllowed = false;
+            }
             lock.unlock();
+            // Set the destroyed signal after releasing the lock since callbacks are fired synchronously and
+            // otherwise could cause a deadlock
+            if (state.get() == State.DESTROYED) {
+                destroyedFuture.set(null);
+            }
         }
 
         public synchronized List<StackTraceElement> getInterrupterStack()

@@ -17,14 +17,14 @@ import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.type.Type;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
-import org.openjdk.jol.info.ClassLayout;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
 
 class TypedPositionsAppender
         implements PositionsAppender
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(TypedPositionsAppender.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(TypedPositionsAppender.class);
 
     private final Type type;
     private BlockBuilder blockBuilder;
@@ -57,6 +57,12 @@ class TypedPositionsAppender
         for (int i = 0; i < rlePositionCount; i++) {
             type.appendTo(block, 0, blockBuilder);
         }
+    }
+
+    @Override
+    public void append(int position, Block source)
+    {
+        type.appendTo(source, position, blockBuilder);
     }
 
     @Override

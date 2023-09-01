@@ -130,13 +130,17 @@ public class Identity
             return false;
         }
         Identity identity = (Identity) o;
-        return Objects.equals(user, identity.user);
+        return Objects.equals(user, identity.user) &&
+               Objects.equals(groups, identity.groups) &&
+               Objects.equals(principal, identity.principal) &&
+               Objects.equals(enabledRoles, identity.enabledRoles) &&
+               Objects.equals(catalogRoles, identity.catalogRoles);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(user);
+        return Objects.hash(user, groups, principal, enabledRoles, catalogRoles);
     }
 
     @Override
@@ -222,7 +226,6 @@ public class Identity
 
         public Builder withEnabledRoles(Set<String> enabledRoles)
         {
-            enabledRoles = new HashSet<>(requireNonNull(enabledRoles, "enabledRoles is null"));
             this.enabledRoles = new HashSet<>(requireNonNull(enabledRoles, "enabledRoles is null"));
             return this;
         }

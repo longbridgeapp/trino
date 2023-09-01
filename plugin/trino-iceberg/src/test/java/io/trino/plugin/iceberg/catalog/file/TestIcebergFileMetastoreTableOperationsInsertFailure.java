@@ -15,6 +15,7 @@ package io.trino.plugin.iceberg.catalog.file;
 
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
+import io.trino.metadata.InternalFunctionBundle;
 import io.trino.plugin.hive.NodeVersion;
 import io.trino.plugin.hive.metastore.Database;
 import io.trino.plugin.hive.metastore.HiveMetastore;
@@ -23,6 +24,7 @@ import io.trino.plugin.hive.metastore.PrincipalPrivileges;
 import io.trino.plugin.hive.metastore.Table;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastore;
 import io.trino.plugin.hive.metastore.file.FileHiveMetastoreConfig;
+import io.trino.plugin.iceberg.IcebergPlugin;
 import io.trino.plugin.iceberg.TestingIcebergConnectorFactory;
 import io.trino.spi.security.PrincipalType;
 import io.trino.testing.AbstractTestQueryFramework;
@@ -32,15 +34,13 @@ import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
 import java.io.File;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.util.Optional;
 
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static com.google.inject.util.Modules.EMPTY_MODULE;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -55,22 +55,18 @@ public class TestIcebergFileMetastoreTableOperationsInsertFailure
 
     @Override
     protected LocalQueryRunner createQueryRunner()
+            throws Exception
     {
         Session session = testSessionBuilder()
                 .setCatalog(ICEBERG_CATALOG)
                 .setSchema(SCHEMA_NAME)
                 .build();
 
-        try {
-            baseDir = Files.createTempDirectory(null).toFile();
-        }
-        catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        baseDir = Files.createTempDirectory(null).toFile();
 
         HiveMetastore metastore = new FileHiveMetastore(
                 new NodeVersion("testversion"),
-                HDFS_ENVIRONMENT,
+                HDFS_FILE_SYSTEM_FACTORY,
                 new HiveMetastoreConfig().isHideDeltaLakeTables(),
                 new FileHiveMetastoreConfig()
                         .setCatalogDirectory(baseDir.toURI().toString())
@@ -84,6 +80,10 @@ public class TestIcebergFileMetastoreTableOperationsInsertFailure
             }
         };
         LocalQueryRunner queryRunner = LocalQueryRunner.create(session);
+
+        InternalFunctionBundle.InternalFunctionBundleBuilder functions = InternalFunctionBundle.builder();
+        new IcebergPlugin().getFunctions().forEach(functions::functions);
+        queryRunner.addFunctions(functions.build());
 
         queryRunner.createCatalog(
                 ICEBERG_CATALOG,

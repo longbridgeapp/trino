@@ -13,9 +13,10 @@
  */
 package io.trino.plugin.hive;
 
+import com.google.inject.Inject;
 import io.airlift.units.DataSize;
+import io.trino.filesystem.Location;
 import io.trino.hdfs.HdfsEnvironment;
-import io.trino.plugin.hive.util.HiveUtil;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.RecordCursor;
@@ -27,8 +28,6 @@ import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapreduce.lib.input.LineRecordReader;
 
-import javax.inject.Inject;
-
 import java.io.IOException;
 import java.util.List;
 import java.util.Optional;
@@ -37,6 +36,7 @@ import java.util.Properties;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static io.trino.plugin.hive.HivePageSourceProvider.projectBaseColumns;
+import static io.trino.plugin.hive.util.HiveReaderUtil.createRecordReader;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toUnmodifiableList;
@@ -64,7 +64,7 @@ public class GenericHiveRecordCursorProvider
     public Optional<ReaderRecordCursorWithProjections> createRecordCursor(
             Configuration configuration,
             ConnectorSession session,
-            Path path,
+            Location location,
             long start,
             long length,
             long fileSize,
@@ -77,6 +77,7 @@ public class GenericHiveRecordCursorProvider
         configuration.setInt(LineRecordReader.MAX_LINE_LENGTH, textMaxLineLengthBytes);
 
         // make sure the FileSystem is created with the proper Configuration object
+        Path path = new Path(location.toString());
         try {
             this.hdfsEnvironment.getFileSystem(session.getIdentity(), path, configuration);
         }
@@ -93,7 +94,7 @@ public class GenericHiveRecordCursorProvider
                 .orElse(columns);
 
         RecordCursor cursor = hdfsEnvironment.doAs(session.getIdentity(), () -> {
-            RecordReader<?, ?> recordReader = HiveUtil.createRecordReader(
+            RecordReader<?, ?> recordReader = createRecordReader(
                     configuration,
                     path,
                     start,

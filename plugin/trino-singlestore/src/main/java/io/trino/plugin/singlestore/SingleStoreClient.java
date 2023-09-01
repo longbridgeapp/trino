@@ -14,6 +14,8 @@
 package io.trino.plugin.singlestore;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
@@ -29,7 +31,7 @@ import io.trino.plugin.jdbc.PreparedQuery;
 import io.trino.plugin.jdbc.QueryBuilder;
 import io.trino.plugin.jdbc.RemoteTableName;
 import io.trino.plugin.jdbc.WriteMapping;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
+import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -48,8 +50,6 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarcharType;
-
-import javax.inject.Inject;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -107,6 +107,7 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.SCHEMA_NOT_EMPTY;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -152,9 +153,34 @@ public class SingleStoreClient
     private final Type jsonType;
 
     @Inject
-    public SingleStoreClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, QueryBuilder queryBuilder, TypeManager typeManager, IdentifierMapping identifierMapping)
+    public SingleStoreClient(
+            BaseJdbcConfig config,
+            ConnectionFactory connectionFactory,
+            QueryBuilder queryBuilder,
+            TypeManager typeManager,
+            IdentifierMapping identifierMapping,
+            RemoteQueryModifier queryModifier)
     {
-        super(config, "`", connectionFactory, queryBuilder, identifierMapping);
+        this(
+                config,
+                connectionFactory,
+                queryBuilder,
+                typeManager,
+                identifierMapping,
+                queryModifier,
+                false);
+    }
+
+    protected SingleStoreClient(
+            BaseJdbcConfig config,
+            ConnectionFactory connectionFactory,
+            QueryBuilder queryBuilder,
+            TypeManager typeManager,
+            IdentifierMapping identifierMapping,
+            RemoteQueryModifier queryModifier,
+            boolean supportsRetries)
+    {
+        super("`", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, supportsRetries);
         requireNonNull(typeManager, "typeManager is null");
         this.jsonType = typeManager.getType(new TypeSignature(StandardTypes.JSON));
     }
@@ -193,6 +219,22 @@ public class SingleStoreClient
             return false;
         }
         return super.filterSchema(schemaName);
+    }
+
+    @Override
+    protected void dropSchema(ConnectorSession session, Connection connection, String remoteSchemaName, boolean cascade)
+            throws SQLException
+    {
+        // SingleStore always deletes all tables inside the database though
+        // the behavior isn't documented in https://docs.singlestore.com/cloud/reference/sql-reference/data-definition-language-ddl/drop-database/
+        if (!cascade) {
+            try (ResultSet tables = getTables(connection, Optional.of(remoteSchemaName), Optional.empty())) {
+                if (tables.next()) {
+                    throw new TrinoException(SCHEMA_NOT_EMPTY, "Cannot drop non-empty schema '%s'".formatted(remoteSchemaName));
+                }
+            }
+        }
+        execute(session, connection, "DROP SCHEMA " + quoted(remoteSchemaName));
     }
 
     @Override
@@ -316,7 +358,7 @@ public class SingleStoreClient
         return metadata.getTables(
                 schemaName.orElse(null),
                 null,
-                escapeNamePattern(tableName, metadata.getSearchStringEscape()).orElse(null),
+                escapeObjectNameForMetadataQuery(tableName, metadata.getSearchStringEscape()).orElse(null),
                 getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
     }
 
@@ -336,15 +378,21 @@ public class SingleStoreClient
     }
 
     @Override
-    protected String renameColumnSql(JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newRemoteColumnName)
+    protected void renameColumn(ConnectorSession session, Connection connection, RemoteTableName remoteTableName, String remoteColumnName, String newRemoteColumnName)
+            throws SQLException
     {
         // SingleStore versions earlier than 5.7 do not support the CHANGE syntax
-        RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
-        return format(
+        execute(session, connection, format(
                 "ALTER TABLE %s CHANGE %s %s",
                 quoted(remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName()),
-                quoted(jdbcColumn.getColumnName()),
-                quoted(newRemoteColumnName));
+                quoted(remoteColumnName),
+                quoted(newRemoteColumnName)));
+    }
+
+    @Override
+    public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
     }
 
     @Override

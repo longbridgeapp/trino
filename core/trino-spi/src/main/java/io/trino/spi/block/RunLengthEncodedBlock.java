@@ -14,16 +14,16 @@
 package io.trino.spi.block;
 
 import io.airlift.slice.Slice;
+import io.airlift.slice.SliceOutput;
 import io.trino.spi.predicate.Utils;
 import io.trino.spi.type.Type;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.List;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.spi.block.BlockUtil.checkArrayRange;
 import static io.trino.spi.block.BlockUtil.checkReadablePosition;
 import static io.trino.spi.block.BlockUtil.checkValidPosition;
@@ -35,7 +35,7 @@ import static java.util.Objects.requireNonNull;
 public class RunLengthEncodedBlock
         implements Block
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(RunLengthEncodedBlock.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(RunLengthEncodedBlock.class);
 
     public static Block create(Type type, Object value, int positionCount)
     {
@@ -248,6 +248,13 @@ public class RunLengthEncodedBlock
     }
 
     @Override
+    public void writeSliceTo(int position, int offset, int length, SliceOutput output)
+    {
+        checkReadablePosition(this, position);
+        value.writeSliceTo(0, offset, length, output);
+    }
+
+    @Override
     public <T> T getObject(int position, Class<T> clazz)
     {
         checkReadablePosition(this, position);
@@ -266,13 +273,6 @@ public class RunLengthEncodedBlock
     {
         checkReadablePosition(this, position);
         return value.bytesCompare(0, offset, length, otherSlice, otherOffset, otherLength);
-    }
-
-    @Override
-    public void writeBytesTo(int position, int offset, int length, BlockBuilder blockBuilder)
-    {
-        checkReadablePosition(this, position);
-        value.writeBytesTo(0, offset, length, blockBuilder);
     }
 
     @Override

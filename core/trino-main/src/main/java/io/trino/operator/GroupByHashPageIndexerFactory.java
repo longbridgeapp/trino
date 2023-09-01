@@ -13,14 +13,13 @@
  */
 package io.trino.operator;
 
+import com.google.inject.Inject;
 import io.trino.spi.Page;
 import io.trino.spi.PageIndexer;
 import io.trino.spi.PageIndexerFactory;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeOperators;
 import io.trino.sql.gen.JoinCompiler;
-import io.trino.type.BlockTypeOperators;
-
-import javax.inject.Inject;
 
 import java.util.List;
 
@@ -30,22 +29,22 @@ public class GroupByHashPageIndexerFactory
         implements PageIndexerFactory
 {
     private final JoinCompiler joinCompiler;
-    private final BlockTypeOperators blockTypeOperators;
+    private final TypeOperators typeOperators;
 
     @Inject
-    public GroupByHashPageIndexerFactory(JoinCompiler joinCompiler, BlockTypeOperators blockTypeOperators)
+    public GroupByHashPageIndexerFactory(JoinCompiler joinCompiler, TypeOperators typeOperators)
     {
         this.joinCompiler = requireNonNull(joinCompiler, "joinCompiler is null");
-        this.blockTypeOperators = requireNonNull(blockTypeOperators, "blockTypeOperators is null");
+        this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
     }
 
     @Override
-    public PageIndexer createPageIndexer(List<? extends Type> types)
+    public PageIndexer createPageIndexer(List<Type> types)
     {
         if (types.isEmpty()) {
             return new NoHashPageIndexer();
         }
-        return new GroupByHashPageIndexer(types, joinCompiler, blockTypeOperators);
+        return new GroupByHashPageIndexer(types, joinCompiler, typeOperators);
     }
 
     private static class NoHashPageIndexer

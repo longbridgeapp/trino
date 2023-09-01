@@ -26,7 +26,9 @@ import org.testng.annotations.Test;
 
 import java.util.Optional;
 
+import static com.google.common.collect.MoreCollectors.onlyElement;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
+import static io.trino.spi.StandardErrorCode.COLUMN_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.TABLE_NOT_FOUND;
 import static io.trino.sql.tree.Comment.Type.COLUMN;
 import static io.trino.sql.tree.Comment.Type.TABLE;
@@ -117,8 +119,45 @@ public class TestCommentTask
         getFutureValue(setComment(COLUMN, columnName, Optional.of("new test column comment")));
         TableHandle tableHandle = metadata.getTableHandle(testSession, tableName).get();
         ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(testSession, tableHandle).getMetadata();
-        assertThat(Optional.ofNullable(connectorTableMetadata.getColumns().stream().filter(column -> "test".equals(column.getName())).findFirst().get().getComment()))
+        assertThat(Optional.ofNullable(connectorTableMetadata.getColumns().stream().filter(column -> "test".equals(column.getName())).collect(onlyElement()).getComment()))
                 .isEqualTo(Optional.of("new test column comment"));
+    }
+
+    @Test
+    public void testCommentViewColumn()
+    {
+        QualifiedObjectName viewName = qualifiedObjectName("existing_view");
+        QualifiedName columnName = qualifiedColumnName("existing_view", "test");
+        QualifiedName missingColumnName = qualifiedColumnName("existing_view", "missing");
+        metadata.createView(testSession, viewName, someView(), false);
+        assertThat(metadata.isView(testSession, viewName)).isTrue();
+
+        getFutureValue(setComment(COLUMN, columnName, Optional.of("new test column comment")));
+        assertThat(metadata.getView(testSession, viewName).get().getColumns().stream().filter(column -> "test".equals(column.getName())).collect(onlyElement()).getComment())
+                .isEqualTo(Optional.of("new test column comment"));
+
+        assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(COLUMN, missingColumnName, Optional.of("comment for missing column"))))
+                .hasErrorCode(COLUMN_NOT_FOUND)
+                .hasMessage("Column does not exist: %s", missingColumnName.getSuffix());
+    }
+
+    @Test
+    public void testCommentMaterializedViewColumn()
+    {
+        QualifiedObjectName materializedViewName = qualifiedObjectName("existing_materialized_view");
+        metadata.createMaterializedView(testSession, QualifiedObjectName.valueOf(materializedViewName.toString()), someMaterializedView(), false, false);
+        assertThat(metadata.isMaterializedView(testSession, materializedViewName)).isTrue();
+
+        QualifiedName columnName = qualifiedColumnName("existing_materialized_view", "test");
+        QualifiedName missingColumnName = qualifiedColumnName("existing_materialized_view", "missing");
+
+        getFutureValue(setComment(COLUMN, columnName, Optional.of("new test column comment")));
+        assertThat(metadata.getMaterializedView(testSession, materializedViewName).get().getColumns().stream().filter(column -> "test".equals(column.getName())).collect(onlyElement()).getComment())
+                .isEqualTo(Optional.of("new test column comment"));
+
+        assertTrinoExceptionThrownBy(() -> getFutureValue(setComment(COLUMN, missingColumnName, Optional.of("comment for missing column"))))
+                .hasErrorCode(COLUMN_NOT_FOUND)
+                .hasMessage("Column does not exist: %s", missingColumnName.getSuffix());
     }
 
     private ListenableFuture<Void> setComment(Comment.Type type, QualifiedName viewName, Optional<String> comment)

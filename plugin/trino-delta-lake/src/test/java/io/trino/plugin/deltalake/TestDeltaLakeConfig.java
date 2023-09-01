@@ -42,7 +42,8 @@ public class TestDeltaLakeConfig
                 .setDataFileCacheSize(DeltaLakeConfig.DEFAULT_DATA_FILE_CACHE_SIZE)
                 .setDataFileCacheTtl(new Duration(30, MINUTES))
                 .setMetadataCacheTtl(new Duration(5, TimeUnit.MINUTES))
-                .setDomainCompactionThreshold(100)
+                .setMetadataCacheMaxSize(1000)
+                .setDomainCompactionThreshold(1000)
                 .setMaxSplitsPerSecond(Integer.MAX_VALUE)
                 .setMaxOutstandingSplits(1_000)
                 .setMaxInitialSplits(200)
@@ -58,12 +59,17 @@ public class TestDeltaLakeConfig
                 .setDynamicFilteringWaitTimeout(new Duration(0, SECONDS))
                 .setTableStatisticsEnabled(true)
                 .setExtendedStatisticsEnabled(true)
+                .setCollectExtendedStatisticsOnWrite(true)
                 .setCompressionCodec(HiveCompressionCodec.SNAPPY)
                 .setDeleteSchemaLocationsFallback(false)
                 .setParquetTimeZone(TimeZone.getDefault().getID())
                 .setPerTransactionMetastoreCacheMaximumSize(1000)
                 .setTargetMaxFileSize(DataSize.of(1, GIGABYTE))
-                .setUniqueTableLocation(true));
+                .setUniqueTableLocation(true)
+                .setLegacyCreateTableWithExistingLocationEnabled(false)
+                .setRegisterTableProcedureEnabled(false)
+                .setProjectionPushdownEnabled(true)
+                .setQueryPartitionFilterRequired(false));
     }
 
     @Test
@@ -71,6 +77,7 @@ public class TestDeltaLakeConfig
     {
         Map<String, String> properties = ImmutableMap.<String, String>builder()
                 .put("delta.metadata.cache-ttl", "10m")
+                .put("delta.metadata.cache-size", "10")
                 .put("delta.metadata.live-files.cache-size", "0 MB")
                 .put("delta.metadata.live-files.cache-ttl", "60m")
                 .put("delta.domain-compaction-threshold", "500")
@@ -89,18 +96,24 @@ public class TestDeltaLakeConfig
                 .put("delta.dynamic-filtering.wait-timeout", "30m")
                 .put("delta.table-statistics-enabled", "false")
                 .put("delta.extended-statistics.enabled", "false")
+                .put("delta.extended-statistics.collect-on-write", "false")
                 .put("delta.compression-codec", "GZIP")
                 .put("delta.per-transaction-metastore-cache-maximum-size", "500")
                 .put("delta.delete-schema-locations-fallback", "true")
                 .put("delta.parquet.time-zone", nonDefaultTimeZone().getID())
                 .put("delta.target-max-file-size", "2 GB")
                 .put("delta.unique-table-location", "false")
+                .put("delta.legacy-create-table-with-existing-location.enabled", "true")
+                .put("delta.register-table-procedure.enabled", "true")
+                .put("delta.projection-pushdown-enabled", "false")
+                .put("delta.query-partition-filter-required", "true")
                 .buildOrThrow();
 
         DeltaLakeConfig expected = new DeltaLakeConfig()
                 .setDataFileCacheSize(DataSize.succinctBytes(0))
                 .setDataFileCacheTtl(new Duration(60, MINUTES))
                 .setMetadataCacheTtl(new Duration(10, TimeUnit.MINUTES))
+                .setMetadataCacheMaxSize(10)
                 .setDomainCompactionThreshold(500)
                 .setMaxOutstandingSplits(200)
                 .setMaxSplitsPerSecond(10)
@@ -117,12 +130,17 @@ public class TestDeltaLakeConfig
                 .setDynamicFilteringWaitTimeout(new Duration(30, MINUTES))
                 .setTableStatisticsEnabled(false)
                 .setExtendedStatisticsEnabled(false)
+                .setCollectExtendedStatisticsOnWrite(false)
                 .setCompressionCodec(HiveCompressionCodec.GZIP)
                 .setDeleteSchemaLocationsFallback(true)
                 .setParquetTimeZone(nonDefaultTimeZone().getID())
                 .setPerTransactionMetastoreCacheMaximumSize(500)
                 .setTargetMaxFileSize(DataSize.of(2, GIGABYTE))
-                .setUniqueTableLocation(false);
+                .setUniqueTableLocation(false)
+                .setLegacyCreateTableWithExistingLocationEnabled(true)
+                .setRegisterTableProcedureEnabled(true)
+                .setProjectionPushdownEnabled(false)
+                .setQueryPartitionFilterRequired(true);
 
         assertFullMapping(properties, expected);
     }

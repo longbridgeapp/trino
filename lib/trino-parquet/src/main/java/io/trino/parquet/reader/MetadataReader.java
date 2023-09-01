@@ -64,7 +64,6 @@ import static java.lang.Boolean.FALSE;
 import static java.lang.Boolean.TRUE;
 import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
-import static org.apache.hadoop.hive.ql.io.parquet.write.DataWritableWriteSupport.WRITER_TIMEZONE;
 import static org.apache.parquet.format.Util.readFileMetaData;
 import static org.apache.parquet.format.converter.ParquetMetadataConverterUtil.getLogicalTypeAnnotation;
 
@@ -74,7 +73,8 @@ public final class MetadataReader
 
     private static final Slice MAGIC = Slices.utf8Slice("PAR1");
     private static final int POST_SCRIPT_SIZE = Integer.BYTES + MAGIC.length();
-    private static final int EXPECTED_FOOTER_SIZE = 16 * 1024;
+    // Typical 1GB files produced by Trino were found to have footer size between 30-40KB
+    private static final int EXPECTED_FOOTER_SIZE = 48 * 1024;
     private static final ParquetMetadataConverter PARQUET_METADATA_CONVERTER = new ParquetMetadataConverter();
 
     private MetadataReader() {}
@@ -155,6 +155,7 @@ public final class MetadataReader
                             metaData.total_uncompressed_size);
                     column.setColumnIndexReference(toColumnIndexReference(columnChunk));
                     column.setOffsetIndexReference(toOffsetIndexReference(columnChunk));
+                    column.setBloomFilterOffset(metaData.bloom_filter_offset);
                     blockMetaData.addColumn(column);
                 }
                 blockMetaData.setPath(filePath);
@@ -399,7 +400,7 @@ public final class MetadataReader
         ParquetWriteValidation writeValidation = parquetWriteValidation.get();
         writeValidation.validateTimeZone(
                 dataSourceId,
-                Optional.ofNullable(fileMetaData.getKeyValueMetaData().get(WRITER_TIMEZONE)));
+                Optional.ofNullable(fileMetaData.getKeyValueMetaData().get("writer.time.zone")));
         writeValidation.validateColumns(dataSourceId, fileMetaData.getSchema());
     }
 }

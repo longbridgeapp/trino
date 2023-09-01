@@ -32,9 +32,9 @@ import java.util.Optional;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.DUMMY_FIELD_NAME;
-import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.ADD_DUMMY;
 import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.FAIL;
 import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.IGNORE;
+import static io.trino.plugin.kafka.schema.confluent.AvroSchemaConverter.EmptyFieldStrategy.MARK;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -278,9 +278,7 @@ public class TestAvroSchemaConverter
                 .name("my_map").type().map().values().type("nested_record").noDefault()
                 .endRecord();
 
-        List<Type> typesForIgnoreStrategy = ImmutableList.<Type>builder()
-                .add(INTEGER)
-                .build();
+        List<Type> typesForIgnoreStrategy = ImmutableList.of(INTEGER);
 
         assertEquals(new AvroSchemaConverter(new TestingTypeManager(), IGNORE).convertAvroSchema(schema), typesForIgnoreStrategy);
 
@@ -290,18 +288,12 @@ public class TestAvroSchemaConverter
 
         List<Type> typesForAddDummyStrategy = ImmutableList.<Type>builder()
                 .add(INTEGER)
-                .add(RowType.from(ImmutableList.<RowType.Field>builder()
-                        .add(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))
-                        .build()))
-                .add(new ArrayType(RowType.from(ImmutableList.<RowType.Field>builder()
-                        .add(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))
-                        .build())))
-                .add(createType(RowType.from(ImmutableList.<RowType.Field>builder()
-                        .add(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))
-                        .build())))
+                .add(RowType.from(ImmutableList.of(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))))
+                .add(new ArrayType(RowType.from(ImmutableList.of(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN)))))
+                .add(createType(RowType.from(ImmutableList.of(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN)))))
                 .build();
 
-        assertEquals(new AvroSchemaConverter(new TestingTypeManager(), ADD_DUMMY).convertAvroSchema(schema), typesForAddDummyStrategy);
+        assertEquals(new AvroSchemaConverter(new TestingTypeManager(), MARK).convertAvroSchema(schema), typesForAddDummyStrategy);
     }
 
     @Test
@@ -326,18 +318,12 @@ public class TestAvroSchemaConverter
                 .hasMessage("Struct type has no valid fields for schema: '%s'", SchemaBuilder.record("nested_record").fields().endRecord());
 
         List<Type> typesForAddDummyStrategy = ImmutableList.<Type>builder()
-                .add(RowType.from(ImmutableList.<RowType.Field>builder()
-                        .add(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))
-                        .build()))
-                .add(new ArrayType(RowType.from(ImmutableList.<RowType.Field>builder()
-                        .add(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))
-                        .build())))
-                .add(createType(RowType.from(ImmutableList.<RowType.Field>builder()
-                        .add(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))
-                        .build())))
+                .add(RowType.from(ImmutableList.of(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN))))
+                .add(new ArrayType(RowType.from(ImmutableList.of(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN)))))
+                .add(createType(RowType.from(ImmutableList.of(new RowType.Field(Optional.of(DUMMY_FIELD_NAME), BOOLEAN)))))
                 .build();
 
-        assertEquals(new AvroSchemaConverter(new TestingTypeManager(), ADD_DUMMY).convertAvroSchema(schema), typesForAddDummyStrategy);
+        assertEquals(new AvroSchemaConverter(new TestingTypeManager(), MARK).convertAvroSchema(schema), typesForAddDummyStrategy);
     }
 
     private static Type createType(Type valueType)

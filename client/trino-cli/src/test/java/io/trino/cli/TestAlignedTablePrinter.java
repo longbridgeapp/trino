@@ -77,16 +77,14 @@ public class TestAlignedTablePrinter
     public void testHexPrintingInLists()
             throws Exception
     {
-        List<Column> columns = ImmutableList.<Column>builder()
-                .add(column("list", ARRAY))
-                .build();
+        List<Column> columns = ImmutableList.of(column("list", ARRAY));
 
         StringWriter writer = new StringWriter();
         OutputPrinter printer = new AlignedTablePrinter(columns, writer);
 
         byte[] value = "hello".getBytes(UTF_8);
 
-        printer.printRows(rows(row(list(value))), true);
+        printer.printRows(rows(row(ImmutableList.of(value))), true);
         printer.finish();
 
         String expected = "" +
@@ -102,9 +100,7 @@ public class TestAlignedTablePrinter
     public void testHexPrintingInMaps()
             throws Exception
     {
-        List<Column> columns = ImmutableList.<Column>builder()
-                .add(column("map", MAP))
-                .build();
+        List<Column> columns = ImmutableList.of(column("map", MAP));
 
         StringWriter writer = new StringWriter();
         OutputPrinter printer = new AlignedTablePrinter(columns, writer);
@@ -127,9 +123,7 @@ public class TestAlignedTablePrinter
     public void testHexPrintingInMapKeys()
             throws Exception
     {
-        List<Column> columns = ImmutableList.<Column>builder()
-                .add(column("map", MAP))
-                .build();
+        List<Column> columns = ImmutableList.of(column("map", MAP));
 
         StringWriter writer = new StringWriter();
         OutputPrinter printer = new AlignedTablePrinter(columns, writer);
@@ -152,16 +146,14 @@ public class TestAlignedTablePrinter
     public void testHexPrintingInNestedStructures()
             throws Exception
     {
-        List<Column> columns = ImmutableList.<Column>builder()
-                .add(column("map", MAP))
-                .build();
+        List<Column> columns = ImmutableList.of(column("map", MAP));
 
         StringWriter writer = new StringWriter();
         OutputPrinter printer = new AlignedTablePrinter(columns, writer);
 
         byte[] value = "hello".getBytes(UTF_8);
 
-        printer.printRows(rows(row(map(item("key", list(value, null)), item("key2", map(item("nested", value)))))), true);
+        printer.printRows(rows(row(map(item("key", asList(value, null)), item("key2", map(item("nested", value)))))), true);
         printer.finish();
 
         String expected = "" +
@@ -308,14 +300,9 @@ public class TestAlignedTablePrinter
         return asList(rows);
     }
 
-    static List<?> list(Object... objects)
+    static byte[] bytes(String value)
     {
-        return asList(objects);
-    }
-
-    static byte[] bytes(String s)
-    {
-        return s.getBytes(UTF_8);
+        return value.getBytes(UTF_8);
     }
 
     static class KeyValue

@@ -16,36 +16,41 @@ package io.trino.plugin.exchange.filesystem;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
-import io.airlift.slice.SizeOf;
+import io.trino.spi.exchange.ExchangeId;
 import io.trino.spi.exchange.ExchangeSourceHandle;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
-import java.util.Optional;
+import java.util.Objects;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
-import static io.airlift.slice.SizeOf.sizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
 
 public class FileSystemExchangeSourceHandle
         implements ExchangeSourceHandle
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(FileSystemExchangeSourceHandle.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(FileSystemExchangeSourceHandle.class);
 
+    private final ExchangeId exchangeId;
     private final int partitionId;
-    private final List<FileStatus> files;
-    private final Optional<byte[]> secretKey;
+    private final List<SourceFile> files;
 
     @JsonCreator
     public FileSystemExchangeSourceHandle(
+            @JsonProperty("exchangeId") ExchangeId exchangeId,
             @JsonProperty("partitionId") int partitionId,
-            @JsonProperty("files") List<FileStatus> files,
-            @JsonProperty("secretKey") Optional<byte[]> secretKey)
+            @JsonProperty("files") List<SourceFile> files)
     {
+        this.exchangeId = requireNonNull(exchangeId, "exchangeId is null");
         this.partitionId = partitionId;
         this.files = ImmutableList.copyOf(requireNonNull(files, "files is null"));
-        this.secretKey = requireNonNull(secretKey, "secretKey is null");
+    }
+
+    @JsonProperty
+    public ExchangeId getExchangeId()
+    {
+        return exchangeId;
     }
 
     @Override
@@ -59,7 +64,7 @@ public class FileSystemExchangeSourceHandle
     public long getDataSizeInBytes()
     {
         return files.stream()
-                .mapToLong(FileStatus::getFileSize)
+                .mapToLong(SourceFile::getFileSize)
                 .sum();
     }
 
@@ -67,29 +72,104 @@ public class FileSystemExchangeSourceHandle
     public long getRetainedSizeInBytes()
     {
         return INSTANCE_SIZE
-                + estimatedSizeOf(files, FileStatus::getRetainedSizeInBytes)
-                + sizeOf(secretKey, SizeOf::sizeOf);
+                + estimatedSizeOf(files, SourceFile::getRetainedSizeInBytes);
     }
 
     @JsonProperty
-    public List<FileStatus> getFiles()
+    public List<SourceFile> getFiles()
     {
         return files;
-    }
-
-    @JsonProperty
-    public Optional<byte[]> getSecretKey()
-    {
-        return secretKey;
     }
 
     @Override
     public String toString()
     {
         return toStringHelper(this)
+                .add("exchangeId", exchangeId)
                 .add("partitionId", partitionId)
                 .add("files", files)
-                .add("secretKey", secretKey.map(value -> "[REDACTED]"))
                 .toString();
+    }
+
+    public static class SourceFile
+    {
+        private static final int INSTANCE_SIZE = instanceSize(SourceFile.class);
+
+        private final String filePath;
+        private final long fileSize;
+        private final int sourceTaskPartitionId;
+        private final int sourceTaskAttemptId;
+
+        @JsonCreator
+        public SourceFile(
+                @JsonProperty("filePath") String filePath,
+                @JsonProperty("fileSize") long fileSize,
+                @JsonProperty("sourceTaskPartitionId") int sourceTaskPartitionId,
+                @JsonProperty("sourceTaskAttemptId") int sourceTaskAttemptId)
+        {
+            this.filePath = requireNonNull(filePath, "filePath is null");
+            this.fileSize = fileSize;
+            this.sourceTaskPartitionId = sourceTaskPartitionId;
+            this.sourceTaskAttemptId = sourceTaskAttemptId;
+        }
+
+        @JsonProperty
+        public String getFilePath()
+        {
+            return filePath;
+        }
+
+        @JsonProperty
+        public long getFileSize()
+        {
+            return fileSize;
+        }
+
+        @JsonProperty
+        public int getSourceTaskPartitionId()
+        {
+            return sourceTaskPartitionId;
+        }
+
+        @JsonProperty
+        public int getSourceTaskAttemptId()
+        {
+            return sourceTaskAttemptId;
+        }
+
+        @Override
+        public boolean equals(Object o)
+        {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            SourceFile that = (SourceFile) o;
+            return fileSize == that.fileSize && sourceTaskPartitionId == that.sourceTaskPartitionId && sourceTaskAttemptId == that.sourceTaskAttemptId && Objects.equals(filePath, that.filePath);
+        }
+
+        @Override
+        public int hashCode()
+        {
+            return Objects.hash(filePath, fileSize, sourceTaskPartitionId, sourceTaskAttemptId);
+        }
+
+        @Override
+        public String toString()
+        {
+            return toStringHelper(this)
+                    .add("filePath", filePath)
+                    .add("fileSize", fileSize)
+                    .add("sourceTaskPartitionId", sourceTaskPartitionId)
+                    .add("sourceTaskAttemptId", sourceTaskAttemptId)
+                    .toString();
+        }
+
+        public long getRetainedSizeInBytes()
+        {
+            return INSTANCE_SIZE + estimatedSizeOf(filePath);
+        }
     }
 }

@@ -14,8 +14,7 @@
 package io.trino.spi.block;
 
 import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
-import org.openjdk.jol.info.ClassLayout;
+import io.airlift.slice.SliceOutput;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,6 +22,7 @@ import java.util.List;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.spi.block.BlockUtil.checkArrayRange;
 import static io.trino.spi.block.BlockUtil.checkValidPosition;
@@ -36,7 +36,7 @@ import static java.util.Objects.requireNonNull;
 public class DictionaryBlock
         implements Block
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(DictionaryBlock.class).instanceSize() + ClassLayout.parseClass(DictionaryId.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(DictionaryBlock.class) + instanceSize(DictionaryId.class);
     private static final int NULL_NOT_FOUND = -1;
 
     private final int positionCount;
@@ -177,6 +177,12 @@ public class DictionaryBlock
     }
 
     @Override
+    public void writeSliceTo(int position, int offset, int length, SliceOutput output)
+    {
+        dictionary.writeSliceTo(getId(position), offset, length, output);
+    }
+
+    @Override
     public <T> T getObject(int position, Class<T> clazz)
     {
         return dictionary.getObject(getId(position), clazz);
@@ -192,12 +198,6 @@ public class DictionaryBlock
     public int bytesCompare(int position, int offset, int length, Slice otherSlice, int otherOffset, int otherLength)
     {
         return dictionary.bytesCompare(getId(position), offset, length, otherSlice, otherOffset, otherLength);
-    }
-
-    @Override
-    public void writeBytesTo(int position, int offset, int length, BlockBuilder blockBuilder)
-    {
-        dictionary.writeBytesTo(getId(position), offset, length, blockBuilder);
     }
 
     @Override
@@ -594,11 +594,6 @@ public class DictionaryBlock
     public Block getDictionary()
     {
         return dictionary;
-    }
-
-    Slice getIds()
-    {
-        return Slices.wrappedIntArray(ids, idsOffset, positionCount);
     }
 
     boolean isSequentialIds()

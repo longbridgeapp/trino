@@ -16,6 +16,7 @@ package io.trino.plugin.raptor.legacy.storage;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -57,9 +58,7 @@ import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
-
-import javax.annotation.PreDestroy;
-import javax.inject.Inject;
+import jakarta.annotation.PreDestroy;
 
 import java.io.Closeable;
 import java.io.File;
@@ -75,7 +74,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.OptionalLong;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -230,8 +228,7 @@ public class RaptorStorageManager
             List<Long> columnIds,
             List<Type> columnTypes,
             TupleDomain<RaptorColumnHandle> effectivePredicate,
-            OrcReaderOptions orcReaderOptions,
-            OptionalLong transactionId)
+            OrcReaderOptions orcReaderOptions)
     {
         orcReaderOptions = orcReaderOptions.withMaxReadBlockSize(HUGE_MAX_READ_BLOCK_SIZE);
         OrcDataSource dataSource = openShard(shardUuid, orcReaderOptions);
@@ -278,12 +275,7 @@ public class RaptorStorageManager
                     INITIAL_BATCH_SIZE,
                     RaptorPageSource::handleException);
 
-            Optional<ShardRewriter> shardRewriter = Optional.empty();
-            if (transactionId.isPresent()) {
-                shardRewriter = Optional.of(createShardRewriter(transactionId.getAsLong(), bucketNumber, shardUuid));
-            }
-
-            return new RaptorPageSource(shardRewriter, recordReader, columnAdaptations, dataSource, memoryUsage);
+            return new RaptorPageSource(recordReader, columnAdaptations, dataSource, memoryUsage);
         }
         catch (IOException | RuntimeException e) {
             closeQuietly(dataSource);

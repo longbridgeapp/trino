@@ -23,7 +23,9 @@ import com.google.inject.TypeLiteral;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.json.JsonModule;
-import io.trino.filesystem.hdfs.HdfsFileSystemModule;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
+import io.trino.filesystem.manager.FileSystemModule;
 import io.trino.hdfs.HdfsEnvironment;
 import io.trino.plugin.base.CatalogName;
 import io.trino.plugin.base.session.SessionPropertiesProvider;
@@ -55,13 +57,11 @@ import org.testng.annotations.Test;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.UUID;
 import java.util.function.Consumer;
 
 import static com.google.common.base.Verify.verify;
@@ -77,13 +77,14 @@ import static io.trino.plugin.deltalake.metastore.HiveMetastoreBackedDeltaLakeMe
 import static io.trino.plugin.hive.HiveStorageFormat.PARQUET;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
 import static io.trino.plugin.hive.HiveType.HIVE_STRING;
+import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
+import static io.trino.plugin.hive.TableType.VIRTUAL_VIEW;
 import static io.trino.plugin.hive.metastore.StorageFormat.fromHiveStorageFormat;
 import static io.trino.spi.security.PrincipalType.ROLE;
 import static io.trino.testing.TestingConnectorSession.SESSION;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
-import static java.util.Locale.ENGLISH;
-import static org.apache.hadoop.hive.metastore.TableType.EXTERNAL_TABLE;
-import static org.apache.hadoop.hive.metastore.TableType.VIRTUAL_VIEW;
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -118,15 +119,15 @@ public class TestDeltaLakeGlueMetastore
                     binder.bind(NodeManager.class).toInstance(context.getNodeManager());
                     binder.bind(PageIndexerFactory.class).toInstance(context.getPageIndexerFactory());
                     binder.bind(NodeVersion.class).toInstance(new NodeVersion("test_version"));
+                    binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
+                    binder.bind(Tracer.class).toInstance(context.getTracer());
                 },
                 // connector modules
                 new DeltaLakeMetastoreModule(),
                 new DeltaLakeModule(),
                 // test setup
-                binder -> {
-                    binder.bind(HdfsEnvironment.class).toInstance(HDFS_ENVIRONMENT);
-                    binder.install(new HdfsFileSystemModule());
-                });
+                binder -> binder.bind(HdfsEnvironment.class).toInstance(HDFS_ENVIRONMENT),
+                new FileSystemModule());
 
         Injector injector = app
                 .doNotInitializeLogging()
@@ -144,7 +145,7 @@ public class TestDeltaLakeGlueMetastore
                         .collect(toImmutableList()))
                 .build();
 
-        databaseName = "test_delta_glue" + randomName();
+        databaseName = "test_delta_glue" + randomNameSuffix();
         metastoreClient.createDatabase(Database.builder()
                 .setDatabaseName(databaseName)
                 .setOwnerName(Optional.of("public"))
@@ -175,10 +176,10 @@ public class TestDeltaLakeGlueMetastore
     public void testHideNonDeltaLakeTable()
             throws Exception
     {
-        SchemaTableName deltaLakeTable = new SchemaTableName(databaseName, "delta_lake_table_" + randomName());
-        SchemaTableName nonDeltaLakeTable1 = new SchemaTableName(databaseName, "hive_table_" + randomName());
-        SchemaTableName nonDeltaLakeTable2 = new SchemaTableName(databaseName, "hive_table_" + randomName());
-        SchemaTableName nonDeltaLakeView1 = new SchemaTableName(databaseName, "hive_view_" + randomName());
+        SchemaTableName deltaLakeTable = new SchemaTableName(databaseName, "delta_lake_table_" + randomNameSuffix());
+        SchemaTableName nonDeltaLakeTable1 = new SchemaTableName(databaseName, "hive_table_" + randomNameSuffix());
+        SchemaTableName nonDeltaLakeTable2 = new SchemaTableName(databaseName, "hive_table_" + randomNameSuffix());
+        SchemaTableName nonDeltaLakeView1 = new SchemaTableName(databaseName, "hive_view_" + randomNameSuffix());
 
         String deltaLakeTableLocation = tableLocation(deltaLakeTable);
         createTable(deltaLakeTable, deltaLakeTableLocation, tableBuilder -> {
@@ -263,12 +264,12 @@ public class TestDeltaLakeGlueMetastore
      * Creates a valid transaction log
      */
     private void createTransactionLog(String deltaLakeTableLocation)
-            throws URISyntaxException, IOException
+            throws IOException
     {
-        File deltaTableLogLocation = new File(new File(new URI(deltaLakeTableLocation)), "_delta_log");
+        File deltaTableLogLocation = new File(new File(URI.create(deltaLakeTableLocation)), "_delta_log");
         verify(deltaTableLogLocation.mkdirs(), "mkdirs() on '%s' failed", deltaTableLogLocation);
-        byte[] entry = Resources.toByteArray(Resources.getResource("deltalake/person/_delta_log/00000000000000000000.json"));
-        Files.write(new File(deltaTableLogLocation, "00000000000000000000.json").toPath(), entry);
+        String entry = Resources.toString(Resources.getResource("deltalake/person/_delta_log/00000000000000000000.json"), UTF_8);
+        Files.writeString(new File(deltaTableLogLocation, "00000000000000000000.json").toPath(), entry);
     }
 
     private String tableLocation(SchemaTableName tableName)
@@ -312,10 +313,5 @@ public class TestDeltaLakeGlueMetastore
 
         PrincipalPrivileges principalPrivileges = new PrincipalPrivileges(ImmutableMultimap.of(), ImmutableMultimap.of());
         metastoreClient.createTable(table.build(), principalPrivileges);
-    }
-
-    private static String randomName()
-    {
-        return UUID.randomUUID().toString().toLowerCase(ENGLISH).replace("-", "");
     }
 }

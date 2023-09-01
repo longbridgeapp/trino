@@ -21,12 +21,11 @@ import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.plugin.hive.HiveCompressionCodec;
+import jakarta.validation.constraints.DecimalMax;
+import jakarta.validation.constraints.DecimalMin;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotNull;
 import org.joda.time.DateTimeZone;
-
-import javax.validation.constraints.DecimalMax;
-import javax.validation.constraints.DecimalMin;
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
 
 import java.util.Optional;
 import java.util.TimeZone;
@@ -40,6 +39,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 @DefunctConfig("delta.experimental.ignore-checkpoint-write-failures")
 public class DeltaLakeConfig
 {
+    public static final String EXTENDED_STATISTICS_ENABLED = "delta.extended-statistics.enabled";
     public static final String VACUUM_MIN_RETENTION = "delta.vacuum.min-retention";
 
     // Runtime.getRuntime().maxMemory() is not 100% stable and may return slightly different value over JVM lifetime. We use
@@ -48,9 +48,10 @@ public class DeltaLakeConfig
     static final DataSize DEFAULT_DATA_FILE_CACHE_SIZE = DataSize.succinctBytes(Math.floorDiv(Runtime.getRuntime().maxMemory(), 10L));
 
     private Duration metadataCacheTtl = new Duration(5, TimeUnit.MINUTES);
+    private long metadataCacheMaxSize = 1000;
     private DataSize dataFileCacheSize = DEFAULT_DATA_FILE_CACHE_SIZE;
     private Duration dataFileCacheTtl = new Duration(30, TimeUnit.MINUTES);
-    private int domainCompactionThreshold = 100;
+    private int domainCompactionThreshold = 1000;
     private int maxOutstandingSplits = 1_000;
     private int maxSplitsPerSecond = Integer.MAX_VALUE;
     private int maxInitialSplits = 200;
@@ -66,12 +67,17 @@ public class DeltaLakeConfig
     private Duration dynamicFilteringWaitTimeout = new Duration(0, SECONDS);
     private boolean tableStatisticsEnabled = true;
     private boolean extendedStatisticsEnabled = true;
+    private boolean collectExtendedStatisticsOnWrite = true;
     private HiveCompressionCodec compressionCodec = HiveCompressionCodec.SNAPPY;
     private long perTransactionMetastoreCacheMaximumSize = 1000;
     private boolean deleteSchemaLocationsFallback;
     private String parquetTimeZone = TimeZone.getDefault().getID();
     private DataSize targetMaxFileSize = DataSize.of(1, GIGABYTE);
     private boolean uniqueTableLocation = true;
+    private boolean legacyCreateTableWithExistingLocationEnabled;
+    private boolean registerTableProcedureEnabled;
+    private boolean projectionPushdownEnabled = true;
+    private boolean queryPartitionFilterRequired;
 
     public Duration getMetadataCacheTtl()
     {
@@ -83,6 +89,19 @@ public class DeltaLakeConfig
     public DeltaLakeConfig setMetadataCacheTtl(Duration metadataCacheTtl)
     {
         this.metadataCacheTtl = metadataCacheTtl;
+        return this;
+    }
+
+    public long getMetadataCacheMaxSize()
+    {
+        return metadataCacheMaxSize;
+    }
+
+    @Config("delta.metadata.cache-size")
+    @ConfigDescription("Maximum number of Delta table metadata entries to cache")
+    public DeltaLakeConfig setMetadataCacheMaxSize(long metadataCacheMaxSize)
+    {
+        this.metadataCacheMaxSize = metadataCacheMaxSize;
         return this;
     }
 
@@ -321,11 +340,24 @@ public class DeltaLakeConfig
         return extendedStatisticsEnabled;
     }
 
-    @Config("delta.extended-statistics.enabled")
-    @ConfigDescription("Use extended statistics collected by ANALYZE")
+    @Config(EXTENDED_STATISTICS_ENABLED)
+    @ConfigDescription("Enable collection (ANALYZE) and use of extended statistics.")
     public DeltaLakeConfig setExtendedStatisticsEnabled(boolean extendedStatisticsEnabled)
     {
         this.extendedStatisticsEnabled = extendedStatisticsEnabled;
+        return this;
+    }
+
+    public boolean isCollectExtendedStatisticsOnWrite()
+    {
+        return collectExtendedStatisticsOnWrite;
+    }
+
+    @Config("delta.extended-statistics.collect-on-write")
+    @ConfigDescription("Enables automatic column level extended statistics collection on write")
+    public DeltaLakeConfig setCollectExtendedStatisticsOnWrite(boolean collectExtendedStatisticsOnWrite)
+    {
+        this.collectExtendedStatisticsOnWrite = collectExtendedStatisticsOnWrite;
         return this;
     }
 
@@ -414,6 +446,60 @@ public class DeltaLakeConfig
     public DeltaLakeConfig setUniqueTableLocation(boolean uniqueTableLocation)
     {
         this.uniqueTableLocation = uniqueTableLocation;
+        return this;
+    }
+
+    @Deprecated
+    public boolean isLegacyCreateTableWithExistingLocationEnabled()
+    {
+        return legacyCreateTableWithExistingLocationEnabled;
+    }
+
+    @Deprecated
+    @Config("delta.legacy-create-table-with-existing-location.enabled")
+    @ConfigDescription("Enable using the CREATE TABLE statement to register an existing table")
+    public DeltaLakeConfig setLegacyCreateTableWithExistingLocationEnabled(boolean legacyCreateTableWithExistingLocationEnabled)
+    {
+        this.legacyCreateTableWithExistingLocationEnabled = legacyCreateTableWithExistingLocationEnabled;
+        return this;
+    }
+
+    public boolean isRegisterTableProcedureEnabled()
+    {
+        return registerTableProcedureEnabled;
+    }
+
+    @Config("delta.register-table-procedure.enabled")
+    @ConfigDescription("Allow users to call the register_table procedure")
+    public DeltaLakeConfig setRegisterTableProcedureEnabled(boolean registerTableProcedureEnabled)
+    {
+        this.registerTableProcedureEnabled = registerTableProcedureEnabled;
+        return this;
+    }
+
+    public boolean isProjectionPushdownEnabled()
+    {
+        return projectionPushdownEnabled;
+    }
+
+    @Config("delta.projection-pushdown-enabled")
+    @ConfigDescription("Read only required fields from a row type")
+    public DeltaLakeConfig setProjectionPushdownEnabled(boolean projectionPushdownEnabled)
+    {
+        this.projectionPushdownEnabled = projectionPushdownEnabled;
+        return this;
+    }
+
+    public boolean isQueryPartitionFilterRequired()
+    {
+        return queryPartitionFilterRequired;
+    }
+
+    @Config("delta.query-partition-filter-required")
+    @ConfigDescription("Require filter on at least one partition column")
+    public DeltaLakeConfig setQueryPartitionFilterRequired(boolean queryPartitionFilterRequired)
+    {
+        this.queryPartitionFilterRequired = queryPartitionFilterRequired;
         return this;
     }
 }

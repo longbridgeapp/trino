@@ -14,11 +14,17 @@
 package io.trino.plugin.deltalake.transactionlog.checkpoint;
 
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterators;
+import io.airlift.units.DataSize;
+import io.trino.filesystem.Location;
 import io.trino.filesystem.TrinoFileSystem;
 import io.trino.filesystem.TrinoInputFile;
+import io.trino.filesystem.TrinoOutputFile;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
+import io.trino.parquet.writer.ParquetWriterOptions;
+import io.trino.plugin.deltalake.DeltaLakeConfig;
 import io.trino.plugin.deltalake.transactionlog.AddFileEntry;
 import io.trino.plugin.deltalake.transactionlog.DeltaLakeTransactionLogEntry;
 import io.trino.plugin.deltalake.transactionlog.MetadataEntry;
@@ -30,6 +36,7 @@ import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.URI;
 import java.util.List;
@@ -37,7 +44,10 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.stream.IntStream;
 
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.io.Resources.getResource;
 import static io.trino.plugin.deltalake.DeltaTestingConnectorSession.SESSION;
 import static io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointEntryIterator.EntryType.ADD;
@@ -47,12 +57,13 @@ import static io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointEntr
 import static io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointEntryIterator.EntryType.REMOVE;
 import static io.trino.plugin.deltalake.transactionlog.checkpoint.CheckpointEntryIterator.EntryType.TRANSACTION;
 import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestCheckpointEntryIterator
 {
-    private static final String TEST_CHECKPOINT = "databricks/person/_delta_log/00000000000000000010.checkpoint.parquet";
+    private static final String TEST_CHECKPOINT = "databricks73/person/_delta_log/00000000000000000010.checkpoint.parquet";
 
     private CheckpointSchemaManager checkpointSchemaManager;
 
@@ -100,6 +111,24 @@ public class TestCheckpointEntryIterator
                                 List.of("age"),
                                 Map.of(),
                                 1579190100722L));
+    }
+
+    @Test
+    public void testReadProtocolEntries()
+            throws Exception
+    {
+        URI checkpointUri = getResource(TEST_CHECKPOINT).toURI();
+        CheckpointEntryIterator checkpointEntryIterator = createCheckpointEntryIterator(checkpointUri, ImmutableSet.of(PROTOCOL), Optional.empty());
+        List<DeltaLakeTransactionLogEntry> entries = ImmutableList.copyOf(checkpointEntryIterator);
+
+        assertThat(entries).hasSize(1);
+
+        assertThat(entries).element(0).extracting(DeltaLakeTransactionLogEntry::getProtocol).isEqualTo(
+                new ProtocolEntry(
+                        1,
+                        2,
+                        Optional.empty(),
+                        Optional.empty()));
     }
 
     @Test
@@ -163,7 +192,7 @@ public class TestCheckpointEntryIterator
         assertThat(entries).element(12).extracting(DeltaLakeTransactionLogEntry::getMetaData).isEqualTo(metadataEntry);
 
         // ProtocolEntry
-        assertThat(entries).element(11).extracting(DeltaLakeTransactionLogEntry::getProtocol).isEqualTo(new ProtocolEntry(1, 2));
+        assertThat(entries).element(11).extracting(DeltaLakeTransactionLogEntry::getProtocol).isEqualTo(new ProtocolEntry(1, 2, Optional.empty(), Optional.empty()));
 
         // TransactionEntry
         // not found in the checkpoint, TODO add a test
@@ -204,6 +233,92 @@ public class TestCheckpointEntryIterator
                 .isEmpty();
     }
 
+    @Test
+    public void testSkipRemoveEntries()
+            throws IOException
+    {
+        MetadataEntry metadataEntry = new MetadataEntry(
+                "metadataId",
+                "metadataName",
+                "metadataDescription",
+                new MetadataEntry.Format(
+                        "metadataFormatProvider",
+                        ImmutableMap.of()),
+                "{\"type\":\"struct\",\"fields\":" +
+                        "[{\"name\":\"ts\",\"type\":\"timestamp\",\"nullable\":true,\"metadata\":{}}]}",
+                ImmutableList.of("part_key"),
+                ImmutableMap.of(),
+                1000);
+        ProtocolEntry protocolEntry = new ProtocolEntry(10, 20, Optional.empty(), Optional.empty());
+        AddFileEntry addFileEntryJsonStats = new AddFileEntry(
+                "addFilePathJson",
+                ImmutableMap.of(),
+                1000,
+                1001,
+                true,
+                Optional.of("{" +
+                        "\"numRecords\":20," +
+                        "\"minValues\":{" +
+                        "\"ts\":\"2960-10-31T01:00:00.000Z\"" +
+                        "}," +
+                        "\"maxValues\":{" +
+                        "\"ts\":\"2960-10-31T02:00:00.000Z\"" +
+                        "}," +
+                        "\"nullCount\":{" +
+                        "\"ts\":1" +
+                        "}}"),
+                Optional.empty(),
+                ImmutableMap.of());
+
+        int numRemoveEntries = 100;
+        Set<RemoveFileEntry> removeEntries = IntStream.range(0, numRemoveEntries).mapToObj(x ->
+                        new RemoveFileEntry(
+                                UUID.randomUUID().toString(),
+                                1000,
+                                true))
+                .collect(toImmutableSet());
+
+        CheckpointEntries entries = new CheckpointEntries(
+                metadataEntry,
+                protocolEntry,
+                ImmutableSet.of(),
+                ImmutableSet.of(addFileEntryJsonStats),
+                removeEntries);
+
+        CheckpointWriter writer = new CheckpointWriter(
+                TESTING_TYPE_MANAGER,
+                checkpointSchemaManager,
+                "test",
+                ParquetWriterOptions.builder() // approximately 2 rows per row group
+                        .setMaxBlockSize(DataSize.ofBytes(64L))
+                        .setMaxPageSize(DataSize.ofBytes(64L))
+                        .build());
+
+        File targetFile = File.createTempFile("testSkipRemoveEntries-", ".checkpoint.parquet");
+        targetFile.deleteOnExit();
+
+        String targetPath = "file://" + targetFile.getAbsolutePath();
+        targetFile.delete(); // file must not exist when writer is called
+        writer.write(entries, createOutputFile(targetPath));
+
+        CheckpointEntryIterator addEntryIterator = createCheckpointEntryIterator(
+                URI.create(targetPath),
+                ImmutableSet.of(ADD),
+                Optional.of(metadataEntry));
+        CheckpointEntryIterator removeEntryIterator =
+                createCheckpointEntryIterator(URI.create(targetPath), ImmutableSet.of(REMOVE), Optional.empty());
+        CheckpointEntryIterator txnEntryIterator =
+                createCheckpointEntryIterator(URI.create(targetPath), ImmutableSet.of(TRANSACTION), Optional.empty());
+
+        assertThat(Iterators.size(addEntryIterator)).isEqualTo(1);
+        assertThat(Iterators.size(removeEntryIterator)).isEqualTo(numRemoveEntries);
+        assertThat(Iterators.size(txnEntryIterator)).isEqualTo(0);
+
+        assertThat(addEntryIterator.getCompletedPositions().orElseThrow()).isEqualTo(2L);
+        assertThat(removeEntryIterator.getCompletedPositions().orElseThrow()).isEqualTo(100L);
+        assertThat(txnEntryIterator.getCompletedPositions().orElseThrow()).isEqualTo(0L);
+    }
+
     private MetadataEntry readMetadataEntry(URI checkpointUri)
             throws IOException
     {
@@ -214,8 +329,8 @@ public class TestCheckpointEntryIterator
     private CheckpointEntryIterator createCheckpointEntryIterator(URI checkpointUri, Set<CheckpointEntryIterator.EntryType> entryTypes, Optional<MetadataEntry> metadataEntry)
             throws IOException
     {
-        TrinoFileSystem fileSystem = new HdfsFileSystemFactory(HDFS_ENVIRONMENT).create(SESSION);
-        TrinoInputFile checkpointFile = fileSystem.newInputFile(checkpointUri.toString());
+        TrinoFileSystem fileSystem = new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS).create(SESSION);
+        TrinoInputFile checkpointFile = fileSystem.newInputFile(Location.of(checkpointUri.toString()));
 
         return new CheckpointEntryIterator(
                 checkpointFile,
@@ -227,6 +342,12 @@ public class TestCheckpointEntryIterator
                 metadataEntry,
                 new FileFormatDataSourceStats(),
                 new ParquetReaderConfig().toParquetReaderOptions(),
-                true);
+                true,
+                new DeltaLakeConfig().getDomainCompactionThreshold());
+    }
+
+    private static TrinoOutputFile createOutputFile(String path)
+    {
+        return new HdfsFileSystemFactory(HDFS_ENVIRONMENT, HDFS_FILE_SYSTEM_STATS).create(SESSION).newOutputFile(Location.of(path));
     }
 }

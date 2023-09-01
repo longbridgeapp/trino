@@ -19,6 +19,7 @@ import com.google.common.net.HostAndPort;
 import io.airlift.log.Logger;
 import io.trino.testing.TestingProperties;
 import io.trino.testing.containers.BaseTestContainer;
+import io.trino.testing.containers.PrintingLogConsumer;
 import org.testcontainers.containers.Network;
 
 import java.util.Map;
@@ -90,7 +91,7 @@ public class HiveHadoop
 
     public String runOnMetastore(String query)
     {
-        return executeInContainerFailOnError("mysql", "-D", "metastore", "-uroot", "-proot", "--batch", "--column-names=false", "-e", query);
+        return executeInContainerFailOnError("mysql", "-D", "metastore", "-uroot", "-proot", "--batch", "--column-names=false", "-e", query).replaceAll("\n$", "");
     }
 
     public HostAndPort getHiveMetastoreEndpoint()

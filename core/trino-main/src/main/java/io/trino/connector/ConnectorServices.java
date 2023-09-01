@@ -17,11 +17,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
 import io.airlift.log.Logger;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.metadata.CatalogMetadata.SecurityManagement;
 import io.trino.metadata.CatalogProcedures;
 import io.trino.metadata.CatalogTableFunctions;
 import io.trino.metadata.CatalogTableProcedures;
 import io.trino.spi.classloader.ThreadContextClassLoader;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorAccessControl;
 import io.trino.spi.connector.ConnectorCapabilities;
@@ -35,10 +37,11 @@ import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.eventlistener.EventListener;
 import io.trino.spi.function.FunctionProvider;
+import io.trino.spi.function.table.ArgumentSpecification;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.function.table.ReturnTypeSpecification.DescribedTable;
+import io.trino.spi.function.table.TableArgumentSpecification;
 import io.trino.spi.procedure.Procedure;
-import io.trino.spi.ptf.ArgumentSpecification;
-import io.trino.spi.ptf.ConnectorTableFunction;
-import io.trino.spi.ptf.TableArgumentSpecification;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.split.RecordPageSourceProvider;
 
@@ -60,6 +63,7 @@ public class ConnectorServices
 {
     private static final Logger log = Logger.get(ConnectorServices.class);
 
+    private final Tracer tracer;
     private final CatalogHandle catalogHandle;
     private final Connector connector;
     private final Runnable afterShutdown;
@@ -85,8 +89,9 @@ public class ConnectorServices
 
     private final AtomicBoolean shutdown = new AtomicBoolean();
 
-    public ConnectorServices(CatalogHandle catalogHandle, Connector connector, Runnable afterShutdown)
+    public ConnectorServices(Tracer tracer, CatalogHandle catalogHandle, Connector connector, Runnable afterShutdown)
     {
+        this.tracer = requireNonNull(tracer, "tracer is null");
         this.catalogHandle = requireNonNull(catalogHandle, "catalogHandle is null");
         this.connector = requireNonNull(connector, "connector is null");
         this.afterShutdown = requireNonNull(afterShutdown, "afterShutdown is null");
@@ -203,6 +208,11 @@ public class ConnectorServices
         Set<ConnectorCapabilities> capabilities = connector.getCapabilities();
         requireNonNull(capabilities, format("Connector '%s' returned a null capabilities set", catalogHandle));
         this.capabilities = capabilities;
+    }
+
+    public Tracer getTracer()
+    {
+        return tracer;
     }
 
     public CatalogHandle getCatalogHandle()
@@ -356,5 +366,12 @@ public class ConnectorServices
                 .filter(TableArgumentSpecification::isRowSemantics)
                 .count();
         checkArgument(tableArgumentsWithRowSemantics <= 1, "more than one table argument with row semantics");
+        // The 'keep when empty' or 'prune when empty' property must not be explicitly specified for a table argument with row semantics.
+        // Such a table argument is implicitly 'prune when empty'. The TableArgumentSpecification.Builder enforces the 'prune when empty' property
+        // for a table argument with row semantics.
+
+        if (tableFunction.getReturnTypeSpecification() instanceof DescribedTable describedTable) {
+            checkArgument(describedTable.getDescriptor().isTyped(), "field types missing in returned type specification");
+        }
     }
 }

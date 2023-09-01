@@ -30,7 +30,7 @@ databases:
     jdbc_driver_class: io.trino.jdbc.TrinoDriver
     jdbc_url: jdbc:trino://${databases.presto.host}:${databases.presto.port}/hive/${databases.hive.schema}
     jdbc_user: hive
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
 
   presto_no_default_catalog:
@@ -46,7 +46,7 @@ databases:
     jdbc_driver_class: ${databases.presto.jdbc_driver_class}
     jdbc_url: jdbc:trino://${databases.presto.host}:${databases.presto.port}/hive/tpcds
     jdbc_user: hive
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
 
   alice@presto:
@@ -56,7 +56,7 @@ databases:
     jdbc_driver_class: ${databases.presto.jdbc_driver_class}
     jdbc_url: ${databases.presto.jdbc_url}
     jdbc_user: alice
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
     https_keystore_path: ${databases.presto.https_keystore_path}
     https_keystore_password: ${databases.presto.https_keystore_password}
@@ -68,7 +68,7 @@ databases:
     jdbc_driver_class: ${databases.presto.jdbc_driver_class}
     jdbc_url: ${databases.presto.jdbc_url}
     jdbc_user: bob
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
     https_keystore_path: ${databases.presto.https_keystore_path}
     https_keystore_password: ${databases.presto.https_keystore_password}
@@ -80,7 +80,7 @@ databases:
     jdbc_driver_class: ${databases.presto.jdbc_driver_class}
     jdbc_url: ${databases.presto.jdbc_url}
     jdbc_user: charlie
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
     https_keystore_path: ${databases.presto.https_keystore_path}
     https_keystore_password: ${databases.presto.https_keystore_password}
@@ -92,7 +92,7 @@ databases:
     jdbc_driver_class: ${databases.presto.jdbc_driver_class}
     jdbc_url: ${databases.presto.jdbc_url}
     jdbc_user: hdfs
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
     https_keystore_path: ${databases.presto.https_keystore_path}
     https_keystore_password: ${databases.presto.https_keystore_password}
@@ -104,13 +104,13 @@ databases:
     jdbc_driver_class: ${databases.presto.jdbc_driver_class}
     jdbc_url: ${databases.presto.jdbc_url}
     jdbc_user: CaseSensitiveUserName
-    jdbc_password: "***empty***"
+    jdbc_password: ""
     jdbc_pooling: false
     https_keystore_path: ${databases.presto.https_keystore_path}
     https_keystore_password: ${databases.presto.https_keystore_password}
 
   mysql:
-    jdbc_driver_class: com.mysql.jdbc.Driver
+    jdbc_driver_class: com.mysql.cj.jdbc.Driver
     jdbc_url: jdbc:mysql://mysql:13306/test
     jdbc_user: root
     jdbc_password: test
@@ -132,6 +132,9 @@ databases:
     default_schema: test
     skip_create_schema: false
     table_manager_type: cassandra
+    basic:
+      request:
+        timeout_seconds: 30
 
   sqlserver:
     jdbc_driver_class: com.microsoft.sqlserver.jdbc.SQLServerDriver
@@ -169,6 +172,16 @@ databases:
       schema: default
       prepare_statement:
           - USE ${databases.delta.schema}
+      table_manager_type: jdbc
+      jdbc_url: jdbc:hive2://spark:10213
+      jdbc_user: hive
+      jdbc_password: na
+
+  hudi:
+      jdbc_driver_class: org.apache.hive.jdbc.HiveDriver
+      schema: default
+      prepare_statement:
+          - USE ${databases.hudi.schema}
       table_manager_type: jdbc
       jdbc_url: jdbc:hive2://spark:10213
       jdbc_user: hive

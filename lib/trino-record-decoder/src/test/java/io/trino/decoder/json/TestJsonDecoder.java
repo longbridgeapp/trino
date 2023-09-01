@@ -20,6 +20,7 @@ import io.trino.decoder.DecoderColumnHandle;
 import io.trino.decoder.DecoderTestColumnHandle;
 import io.trino.decoder.FieldValueProvider;
 import io.trino.decoder.RowDecoder;
+import io.trino.decoder.RowDecoderSpec;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.Type;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -30,6 +31,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static io.trino.decoder.util.DecoderTestUtil.TESTING_SESSION;
 import static io.trino.decoder.util.DecoderTestUtil.checkIsNull;
 import static io.trino.decoder.util.DecoderTestUtil.checkValue;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -40,10 +42,10 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimeType.TIME;
-import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimeType.TIME_MILLIS;
+import static io.trino.spi.type.TimeWithTimeZoneType.TIME_TZ_MILLIS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
-import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
@@ -71,7 +73,7 @@ public class TestJsonDecoder
         DecoderTestColumnHandle column5 = new DecoderTestColumnHandle(4, "column5", BOOLEAN, "user/geo_enabled", null, null, false, false, false);
 
         Set<DecoderColumnHandle> columns = ImmutableSet.of(column1, column2, column3, column4, column5);
-        RowDecoder rowDecoder = DECODER_FACTORY.create(emptyMap(), columns);
+        RowDecoder rowDecoder = DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(JsonRowDecoder.NAME, emptyMap(), columns));
 
         Map<DecoderColumnHandle, FieldValueProvider> decodedRow = rowDecoder.decodeRow(json)
                 .orElseThrow(AssertionError::new);
@@ -96,7 +98,7 @@ public class TestJsonDecoder
         DecoderTestColumnHandle column4 = new DecoderTestColumnHandle(3, "column4", BOOLEAN, "hello", null, null, false, false, false);
 
         Set<DecoderColumnHandle> columns = ImmutableSet.of(column1, column2, column3, column4);
-        RowDecoder rowDecoder = DECODER_FACTORY.create(emptyMap(), columns);
+        RowDecoder rowDecoder = DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(JsonRowDecoder.NAME, emptyMap(), columns));
 
         Map<DecoderColumnHandle, FieldValueProvider> decodedRow = rowDecoder.decodeRow(json)
                 .orElseThrow(AssertionError::new);
@@ -120,7 +122,7 @@ public class TestJsonDecoder
         DecoderTestColumnHandle column4 = new DecoderTestColumnHandle(3, "column4", BIGINT, "a_string", null, null, false, false, false);
 
         Set<DecoderColumnHandle> columns = ImmutableSet.of(column1, column2, column3, column4);
-        RowDecoder rowDecoder = DECODER_FACTORY.create(emptyMap(), columns);
+        RowDecoder rowDecoder = DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(JsonRowDecoder.NAME, emptyMap(), columns));
 
         Optional<Map<DecoderColumnHandle, FieldValueProvider>> decodedRow = rowDecoder.decodeRow(json);
         assertTrue(decodedRow.isPresent());
@@ -147,21 +149,21 @@ public class TestJsonDecoder
         singleColumnDecoder(createVarcharType(100), null);
 
         singleColumnDecoder(TIMESTAMP_MILLIS, "rfc2822");
-        singleColumnDecoder(TIMESTAMP_WITH_TIME_ZONE, "rfc2822");
+        singleColumnDecoder(TIMESTAMP_TZ_MILLIS, "rfc2822");
 
         for (String dataFormat : ImmutableSet.of("iso8601", "custom-date-time")) {
             singleColumnDecoder(DATE, dataFormat);
-            singleColumnDecoder(TIME, dataFormat);
-            singleColumnDecoder(TIME_WITH_TIME_ZONE, dataFormat);
+            singleColumnDecoder(TIME_MILLIS, dataFormat);
+            singleColumnDecoder(TIME_TZ_MILLIS, dataFormat);
             singleColumnDecoder(TIMESTAMP_MILLIS, dataFormat);
-            singleColumnDecoder(TIMESTAMP_WITH_TIME_ZONE, dataFormat);
+            singleColumnDecoder(TIMESTAMP_TZ_MILLIS, dataFormat);
         }
 
         for (String dataFormat : ImmutableSet.of("seconds-since-epoch", "milliseconds-since-epoch")) {
-            singleColumnDecoder(TIME, dataFormat);
-            singleColumnDecoder(TIME_WITH_TIME_ZONE, dataFormat);
+            singleColumnDecoder(TIME_MILLIS, dataFormat);
+            singleColumnDecoder(TIME_TZ_MILLIS, dataFormat);
             singleColumnDecoder(TIMESTAMP_MILLIS, dataFormat);
-            singleColumnDecoder(TIMESTAMP_WITH_TIME_ZONE, dataFormat);
+            singleColumnDecoder(TIMESTAMP_TZ_MILLIS, dataFormat);
         }
 
         // some unsupported types
@@ -171,10 +173,10 @@ public class TestJsonDecoder
 
         // temporal types are not supported for default field decoder
         assertUnsupportedColumnTypeException(() -> singleColumnDecoder(DATE, null));
-        assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIME, null));
-        assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIME_WITH_TIME_ZONE, null));
+        assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIME_MILLIS, null));
+        assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIME_TZ_MILLIS, null));
         assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIMESTAMP_MILLIS, null));
-        assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIMESTAMP_WITH_TIME_ZONE, null));
+        assertUnsupportedColumnTypeException(() -> singleColumnDecoder(TIMESTAMP_TZ_MILLIS, null));
 
         // non temporal types are not supported by temporal field decoders
         for (String dataFormat : ImmutableSet.of("iso8601", "custom-date-time", "seconds-since-epoch", "milliseconds-since-epoch", "rfc2822")) {
@@ -219,6 +221,6 @@ public class TestJsonDecoder
     private void singleColumnDecoder(Type columnType, String mapping, String dataFormat)
     {
         String formatHint = "custom-date-time".equals(dataFormat) ? "MM/yyyy/dd H:m:s" : null;
-        DECODER_FACTORY.create(emptyMap(), ImmutableSet.of(new DecoderTestColumnHandle(0, "some_column", columnType, mapping, dataFormat, formatHint, false, false, false)));
+        DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(JsonRowDecoder.NAME, emptyMap(), ImmutableSet.of(new DecoderTestColumnHandle(0, "some_column", columnType, mapping, dataFormat, formatHint, false, false, false))));
     }
 }

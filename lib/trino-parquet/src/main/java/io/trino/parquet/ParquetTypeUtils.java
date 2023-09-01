@@ -14,11 +14,13 @@
 package io.trino.parquet;
 
 import com.google.common.collect.ImmutableList;
+import io.trino.spi.TrinoException;
 import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
+import jakarta.annotation.Nullable;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.Encoding;
 import org.apache.parquet.io.ColumnIO;
@@ -31,8 +33,7 @@ import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation.DecimalLogicalTypeAnnotation;
 import org.apache.parquet.schema.MessageType;
 
-import javax.annotation.Nullable;
-
+import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -41,8 +42,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static org.apache.parquet.io.ColumnIOUtil.columnDefinitionLevel;
-import static org.apache.parquet.io.ColumnIOUtil.columnRepetitionLevel;
+import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static java.lang.String.format;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
 import static org.apache.parquet.schema.Type.Repetition.REPEATED;
 
@@ -247,7 +248,11 @@ public final class ParquetTypeUtils
         return !required && (definitionLevel == maxDefinitionLevel - 1);
     }
 
-    // copied from trino-hive DecimalUtils
+    public static boolean isOptionalFieldValueNull(int definitionLevel, int maxDefinitionLevel)
+    {
+        return definitionLevel == maxDefinitionLevel - 1;
+    }
+
     public static long getShortDecimalValue(byte[] bytes)
     {
         return getShortDecimalValue(bytes, 0, bytes.length);
@@ -256,17 +261,62 @@ public final class ParquetTypeUtils
     public static long getShortDecimalValue(byte[] bytes, int startOffset, int length)
     {
         long value = 0;
-        if (bytes[startOffset] < 0) {
-            for (int i = 0; i < 8 - length; ++i) {
-                value |= 0xFFL << (8 * (7 - i));
+        switch (length) {
+            case 8:
+                value |= bytes[startOffset + 7] & 0xFFL;
+                // fall through
+            case 7:
+                value |= (bytes[startOffset + 6] & 0xFFL) << 8;
+                // fall through
+            case 6:
+                value |= (bytes[startOffset + 5] & 0xFFL) << 16;
+                // fall through
+            case 5:
+                value |= (bytes[startOffset + 4] & 0xFFL) << 24;
+                // fall through
+            case 4:
+                value |= (bytes[startOffset + 3] & 0xFFL) << 32;
+                // fall through
+            case 3:
+                value |= (bytes[startOffset + 2] & 0xFFL) << 40;
+                // fall through
+            case 2:
+                value |= (bytes[startOffset + 1] & 0xFFL) << 48;
+                // fall through
+            case 1:
+                value |= (bytes[startOffset] & 0xFFL) << 56;
+        }
+        value = value >> ((8 - length) * 8);
+        return value;
+    }
+
+    public static void checkBytesFitInShortDecimal(byte[] bytes, int offset, int length, ColumnDescriptor descriptor)
+    {
+        int endOffset = offset + length;
+        // Equivalent to expectedValue = bytes[endOffset] < 0 ? -1 : 0
+        byte expectedValue = (byte) (bytes[endOffset] >> 7);
+        for (int i = offset; i < endOffset; i++) {
+            if (bytes[i] != expectedValue) {
+                throw new TrinoException(NOT_SUPPORTED, format(
+                        "Could not read unscaled value %s into a short decimal from column %s",
+                        new BigInteger(bytes, offset, length + Long.BYTES),
+                        descriptor));
             }
         }
+    }
 
-        for (int i = 0; i < length; i++) {
-            value |= (bytes[startOffset + length - i - 1] & 0xFFL) << (8 * i);
+    public static byte[] paddingBigInteger(BigInteger bigInteger, int numBytes)
+    {
+        byte[] bytes = bigInteger.toByteArray();
+        if (bytes.length == numBytes) {
+            return bytes;
         }
-
-        return value;
+        byte[] result = new byte[numBytes];
+        if (bigInteger.signum() < 0) {
+            Arrays.fill(result, 0, numBytes - bytes.length, (byte) 0xFF);
+        }
+        System.arraycopy(bytes, 0, result, numBytes - bytes.length, bytes.length);
+        return result;
     }
 
     public static Optional<Field> constructField(Type type, ColumnIO columnIO)
@@ -275,8 +325,8 @@ public final class ParquetTypeUtils
             return Optional.empty();
         }
         boolean required = columnIO.getType().getRepetition() != OPTIONAL;
-        int repetitionLevel = columnRepetitionLevel(columnIO);
-        int definitionLevel = columnDefinitionLevel(columnIO);
+        int repetitionLevel = columnIO.getRepetitionLevel();
+        int definitionLevel = columnIO.getDefinitionLevel();
         if (type instanceof RowType rowType) {
             GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
             ImmutableList.Builder<Optional<Field>> fieldsBuilder = ImmutableList.builder();

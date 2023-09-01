@@ -13,16 +13,13 @@
  */
 package io.trino.spi.block;
 
-import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.OptionalInt;
 import java.util.function.ObjLongConsumer;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.spi.block.BlockUtil.checkArrayRange;
 import static io.trino.spi.block.BlockUtil.checkReadablePosition;
@@ -32,7 +29,7 @@ import static java.lang.Math.max;
 public class IntArrayBlockBuilder
         implements BlockBuilder
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(IntArrayBlockBuilder.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(IntArrayBlockBuilder.class);
     private static final Block NULL_VALUE_BLOCK = new IntArrayBlock(0, 1, new boolean[] {true}, new int[1]);
 
     @Nullable
@@ -58,7 +55,6 @@ public class IntArrayBlockBuilder
         updateDataSize();
     }
 
-    @Override
     public BlockBuilder writeInt(int value)
     {
         if (values.length <= positionCount) {
@@ -72,12 +68,6 @@ public class IntArrayBlockBuilder
         if (blockBuilderStatus != null) {
             blockBuilderStatus.addBytes(IntArrayBlock.SIZE_IN_BYTES_PER_POSITION);
         }
-        return this;
-    }
-
-    @Override
-    public BlockBuilder closeEntry()
-    {
         return this;
     }
 
@@ -287,8 +277,8 @@ public class IntArrayBlockBuilder
         return sb.toString();
     }
 
-    Slice getValuesSlice()
+    int[] getRawValues()
     {
-        return Slices.wrappedIntArray(values, 0, positionCount);
+        return values;
     }
 }

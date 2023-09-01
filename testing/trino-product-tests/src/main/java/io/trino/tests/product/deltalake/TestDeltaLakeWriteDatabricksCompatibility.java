@@ -13,35 +13,67 @@
  */
 package io.trino.tests.product.deltalake;
 
+import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.model.S3ObjectSummary;
+import com.google.inject.Inject;
+import com.google.inject.name.Named;
+import io.trino.tempto.BeforeMethodWithContext;
 import io.trino.tempto.assertions.QueryAssert;
+import io.trino.testng.services.Flaky;
+import io.trino.tests.product.deltalake.util.DatabricksVersion;
 import org.assertj.core.api.SoftAssertions;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.function.Consumer;
 import java.util.stream.Stream;
 
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.DELTA_LAKE_DATABRICKS;
-import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_73;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_104;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_113;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_EXCLUDE_91;
+import static io.trino.tests.product.TestGroups.DELTA_LAKE_OSS;
 import static io.trino.tests.product.TestGroups.PROFILE_SPECIFIC_TESTS;
-import static io.trino.tests.product.hive.util.TemporaryHiveTable.randomTableSuffix;
+import static io.trino.tests.product.deltalake.util.DatabricksVersion.DATABRICKS_122_RUNTIME_VERSION;
+import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_ISSUE;
+import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.DATABRICKS_COMMUNICATION_FAILURE_MATCH;
+import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.dropDeltaTableWithRetry;
+import static io.trino.tests.product.deltalake.util.DeltaLakeTestUtils.getDatabricksRuntimeVersion;
 import static io.trino.tests.product.utils.QueryExecutors.onDelta;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 import static java.util.function.Predicate.not;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class TestDeltaLakeWriteDatabricksCompatibility
         extends BaseTestDeltaLakeS3Storage
 {
+    @Inject
+    @Named("s3.server_type")
+    private String s3ServerType;
+
+    private AmazonS3 s3;
+
+    @BeforeMethodWithContext
+    public void setup()
+    {
+        super.setUp();
+        s3 = new S3ClientFactory().createS3Client(s3ServerType);
+    }
+
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testUpdateCompatibility()
     {
-        String tableName = "test_update_compatibility_" + randomTableSuffix();
+        String tableName = "test_update_compatibility_" + randomNameSuffix();
 
         onDelta().executeQuery(format(
                 "CREATE TABLE default.%1$s (a int, b int, c int) USING DELTA LOCATION '%2$s%1$s'",
@@ -65,14 +97,15 @@ public class TestDeltaLakeWriteDatabricksCompatibility
                     .containsOnly(expectedRows);
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testDeleteCompatibility()
     {
-        String tableName = "test_delete_compatibility_" + randomTableSuffix();
+        String tableName = "test_delete_compatibility_" + randomNameSuffix();
 
         onDelta().executeQuery(format(
                 "CREATE TABLE default.%1$s (a int, b int) USING DELTA LOCATION '%2$s%1$s'",
@@ -94,14 +127,15 @@ public class TestDeltaLakeWriteDatabricksCompatibility
                     .containsOnly(expectedRows);
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testDeleteOnPartitionedTableCompatibility()
     {
-        String tableName = "test_delete_on_partitioned_table_compatibility_" + randomTableSuffix();
+        String tableName = "test_delete_on_partitioned_table_compatibility_" + randomNameSuffix();
 
         onDelta().executeQuery(format(
                 "CREATE TABLE default.%1$s (a int, b int) USING DELTA LOCATION '%2$s%1$s' PARTITIONED BY (b)",
@@ -123,14 +157,15 @@ public class TestDeltaLakeWriteDatabricksCompatibility
                     .containsOnly(expectedRows);
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testDeleteOnPartitionKeyCompatibility()
     {
-        String tableName = "test_delete_on_partitioned_table_compatibility_" + randomTableSuffix();
+        String tableName = "test_delete_on_partitioned_table_compatibility_" + randomNameSuffix();
 
         onDelta().executeQuery(format(
                 "CREATE TABLE default.%1$s (a int, b int) USING DELTA LOCATION '%2$s%1$s' PARTITIONED BY (b)",
@@ -149,12 +184,13 @@ public class TestDeltaLakeWriteDatabricksCompatibility
                     .containsOnly(expectedRows);
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
     // Test partition case sensitivity when updating
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS}, dataProvider = "partition_column_names")
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testCaseUpdateInPartition(String partitionColumn)
     {
         try (CaseTestTable table = new CaseTestTable("update_case_compat", partitionColumn, List.of(
@@ -169,18 +205,25 @@ public class TestDeltaLakeWriteDatabricksCompatibility
 
     // Test that the correct error is generated when attempting to update the partition columns
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS}, dataProvider = "partition_column_names")
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testCaseUpdatePartitionColumnFails(String partitionColumn)
     {
         try (CaseTestTable table = new CaseTestTable("update_case_compat", partitionColumn, List.of(row(1, 1, 1)))) {
             // TODO: The test fails for uppercase columns because the statement analyzer compares the column name case-sensitively.
-            //   Remove the part of the regex after the '|' once that's changed.
-            assertQueryFailure(() -> onTrino().executeQuery(format("UPDATE delta.default.%s SET %s = 0 WHERE lower = 1", table.name(), partitionColumn)))
-                    .hasMessageMatching(".*(Updating table partition columns is not supported|The UPDATE SET target column .* doesn't exist)");
+            if (!partitionColumn.equals(partitionColumn.toLowerCase(ENGLISH))) {
+                assertQueryFailure(() -> onTrino().executeQuery(format("UPDATE delta.default.%s SET %s = 0 WHERE lower = 1", table.name(), partitionColumn)))
+                        .hasMessageMatching(".*The UPDATE SET target column .* doesn't exist");
+            }
+            else {
+                onTrino().executeQuery(format("UPDATE delta.default.%s SET %s = 0 WHERE lower = 1", table.name(), partitionColumn));
+                assertTable(table, table.rows().map(row -> row.withPartition(0)));
+            }
         }
     }
 
     // Delete within a partition
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS}, dataProvider = "partition_column_names")
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testCaseDeletePartialPartition(String partitionColumn)
     {
         try (CaseTestTable table = new CaseTestTable("delete_case_compat", partitionColumn, List.of(
@@ -194,6 +237,7 @@ public class TestDeltaLakeWriteDatabricksCompatibility
 
     // Delete an entire partition
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS}, dataProvider = "partition_column_names")
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testCaseDeleteEntirePartition(String partitionColumn)
     {
         try (CaseTestTable table = new CaseTestTable("delete_case_compat", partitionColumn, List.of(
@@ -206,9 +250,10 @@ public class TestDeltaLakeWriteDatabricksCompatibility
     }
 
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testTrinoRespectsDatabricksSettingNonNullableColumn()
     {
-        String tableName = "test_databricks_table_with_nonnullable_columns_" + randomTableSuffix();
+        String tableName = "test_databricks_table_with_nonnullable_columns_" + randomNameSuffix();
 
         onDelta().executeQuery(format(
                 "CREATE TABLE default.%1$s (non_nullable_col INT NOT NULL, nullable_col INT) USING DELTA LOCATION '%2$s%1$s'",
@@ -228,14 +273,15 @@ public class TestDeltaLakeWriteDatabricksCompatibility
                     .containsOnly(row(1, 2));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
     @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testDatabricksRespectsTrinoSettingNonNullableColumn()
     {
-        String tableName = "test_trino_table_with_nonnullable_columns_" + randomTableSuffix();
+        String tableName = "test_trino_table_with_nonnullable_columns_" + randomNameSuffix();
 
         onTrino().executeQuery("CREATE TABLE delta.default.\"" + tableName + "\" " +
                 "(non_nullable_col INT NOT NULL, nullable_col INT) " +
@@ -258,10 +304,11 @@ public class TestDeltaLakeWriteDatabricksCompatibility
         }
     }
 
-    @Test(groups = {DELTA_LAKE_EXCLUDE_73, PROFILE_SPECIFIC_TESTS})
+    @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
     public void testInsertingIntoDatabricksTableWithAddedNotNullConstraint()
     {
-        String tableName = "test_databricks_table_altered_after_initial_write_" + randomTableSuffix();
+        String tableName = "test_databricks_table_altered_after_initial_write_" + randomNameSuffix();
 
         onDelta().executeQuery(format(
                 "CREATE TABLE default.%1$s (non_nullable_col INT, nullable_col INT) USING DELTA LOCATION '%2$s%1$s'",
@@ -282,7 +329,86 @@ public class TestDeltaLakeWriteDatabricksCompatibility
                     .containsOnly(row(1, 2));
         }
         finally {
-            onDelta().executeQuery("DROP TABLE default." + tableName);
+            dropDeltaTableWithRetry("default." + tableName);
+        }
+    }
+
+    @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
+    public void testTrinoVacuumRemoveChangeDataFeedFiles()
+    {
+        testVacuumRemoveChangeDataFeedFiles(tableName -> {
+            onTrino().executeQuery("SET SESSION delta.vacuum_min_retention = '0s'");
+            onTrino().executeQuery("CALL delta.system.vacuum('default', '" + tableName + "', '0s')");
+        });
+    }
+
+    @Test(groups = {DELTA_LAKE_DATABRICKS, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
+    public void testDatabricksVacuumRemoveChangeDataFeedFiles()
+    {
+        testVacuumRemoveChangeDataFeedFiles(tableName -> {
+            onDelta().executeQuery("SET spark.databricks.delta.retentionDurationCheck.enabled = false");
+            onDelta().executeQuery("VACUUM default." + tableName + " RETAIN 0 HOURS");
+        });
+    }
+
+    private void testVacuumRemoveChangeDataFeedFiles(Consumer<String> vacuumExecutor)
+    {
+        String tableName = "test_vacuum_ignore_cdf_" + randomNameSuffix();
+        String directoryName = "databricks-compatibility-test-" + tableName;
+        String changeDataPrefix = directoryName + "/_change_data";
+
+        onDelta().executeQuery("CREATE TABLE default." + tableName + " (a INT) " +
+                "USING DELTA " +
+                "LOCATION '" + ("s3://" + bucketName + "/" + directoryName) + "'" +
+                "TBLPROPERTIES (delta.enableChangeDataFeed = true)");
+
+        try {
+            // Executing some statements to create _change_data directory
+            onDelta().executeQuery("INSERT INTO " + tableName + " VALUES (1)");
+            onDelta().executeQuery("UPDATE " + tableName + " SET a = 2");
+
+            assertThat(s3.listObjectsV2(bucketName, changeDataPrefix).getObjectSummaries()).hasSize(1);
+
+            // Vacuum procedure should remove files in _change_data directory
+            // https://docs.delta.io/2.1.0/delta-change-data-feed.html#change-data-storage
+            vacuumExecutor.accept(tableName);
+
+            List<S3ObjectSummary> summaries = s3.listObjectsV2(bucketName, changeDataPrefix).getObjectSummaries();
+            assertThat(summaries).hasSizeBetween(0, 1);
+            if (!summaries.isEmpty()) {
+                // Databricks version >= 12.2 keep an empty _change_data directory
+                DatabricksVersion databricksRuntimeVersion = getDatabricksRuntimeVersion().orElseThrow();
+                assertThat(databricksRuntimeVersion.isAtLeast(DATABRICKS_122_RUNTIME_VERSION)).isTrue();
+                S3ObjectSummary summary = summaries.get(0);
+                assertThat(summary.getKey()).endsWith(changeDataPrefix + "/");
+                assertThat(summary.getSize()).isEqualTo(0);
+            }
+        }
+        finally {
+            dropDeltaTableWithRetry("default." + tableName);
+        }
+    }
+
+    @Test(groups = {DELTA_LAKE_DATABRICKS, DELTA_LAKE_OSS, DELTA_LAKE_EXCLUDE_91, DELTA_LAKE_EXCLUDE_104, DELTA_LAKE_EXCLUDE_113, PROFILE_SPECIFIC_TESTS})
+    @Flaky(issue = DATABRICKS_COMMUNICATION_FAILURE_ISSUE, match = DATABRICKS_COMMUNICATION_FAILURE_MATCH)
+    public void testVacuumUnsupportedWriterVersion()
+    {
+        String tableName = "test_vacuum_unsupported_writer_version_" + randomNameSuffix();
+        String directoryName = "databricks-compatibility-test-" + tableName;
+
+        onDelta().executeQuery("CREATE TABLE default." + tableName +
+                "(a INT)" +
+                "USING DELTA " +
+                "LOCATION '" + ("s3://" + bucketName + "/" + directoryName) + "'" +
+                "TBLPROPERTIES ('delta.minWriterVersion'='7')");
+        try {
+            assertThatThrownBy(() -> onTrino().executeQuery("CALL delta.system.vacuum('default', '" + tableName + "', '7d')"))
+                    .hasMessageContaining("Cannot execute vacuum procedure with 7 writer version");
+        }
+        finally {
+            dropDeltaTableWithRetry("default." + tableName);
         }
     }
 
@@ -350,7 +476,7 @@ public class TestDeltaLakeWriteDatabricksCompatibility
 
         CaseTestTable(String namePrefix, String partitionColumnName, Collection<TestRow> rows)
         {
-            this.name = namePrefix + "_" + randomTableSuffix();
+            this.name = namePrefix + "_" + randomNameSuffix();
             this.columns = List.of("lower", "UPPER", partitionColumnName);
             this.rows = List.copyOf(rows);
 
@@ -387,7 +513,7 @@ public class TestDeltaLakeWriteDatabricksCompatibility
         @Override
         public void close()
         {
-            onDelta().executeQuery("DROP TABLE default." + name);
+            dropDeltaTableWithRetry("default." + name);
         }
     }
 

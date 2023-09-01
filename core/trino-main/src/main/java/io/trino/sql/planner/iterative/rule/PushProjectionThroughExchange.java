@@ -97,7 +97,7 @@ public class PushProjectionThroughExchange
             partitioningColumns.stream()
                     .map(outputToInputMap::get)
                     .forEach(inputSymbol -> {
-                        projections.put(inputSymbol, inputSymbol.toSymbolReference());
+                        projections.putIdentity(inputSymbol);
                         inputs.add(inputSymbol);
                     });
 
@@ -105,7 +105,7 @@ public class PushProjectionThroughExchange
             exchange.getPartitioningScheme().getHashColumn()
                     .map(outputToInputMap::get)
                     .ifPresent(inputSymbol -> {
-                        projections.put(inputSymbol, inputSymbol.toSymbolReference());
+                        projections.putIdentity(inputSymbol);
                         inputs.add(inputSymbol);
                     });
 
@@ -116,7 +116,7 @@ public class PushProjectionThroughExchange
                         .filter(symbol -> !partitioningColumns.contains(symbol))
                         .map(outputToInputMap::get)
                         .forEach(inputSymbol -> {
-                            projections.put(inputSymbol, inputSymbol.toSymbolReference());
+                            projections.putIdentity(inputSymbol);
                             inputs.add(inputSymbol);
                         });
             }
@@ -172,7 +172,8 @@ public class PushProjectionThroughExchange
                 outputBuilder.build(),
                 exchange.getPartitioningScheme().getHashColumn(),
                 exchange.getPartitioningScheme().isReplicateNullsAndAny(),
-                exchange.getPartitioningScheme().getBucketToPartition());
+                exchange.getPartitioningScheme().getBucketToPartition(),
+                exchange.getPartitioningScheme().getPartitionCount());
 
         PlanNode result = new ExchangeNode(
                 exchange.getId(),

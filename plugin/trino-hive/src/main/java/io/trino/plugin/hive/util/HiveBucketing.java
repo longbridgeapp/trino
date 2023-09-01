@@ -27,6 +27,11 @@ import io.trino.plugin.hive.HiveType;
 import io.trino.plugin.hive.metastore.Column;
 import io.trino.plugin.hive.metastore.SortingColumn;
 import io.trino.plugin.hive.metastore.Table;
+import io.trino.plugin.hive.type.ListTypeInfo;
+import io.trino.plugin.hive.type.MapTypeInfo;
+import io.trino.plugin.hive.type.PrimitiveCategory;
+import io.trino.plugin.hive.type.PrimitiveTypeInfo;
+import io.trino.plugin.hive.type.TypeInfo;
 import io.trino.spi.Page;
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
@@ -37,11 +42,6 @@ import io.trino.spi.predicate.NullableValue;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.type.TypeManager;
-import org.apache.hadoop.hive.serde2.objectinspector.PrimitiveObjectInspector;
-import org.apache.hadoop.hive.serde2.typeinfo.ListTypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.MapTypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.PrimitiveTypeInfo;
-import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -54,6 +54,7 @@ import java.util.stream.Collectors;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.Lists.cartesianProduct;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.TABLE_BUCKETING_VERSION;
 import static io.trino.plugin.hive.HiveColumnHandle.BUCKET_COLUMN_NAME;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
 import static io.trino.plugin.hive.HiveSessionProperties.getTimestampPrecision;
@@ -64,7 +65,6 @@ import static io.trino.plugin.hive.util.HiveUtil.getRegularColumnHandles;
 import static java.lang.String.format;
 import static java.util.Map.Entry;
 import static java.util.function.Function.identity;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.TABLE_BUCKETING_VERSION;
 
 public final class HiveBucketing
 {
@@ -215,8 +215,7 @@ public final class HiveBucketing
         }
 
         HiveBucketProperty hiveBucketProperty = hiveTable.getBucketHandle().get().toTableBucketProperty();
-        List<Column> dataColumns = hiveTable.getDataColumns().stream()
-                .map(HiveColumnHandle::toMetastoreColumn)
+        List<HiveColumnHandle> dataColumns = hiveTable.getDataColumns().stream()
                 .collect(toImmutableList());
 
         Optional<Map<ColumnHandle, List<NullableValue>>> bindings = TupleDomain.extractDiscreteValues(effectivePredicate);
@@ -247,7 +246,7 @@ public final class HiveBucketing
         return Optional.of(new HiveBucketFilter(builder.build()));
     }
 
-    private static Optional<Set<Integer>> getHiveBuckets(HiveBucketProperty hiveBucketProperty, List<Column> dataColumns, Map<ColumnHandle, List<NullableValue>> bindings)
+    private static Optional<Set<Integer>> getHiveBuckets(HiveBucketProperty hiveBucketProperty, List<HiveColumnHandle> dataColumns, Map<ColumnHandle, List<NullableValue>> bindings)
     {
         if (bindings.isEmpty()) {
             return Optional.empty();
@@ -258,8 +257,8 @@ public final class HiveBucketing
 
         // Verify the bucket column types are supported
         Map<String, HiveType> hiveTypes = new HashMap<>();
-        for (Column column : dataColumns) {
-            hiveTypes.put(column.getName(), column.getType());
+        for (HiveColumnHandle column : dataColumns) {
+            hiveTypes.put(column.getName(), column.getHiveType());
         }
         for (String column : bucketColumns) {
             if (!isTypeSupportedForBucketing(hiveTypes.get(column).getTypeInfo())) {
@@ -332,7 +331,7 @@ public final class HiveBucketing
         switch (type.getCategory()) {
             case PRIMITIVE:
                 PrimitiveTypeInfo typeInfo = (PrimitiveTypeInfo) type;
-                PrimitiveObjectInspector.PrimitiveCategory primitiveCategory = typeInfo.getPrimitiveCategory();
+                PrimitiveCategory primitiveCategory = typeInfo.getPrimitiveCategory();
                 switch (primitiveCategory) {
                     case BOOLEAN:
                     case BYTE:

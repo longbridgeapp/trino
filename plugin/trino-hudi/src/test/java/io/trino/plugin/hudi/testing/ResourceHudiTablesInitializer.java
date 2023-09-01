@@ -16,7 +16,7 @@ package io.trino.plugin.hudi.testing;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.log.Logger;
-import io.trino.plugin.hive.HiveStorageFormat;
+import io.trino.hdfs.HdfsEnvironment;
 import io.trino.plugin.hive.HiveType;
 import io.trino.plugin.hive.PartitionStatistics;
 import io.trino.plugin.hive.metastore.Column;
@@ -26,16 +26,12 @@ import io.trino.plugin.hive.metastore.PartitionWithStatistics;
 import io.trino.plugin.hive.metastore.PrincipalPrivileges;
 import io.trino.plugin.hive.metastore.StorageFormat;
 import io.trino.plugin.hive.metastore.Table;
-import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.testing.QueryRunner;
-import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.metastore.TableType;
-import org.apache.hudi.common.model.HoodieTableType;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Iterator;
@@ -46,13 +42,16 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import static com.google.common.io.Resources.getResource;
 import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
 import static io.trino.plugin.hive.HiveType.HIVE_DOUBLE;
 import static io.trino.plugin.hive.HiveType.HIVE_INT;
 import static io.trino.plugin.hive.HiveType.HIVE_LONG;
 import static io.trino.plugin.hive.HiveType.HIVE_STRING;
-import static org.apache.hudi.common.model.HoodieTableType.COPY_ON_WRITE;
-import static org.apache.hudi.common.model.HoodieTableType.MERGE_ON_READ;
+import static io.trino.plugin.hive.TableType.EXTERNAL_TABLE;
+import static io.trino.plugin.hive.util.HiveClassNames.HUDI_PARQUET_INPUT_FORMAT;
+import static io.trino.plugin.hive.util.HiveClassNames.MAPRED_PARQUET_OUTPUT_FORMAT_CLASS;
+import static io.trino.plugin.hive.util.HiveClassNames.PARQUET_HIVE_SERDE_CLASS;
 
 public class ResourceHudiTablesInitializer
         implements HudiTablesInitializer
@@ -63,20 +62,20 @@ public class ResourceHudiTablesInitializer
     public void initializeTables(
             QueryRunner queryRunner,
             HiveMetastore metastore,
-            CatalogSchemaName hudiCatalogSchema,
+            String schemaName,
             String dataDir,
-            Configuration conf)
+            HdfsEnvironment environment)
             throws Exception
     {
         Path basePath = Path.of(dataDir);
-        copyDir(Paths.get("src/test/resources/hudi-testing-data"), basePath);
+        copyDir(new File(getResource("hudi-testing-data").toURI()).toPath(), basePath);
         Logger.get(getClass()).info("Prepared table data in %s", basePath);
 
         for (TestingTable table : TestingTable.values()) {
             String tableName = table.getTableName();
             createTable(
                     metastore,
-                    hudiCatalogSchema,
+                    schemaName,
                     basePath.resolve(tableName),
                     tableName,
                     table.getDataColumns(),
@@ -87,19 +86,22 @@ public class ResourceHudiTablesInitializer
 
     private void createTable(
             HiveMetastore metastore,
-            CatalogSchemaName hudiCatalogSchema,
+            String schemaName,
             Path tablePath,
             String tableName,
             List<Column> dataColumns,
             List<Column> partitionColumns,
             Map<String, String> partitions)
     {
-        StorageFormat storageFormat = StorageFormat.fromHiveStorageFormat(HiveStorageFormat.PARQUET);
+        StorageFormat storageFormat = StorageFormat.create(
+                PARQUET_HIVE_SERDE_CLASS,
+                HUDI_PARQUET_INPUT_FORMAT,
+                MAPRED_PARQUET_OUTPUT_FORMAT_CLASS);
 
         Table table = Table.builder()
-                .setDatabaseName(hudiCatalogSchema.getSchemaName())
+                .setDatabaseName(schemaName)
                 .setTableName(tableName)
-                .setTableType(TableType.EXTERNAL_TABLE.name())
+                .setTableType(EXTERNAL_TABLE.name())
                 .setOwner(Optional.of("public"))
                 .setDataColumns(dataColumns)
                 .setPartitionColumns(partitionColumns)
@@ -113,7 +115,7 @@ public class ResourceHudiTablesInitializer
         List<PartitionWithStatistics> partitionsToAdd = new ArrayList<>();
         partitions.forEach((partitionName, partitionPath) -> {
             Partition partition = Partition.builder()
-                    .setDatabaseName(hudiCatalogSchema.getSchemaName())
+                    .setDatabaseName(schemaName)
                     .setTableName(tableName)
                     .setValues(extractPartitionValues(partitionName))
                     .withStorage(storageBuilder -> storageBuilder
@@ -123,7 +125,7 @@ public class ResourceHudiTablesInitializer
                     .build();
             partitionsToAdd.add(new PartitionWithStatistics(partition, partitionName, PartitionStatistics.empty()));
         });
-        metastore.addPartitions(hudiCatalogSchema.getSchemaName(), tableName, partitionsToAdd);
+        metastore.addPartitions(schemaName, tableName, partitionsToAdd);
     }
 
     private static Column column(String name, HiveType type)
@@ -152,10 +154,10 @@ public class ResourceHudiTablesInitializer
 
     public enum TestingTable
     {
-        HUDI_NON_PART_COW(COPY_ON_WRITE, nonPartitionRegularColumns()),
-        HUDI_COW_PT_TBL(COPY_ON_WRITE, multiPartitionRegularColumns(), multiPartitionColumns(), multiPartitions()),
-        STOCK_TICKS_COW(COPY_ON_WRITE, stockTicksRegularColumns(), stockTicksPartitionColumns(), stockTicksPartitions()),
-        STOCK_TICKS_MOR(MERGE_ON_READ, stockTicksRegularColumns(), stockTicksPartitionColumns(), stockTicksPartitions()),
+        HUDI_NON_PART_COW(nonPartitionRegularColumns()),
+        HUDI_COW_PT_TBL(multiPartitionRegularColumns(), multiPartitionColumns(), multiPartitions()),
+        STOCK_TICKS_COW(stockTicksRegularColumns(), stockTicksPartitionColumns(), stockTicksPartitions()),
+        STOCK_TICKS_MOR(stockTicksRegularColumns(), stockTicksPartitionColumns(), stockTicksPartitions()),
         /**/;
 
         private static final List<Column> HUDI_META_COLUMNS = ImmutableList.of(
@@ -165,36 +167,28 @@ public class ResourceHudiTablesInitializer
                 new Column("_hoodie_partition_path", HIVE_STRING, Optional.empty()),
                 new Column("_hoodie_file_name", HIVE_STRING, Optional.empty()));
 
-        private final HoodieTableType tableType;
         private final List<Column> regularColumns;
         private final List<Column> partitionColumns;
         private final Map<String, String> partitions;
 
         TestingTable(
-                HoodieTableType tableType,
                 List<Column> regularColumns,
                 List<Column> partitionColumns,
                 Map<String, String> partitions)
         {
-            this.tableType = tableType;
             this.regularColumns = regularColumns;
             this.partitionColumns = partitionColumns;
             this.partitions = partitions;
         }
 
-        TestingTable(HoodieTableType tableType, List<Column> regularColumns)
+        TestingTable(List<Column> regularColumns)
         {
-            this(tableType, regularColumns, ImmutableList.of(), ImmutableMap.of());
+            this(regularColumns, ImmutableList.of(), ImmutableMap.of());
         }
 
         public String getTableName()
         {
             return name().toLowerCase(Locale.ROOT);
-        }
-
-        public HoodieTableType getTableType()
-        {
-            return tableType;
         }
 
         public List<Column> getDataColumns()

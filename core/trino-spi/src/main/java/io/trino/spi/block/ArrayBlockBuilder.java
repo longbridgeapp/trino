@@ -14,13 +14,12 @@
 package io.trino.spi.block;
 
 import io.trino.spi.type.Type;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.function.ObjLongConsumer;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
 import static io.trino.spi.block.ArrayBlock.createArrayBlockInternal;
 import static io.trino.spi.block.BlockUtil.checkArrayRange;
@@ -32,7 +31,7 @@ public class ArrayBlockBuilder
         extends AbstractArrayBlock
         implements BlockBuilder
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(ArrayBlockBuilder.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(ArrayBlockBuilder.class);
 
     private int positionCount;
 
@@ -148,26 +147,17 @@ public class ArrayBlockBuilder
         return hasNullValue;
     }
 
-    @Override
-    public SingleArrayBlockWriter beginBlockEntry()
+    public <E extends Throwable> void buildEntry(ArrayValueBuilder<E> builder)
+            throws E
     {
         if (currentEntryOpened) {
             throw new IllegalStateException("Expected current entry to be closed but was opened");
         }
+
         currentEntryOpened = true;
-        return new SingleArrayBlockWriter(values, values.getPositionCount());
-    }
-
-    @Override
-    public BlockBuilder closeEntry()
-    {
-        if (!currentEntryOpened) {
-            throw new IllegalStateException("Expected entry to be opened but was closed");
-        }
-
+        builder.build(values);
         entryAdded(false);
         currentEntryOpened = false;
-        return this;
     }
 
     @Override

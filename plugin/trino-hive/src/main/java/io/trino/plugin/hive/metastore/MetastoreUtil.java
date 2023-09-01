@@ -42,8 +42,6 @@ import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.TinyintType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-import org.apache.hadoop.hive.common.FileUtils;
-import org.apache.hadoop.hive.metastore.ProtectMode;
 import org.joda.time.format.DateTimeFormatter;
 import org.joda.time.format.ISODateTimeFormat;
 
@@ -58,11 +56,26 @@ import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.BUCKET_COUNT;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.BUCKET_FIELD_NAME;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_INPUT_FORMAT;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.FILE_OUTPUT_FORMAT;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.META_TABLE_COLUMNS;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.META_TABLE_COLUMN_TYPES;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.META_TABLE_LOCATION;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.META_TABLE_NAME;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.META_TABLE_PARTITION_COLUMNS;
+import static io.trino.hive.thrift.metastore.hive_metastoreConstants.META_TABLE_PARTITION_COLUMN_TYPES;
+import static io.trino.plugin.hive.HiveMetadata.AVRO_SCHEMA_LITERAL_KEY;
 import static io.trino.plugin.hive.HiveMetadata.AVRO_SCHEMA_URL_KEY;
 import static io.trino.plugin.hive.HiveSplitManager.PRESTO_OFFLINE;
 import static io.trino.plugin.hive.HiveStorageFormat.AVRO;
 import static io.trino.plugin.hive.metastore.thrift.ThriftMetastoreUtil.NUM_ROWS;
+import static io.trino.plugin.hive.util.HiveClassNames.AVRO_SERDE_CLASS;
+import static io.trino.plugin.hive.util.HiveUtil.makePartName;
+import static io.trino.plugin.hive.util.SerdeConstants.SERIALIZATION_LIB;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static io.trino.spi.predicate.TupleDomain.withColumnDomains;
 import static io.trino.spi.security.PrincipalType.USER;
@@ -70,20 +83,6 @@ import static io.trino.spi.type.Chars.padSpaces;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toList;
-import static org.apache.hadoop.hive.metastore.ColumnType.typeToThriftType;
-import static org.apache.hadoop.hive.metastore.ProtectMode.getProtectModeFromString;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.BUCKET_COUNT;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.BUCKET_FIELD_NAME;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.FILE_INPUT_FORMAT;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.FILE_OUTPUT_FORMAT;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMNS;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_COLUMN_TYPES;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_LOCATION;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_NAME;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_PARTITION_COLUMNS;
-import static org.apache.hadoop.hive.metastore.api.hive_metastoreConstants.META_TABLE_PARTITION_COLUMN_TYPES;
-import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_DDL;
-import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_LIB;
 
 public final class MetastoreUtil
 {
@@ -96,7 +95,7 @@ public final class MetastoreUtil
         // Mimics function in Hive: MetaStoreUtils.getTableMetadata(Table)
         return getHiveSchema(
                 table.getStorage(),
-                table.getDataColumns(),
+                Optional.empty(),
                 table.getDataColumns(),
                 table.getParameters(),
                 table.getDatabaseName(),
@@ -109,7 +108,7 @@ public final class MetastoreUtil
         // Mimics function in Hive: MetaStoreUtils.getSchema(Partition, Table)
         return getHiveSchema(
                 partition.getStorage(),
-                partition.getColumns(),
+                Optional.of(table.getStorage()),
                 table.getDataColumns(),
                 table.getParameters(),
                 table.getDatabaseName(),
@@ -119,7 +118,7 @@ public final class MetastoreUtil
 
     private static Properties getHiveSchema(
             Storage sd,
-            List<Column> dataColumns,
+            Optional<Storage> tableSd,
             List<Column> tableDataColumns,
             Map<String, String> parameters,
             String databaseName,
@@ -148,6 +147,13 @@ public final class MetastoreUtil
         for (Map.Entry<String, String> param : sd.getSerdeParameters().entrySet()) {
             schema.setProperty(param.getKey(), (param.getValue() != null) ? param.getValue() : "");
         }
+
+        if (sd.getStorageFormat().getSerde().equals(AVRO_SERDE_CLASS) && tableSd.isPresent()) {
+            for (Map.Entry<String, String> param : tableSd.get().getSerdeParameters().entrySet()) {
+                schema.setProperty(param.getKey(), nullToEmpty(param.getValue()));
+            }
+        }
+
         schema.setProperty(SERIALIZATION_LIB, sd.getStorageFormat().getSerde());
 
         StringBuilder columnNameBuilder = new StringBuilder();
@@ -170,8 +176,6 @@ public final class MetastoreUtil
         schema.setProperty(META_TABLE_COLUMNS, columnNames);
         schema.setProperty(META_TABLE_COLUMN_TYPES, columnTypes);
         schema.setProperty("columns.comments", columnCommentBuilder.toString());
-
-        schema.setProperty(SERIALIZATION_DDL, toThriftDdl(tableName, dataColumns));
 
         StringBuilder partString = new StringBuilder();
         String partStringSep = "";
@@ -217,8 +221,10 @@ public final class MetastoreUtil
     public static boolean isAvroTableWithSchemaSet(Table table)
     {
         return AVRO.getSerde().equals(table.getStorage().getStorageFormat().getSerDeNullable()) &&
-                (table.getParameters().get(AVRO_SCHEMA_URL_KEY) != null ||
-                        (table.getStorage().getSerdeParameters().get(AVRO_SCHEMA_URL_KEY) != null));
+                ((table.getParameters().get(AVRO_SCHEMA_URL_KEY) != null ||
+                        (table.getStorage().getSerdeParameters().get(AVRO_SCHEMA_URL_KEY) != null)) ||
+                 (table.getParameters().get(AVRO_SCHEMA_LITERAL_KEY) != null ||
+                         (table.getStorage().getSerdeParameters().get(AVRO_SCHEMA_LITERAL_KEY) != null)));
     }
 
     public static String makePartitionName(Table table, Partition partition)
@@ -236,7 +242,7 @@ public final class MetastoreUtil
         checkArgument(names.size() == values.size(), "partition value count must match partition column count");
         checkArgument(values.stream().allMatch(Objects::nonNull), "partition value must not be null");
 
-        return FileUtils.makePartName(names, values);
+        return makePartName(names, values);
     }
 
     public static String getPartitionLocation(Table table, Optional<Partition> partition)
@@ -247,41 +253,14 @@ public final class MetastoreUtil
         return partition.get().getStorage().getLocation();
     }
 
-    private static String toThriftDdl(String structName, List<Column> columns)
-    {
-        // Mimics function in Hive:
-        // MetaStoreUtils.getDDLFromFieldSchema(String, List<FieldSchema>)
-        StringBuilder ddl = new StringBuilder();
-        ddl.append("struct ");
-        ddl.append(structName);
-        ddl.append(" { ");
-        boolean first = true;
-        for (Column column : columns) {
-            if (first) {
-                first = false;
-            }
-            else {
-                ddl.append(", ");
-            }
-            ddl.append(typeToThriftType(column.getType().getHiveTypeName().toString()));
-            ddl.append(' ');
-            ddl.append(column.getName());
-        }
-        ddl.append("}");
-        return ddl.toString();
-    }
-
     private static ProtectMode getProtectMode(Map<String, String> parameters)
     {
-        if (!parameters.containsKey(ProtectMode.PARAMETER_NAME)) {
-            return new ProtectMode();
-        }
-        return getProtectModeFromString(parameters.get(ProtectMode.PARAMETER_NAME));
+        return ProtectMode.valueOf(nullToEmpty(parameters.get(ProtectMode.PARAMETER_NAME)));
     }
 
     public static void verifyOnline(SchemaTableName tableName, Optional<String> partitionName, ProtectMode protectMode, Map<String, String> parameters)
     {
-        if (protectMode.offline) {
+        if (protectMode.offline()) {
             if (partitionName.isPresent()) {
                 throw new PartitionOfflineException(tableName, partitionName.get(), false, null);
             }
@@ -343,7 +322,6 @@ public final class MetastoreUtil
 
     /**
      * @param domain - domain expression for the column. null => TupleDomain.all()
-     * @param assumeCanonicalPartitionKeys
      * @param partitionWildcardString wildcard
      * @return string for scalar values
      */

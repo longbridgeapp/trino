@@ -14,9 +14,11 @@
 package io.trino.plugin.mariadb;
 
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
@@ -43,7 +45,8 @@ import io.trino.plugin.jdbc.aggregation.ImplementSum;
 import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
 import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
+import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -60,8 +63,6 @@ import io.trino.spi.type.TimeType;
 import io.trino.spi.type.TimestampType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarcharType;
-
-import javax.inject.Inject;
 
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -118,6 +119,7 @@ import static io.trino.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.getUnsupportedTypeHandling;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.SCHEMA_NOT_EMPTY;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DateType.DATE;
@@ -154,20 +156,20 @@ public class MariaDbClient
     // MariaDB Error Codes https://mariadb.com/kb/en/mariadb-error-codes/
     private static final int PARSE_ERROR = 1064;
 
-    private final AggregateFunctionRewriter<JdbcExpression, String> aggregateFunctionRewriter;
+    private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
 
     @Inject
-    public MariaDbClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, QueryBuilder queryBuilder, IdentifierMapping identifierMapping)
+    public MariaDbClient(BaseJdbcConfig config, ConnectionFactory connectionFactory, QueryBuilder queryBuilder, IdentifierMapping identifierMapping, RemoteQueryModifier queryModifier)
     {
-        super(config, "`", connectionFactory, queryBuilder, identifierMapping);
+        super("`", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, false);
 
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
-        ConnectorExpressionRewriter<String> connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
+        ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter = JdbcConnectorExpressionRewriterBuilder.newBuilder()
                 .addStandardRules(this::quoted)
                 .build();
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter<>(
                 connectorExpressionRewriter,
-                ImmutableSet.<AggregateFunctionRule<JdbcExpression, String>>builder()
+                ImmutableSet.<AggregateFunctionRule<JdbcExpression, ParameterizedExpression>>builder()
                         .add(new ImplementCountAll(bigintTypeHandle))
                         .add(new ImplementCount(bigintTypeHandle))
                         .add(new ImplementMinMax(false))
@@ -238,6 +240,21 @@ public class MariaDbClient
     }
 
     @Override
+    protected void dropSchema(ConnectorSession session, Connection connection, String remoteSchemaName, boolean cascade)
+            throws SQLException
+    {
+        // MariaDB always deletes all tables inside the database https://mariadb.com/kb/en/drop-database/
+        if (!cascade) {
+            try (ResultSet tables = getTables(connection, Optional.of(remoteSchemaName), Optional.empty())) {
+                if (tables.next()) {
+                    throw new TrinoException(SCHEMA_NOT_EMPTY, "Cannot drop non-empty schema '%s'".formatted(remoteSchemaName));
+                }
+            }
+        }
+        execute(session, connection, "DROP SCHEMA " + quoted(remoteSchemaName));
+    }
+
+    @Override
     public ResultSet getTables(Connection connection, Optional<String> schemaName, Optional<String> tableName)
             throws SQLException
     {
@@ -246,7 +263,7 @@ public class MariaDbClient
         return metadata.getTables(
                 schemaName.orElse(null),
                 null,
-                escapeNamePattern(tableName, metadata.getSearchStringEscape()).orElse(null),
+                escapeObjectNameForMetadataQuery(tableName, metadata.getSearchStringEscape()).orElse(null),
                 getTableTypes().map(types -> types.toArray(String[]::new)).orElse(null));
     }
 
@@ -443,34 +460,36 @@ public class MariaDbClient
     }
 
     @Override
-    public void renameColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    protected void renameColumn(ConnectorSession session, Connection connection, RemoteTableName remoteTableName, String remoteColumnName, String newRemoteColumnName)
+            throws SQLException
     {
-        try (Connection connection = connectionFactory.openConnection(session)) {
-            String newRemoteColumnName = getIdentifierMapping().toRemoteColumnName(connection, newColumnName);
-            RemoteTableName remoteTableName = handle.asPlainTable().getRemoteTableName();
+        try {
             // MariaDB versions earlier than 10.5.2 do not support the RENAME COLUMN syntax
             // ALTER TABLE ... CHANGE statement exists in th old versions, but it requires providing all attributes of the column
             String sql = format(
                     "ALTER TABLE %s RENAME COLUMN %s TO %s",
                     quoted(remoteTableName.getCatalogName().orElse(null), remoteTableName.getSchemaName().orElse(null), remoteTableName.getTableName()),
-                    quoted(jdbcColumn.getColumnName()),
+                    quoted(remoteColumnName),
                     quoted(newRemoteColumnName));
-            execute(connection, sql);
+            execute(session, connection, sql);
         }
-        catch (TrinoException e) {
+        catch (SQLSyntaxErrorException syntaxError) {
             // Note: SQLSyntaxErrorException can be thrown also when column name is invalid
-            if (e.getCause() instanceof SQLSyntaxErrorException syntaxError && syntaxError.getErrorCode() == PARSE_ERROR) {
-                throw new TrinoException(NOT_SUPPORTED, "Rename column not supported for the MariaDB server version", e);
+            if (syntaxError.getErrorCode() == PARSE_ERROR) {
+                throw new TrinoException(NOT_SUPPORTED, "Rename column not supported for the MariaDB server version", syntaxError);
             }
-            throw e;
-        }
-        catch (SQLException e) {
-            throw new TrinoException(JDBC_ERROR, e);
+            throw syntaxError;
         }
     }
 
     @Override
-    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
+    public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
+    }
+
+    @Override
+    protected void copyTableSchema(ConnectorSession session, Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
     {
         // Copy all columns for enforcing NOT NULL option in the temp table
         String tableCopyFormat = "CREATE TABLE %s AS SELECT * FROM %s WHERE 0 = 1";
@@ -478,7 +497,12 @@ public class MariaDbClient
                 tableCopyFormat,
                 quoted(catalogName, schemaName, newTableName),
                 quoted(catalogName, schemaName, tableName));
-        execute(connection, sql);
+        try {
+            execute(session, connection, sql);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
     }
 
     @Override

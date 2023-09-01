@@ -35,8 +35,6 @@ import static io.trino.parquet.ParquetTypeUtils.getArrayElementColumn;
 import static io.trino.parquet.ParquetTypeUtils.getMapKeyValueColumn;
 import static io.trino.parquet.ParquetTypeUtils.lookupColumnById;
 import static java.util.Objects.requireNonNull;
-import static org.apache.parquet.io.ColumnIOUtil.columnDefinitionLevel;
-import static org.apache.parquet.io.ColumnIOUtil.columnRepetitionLevel;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
 
 public final class IcebergParquetColumnIOConverter
@@ -50,11 +48,10 @@ public final class IcebergParquetColumnIOConverter
             return Optional.empty();
         }
         boolean required = columnIO.getType().getRepetition() != OPTIONAL;
-        int repetitionLevel = columnRepetitionLevel(columnIO);
-        int definitionLevel = columnDefinitionLevel(columnIO);
+        int repetitionLevel = columnIO.getRepetitionLevel();
+        int definitionLevel = columnIO.getDefinitionLevel();
         Type type = context.getType();
-        if (type instanceof RowType) {
-            RowType rowType = (RowType) type;
+        if (type instanceof RowType rowType) {
             List<ColumnIdentity> subColumns = context.getColumnIdentity().getChildren();
             GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
             ImmutableList.Builder<Optional<Field>> fieldsBuilder = ImmutableList.builder();
@@ -72,8 +69,7 @@ public final class IcebergParquetColumnIOConverter
             }
             return Optional.empty();
         }
-        if (type instanceof MapType) {
-            MapType mapType = (MapType) type;
+        if (type instanceof MapType mapType) {
             GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
             GroupColumnIO keyValueColumnIO = getMapKeyValueColumn(groupColumnIO);
             if (keyValueColumnIO.getChildrenCount() != 2) {
@@ -89,8 +85,7 @@ public final class IcebergParquetColumnIOConverter
             Optional<Field> valueField = constructField(new FieldContext(mapType.getValueType(), valueIdentity), keyValueColumnIO.getChild(1));
             return Optional.of(new GroupField(type, repetitionLevel, definitionLevel, required, ImmutableList.of(keyField, valueField)));
         }
-        if (type instanceof ArrayType) {
-            ArrayType arrayType = (ArrayType) type;
+        if (type instanceof ArrayType arrayType) {
             GroupColumnIO groupColumnIO = (GroupColumnIO) columnIO;
             if (groupColumnIO.getChildrenCount() != 1) {
                 return Optional.empty();

@@ -20,12 +20,14 @@ import io.trino.spi.PageBuilder;
 import io.trino.spi.block.Block;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongList;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static com.google.common.base.Verify.verify;
+import static com.google.common.math.DoubleMath.roundToLong;
+import static io.airlift.slice.SizeOf.instanceSize;
+import static java.math.RoundingMode.HALF_UP;
 
 /**
  * Instances of this state use a single PageBuilder for all groups.
@@ -33,7 +35,7 @@ import static com.google.common.base.Verify.verify;
 public abstract class AbstractGroupCollectionAggregationState<T>
         extends AbstractGroupedAccumulatorState
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(AbstractGroupCollectionAggregationState.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(AbstractGroupCollectionAggregationState.class);
     private static final int MAX_NUM_BLOCKS = 30000;
     private static final short NULL = -1;
 
@@ -125,7 +127,7 @@ public abstract class AbstractGroupCollectionAggregationState<T>
         int insertedPosition = currentPageBuilder.getPositionCount();
 
         if (totalPositions == capacity) {
-            capacity *= 1.5;
+            capacity = roundToLong(capacity * 1.5, HALF_UP);
             nextBlockIndex.ensureCapacity(capacity);
             nextPosition.ensureCapacity(capacity);
         }

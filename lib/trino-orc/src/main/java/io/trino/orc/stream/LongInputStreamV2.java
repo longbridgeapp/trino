@@ -21,9 +21,10 @@ import java.io.IOException;
 import java.io.InputStream;
 
 import static java.lang.Math.min;
+import static java.lang.Math.toIntExact;
 
 /**
- * @see {@link org.apache.orc.impl.RunLengthIntegerWriterV2} for description of various lightweight compression techniques.
+ * See {@link org.apache.orc.impl.RunLengthIntegerWriterV2} for description of various lightweight compression techniques.
  */
 // This comes from the Apache Hive ORC code
 public class LongInputStreamV2
@@ -437,7 +438,7 @@ public class LongInputStreamV2
                 used = 0;
                 readValues();
             }
-            long consume = min(items, numLiterals - used);
+            int consume = toIntExact(min(items, numLiterals - used));
             used += consume;
             items -= consume;
         }

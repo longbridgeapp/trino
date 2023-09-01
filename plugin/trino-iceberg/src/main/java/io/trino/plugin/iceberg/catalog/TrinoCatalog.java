@@ -16,19 +16,28 @@ package io.trino.plugin.iceberg.catalog;
 import io.trino.plugin.iceberg.ColumnIdentity;
 import io.trino.plugin.iceberg.UnknownTableTypeException;
 import io.trino.spi.connector.CatalogSchemaTableName;
+import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorMaterializedViewDefinition;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorViewDefinition;
+import io.trino.spi.connector.RelationColumnsMetadata;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.security.TrinoPrincipal;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.SortOrder;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.TableMetadata;
 import org.apache.iceberg.Transaction;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.function.UnaryOperator;
 
 /**
  * An interface to allow different Iceberg catalog implementations in IcebergMetadata.
@@ -47,6 +56,8 @@ import java.util.Optional;
  */
 public interface TrinoCatalog
 {
+    boolean namespaceExists(ConnectorSession session, String namespace);
+
     List<String> listNamespaces(ConnectorSession session);
 
     void dropNamespace(ConnectorSession session, String namespace);
@@ -63,20 +74,40 @@ public interface TrinoCatalog
 
     List<SchemaTableName> listTables(ConnectorSession session, Optional<String> namespace);
 
+    Optional<Iterator<RelationColumnsMetadata>> streamRelationColumns(
+            ConnectorSession session,
+            Optional<String> namespace,
+            UnaryOperator<Set<SchemaTableName>> relationFilter,
+            Predicate<SchemaTableName> isRedirected);
+
+    Optional<Iterator<RelationCommentMetadata>> streamRelationComments(
+            ConnectorSession session,
+            Optional<String> namespace,
+            UnaryOperator<Set<SchemaTableName>> relationFilter,
+            Predicate<SchemaTableName> isRedirected);
+
     Transaction newCreateTableTransaction(
             ConnectorSession session,
             SchemaTableName schemaTableName,
             Schema schema,
             PartitionSpec partitionSpec,
+            SortOrder sortOrder,
             String location,
             Map<String, String> properties);
 
+    void registerTable(ConnectorSession session, SchemaTableName tableName, TableMetadata tableMetadata);
+
+    void unregisterTable(ConnectorSession session, SchemaTableName tableName);
+
     void dropTable(ConnectorSession session, SchemaTableName schemaTableName);
+
+    void dropCorruptedTable(ConnectorSession session, SchemaTableName schemaTableName);
 
     void renameTable(ConnectorSession session, SchemaTableName from, SchemaTableName to);
 
     /**
      * load an Iceberg table
+     *
      * @param session Trino session
      * @param schemaTableName Trino schema and table name
      * @return Iceberg table loaded
@@ -84,9 +115,16 @@ public interface TrinoCatalog
      */
     Table loadTable(ConnectorSession session, SchemaTableName schemaTableName);
 
+    /**
+     * Bulk load column metadata. The returned map may contain fewer entries then asked for.
+     */
+    Map<SchemaTableName, List<ColumnMetadata>> tryGetColumnMetadata(ConnectorSession session, List<SchemaTableName> tables);
+
     void updateTableComment(ConnectorSession session, SchemaTableName schemaTableName, Optional<String> comment);
 
     void updateViewComment(ConnectorSession session, SchemaTableName schemaViewName, Optional<String> comment);
+
+    void updateViewColumnComment(ConnectorSession session, SchemaTableName schemaViewName, String columnName, Optional<String> comment);
 
     String defaultTableLocation(ConnectorSession session, SchemaTableName schemaTableName);
 
@@ -115,6 +153,8 @@ public interface TrinoCatalog
             boolean replace,
             boolean ignoreExisting);
 
+    void updateMaterializedViewColumnComment(ConnectorSession session, SchemaTableName schemaViewName, String columnName, Optional<String> comment);
+
     void dropMaterializedView(ConnectorSession session, SchemaTableName viewName);
 
     Optional<ConnectorMaterializedViewDefinition> getMaterializedView(ConnectorSession session, SchemaTableName viewName);
@@ -123,5 +163,5 @@ public interface TrinoCatalog
 
     void updateColumnComment(ConnectorSession session, SchemaTableName schemaTableName, ColumnIdentity columnIdentity, Optional<String> comment);
 
-    Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName);
+    Optional<CatalogSchemaTableName> redirectTable(ConnectorSession session, SchemaTableName tableName, String hiveCatalogName);
 }

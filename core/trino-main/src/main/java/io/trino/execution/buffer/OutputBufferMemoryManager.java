@@ -18,12 +18,11 @@ import com.google.common.base.Suppliers;
 import com.google.common.base.Ticker;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.stats.TDigest;
 import io.trino.memory.context.LocalMemoryContext;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
+import jakarta.annotation.Nullable;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -66,7 +65,7 @@ class OutputBufferMemoryManager
     @GuardedBy("this")
     private final TDigest bufferUtilization = new TDigest();
     @GuardedBy("this")
-    private long lastBufferUtilizationRecordTime;
+    private long lastBufferUtilizationRecordTime = -1;
     @GuardedBy("this")
     private double lastBufferUtilization;
 
@@ -77,7 +76,6 @@ class OutputBufferMemoryManager
         this.maxBufferedBytes = maxBufferedBytes;
         this.memoryContextSupplier = Suppliers.memoize(memoryContextSupplier::get);
         this.notificationExecutor = requireNonNull(notificationExecutor, "notificationExecutor is null");
-        this.lastBufferUtilizationRecordTime = ticker.read();
         this.lastBufferUtilization = 0;
     }
 
@@ -136,9 +134,15 @@ class OutputBufferMemoryManager
     private synchronized void recordBufferUtilization()
     {
         long recordTime = ticker.read();
-        bufferUtilization.add(lastBufferUtilization, (double) recordTime - this.lastBufferUtilizationRecordTime);
-        lastBufferUtilizationRecordTime = recordTime;
-        lastBufferUtilization = getUtilization();
+        if (lastBufferUtilizationRecordTime != -1) {
+            bufferUtilization.add(lastBufferUtilization, (double) recordTime - this.lastBufferUtilizationRecordTime);
+        }
+        double utilization = getUtilization();
+        // skip recording of buffer utilization until data is put into buffer
+        if (lastBufferUtilizationRecordTime != -1 || utilization != 0.0) {
+            lastBufferUtilizationRecordTime = recordTime;
+            lastBufferUtilization = utilization;
+        }
     }
 
     public synchronized ListenableFuture<Void> getBufferBlockedFuture()

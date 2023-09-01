@@ -13,9 +13,9 @@
  */
 package io.trino.plugin.clickhouse;
 
-import com.clickhouse.client.ClickHouseColumn;
-import com.clickhouse.client.ClickHouseDataType;
-import com.clickhouse.client.ClickHouseVersion;
+import com.clickhouse.data.ClickHouseColumn;
+import com.clickhouse.data.ClickHouseDataType;
+import com.clickhouse.data.ClickHouseVersion;
 import com.google.common.base.Enums;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
@@ -23,10 +23,12 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.net.InetAddresses;
 import com.google.common.primitives.Shorts;
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ColumnMapping;
@@ -35,6 +37,7 @@ import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcTableHandle;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.LongReadFunction;
 import io.trino.plugin.jdbc.LongWriteFunction;
 import io.trino.plugin.jdbc.ObjectWriteFunction;
 import io.trino.plugin.jdbc.QueryBuilder;
@@ -47,7 +50,8 @@ import io.trino.plugin.jdbc.aggregation.ImplementCountAll;
 import io.trino.plugin.jdbc.aggregation.ImplementMinMax;
 import io.trino.plugin.jdbc.aggregation.ImplementSum;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
+import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.ColumnHandle;
@@ -59,14 +63,13 @@ import io.trino.spi.type.DecimalType;
 import io.trino.spi.type.Decimals;
 import io.trino.spi.type.Int128;
 import io.trino.spi.type.StandardTypes;
+import io.trino.spi.type.TimeZoneKey;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.VarbinaryType;
 import io.trino.spi.type.VarcharType;
-
-import javax.annotation.Nullable;
-import javax.inject.Inject;
+import jakarta.annotation.Nullable;
 
 import java.io.UncheckedIOException;
 import java.math.BigDecimal;
@@ -79,8 +82,10 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -89,7 +94,9 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
+import java.util.stream.Collectors;
 
+import static com.clickhouse.data.ClickHouseValues.convertToQuotedString;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.base.Strings.isNullOrEmpty;
@@ -141,8 +148,13 @@ import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
+import static io.trino.spi.StandardErrorCode.SCHEMA_NOT_EMPTY;
+import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
+import static io.trino.spi.type.DateTimeEncoding.packDateTimeWithZone;
+import static io.trino.spi.type.DateTimeEncoding.unpackMillisUtc;
+import static io.trino.spi.type.DateTimeEncoding.unpackZoneKey;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.DoubleType.DOUBLE;
@@ -151,6 +163,7 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_SECONDS;
+import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_SECONDS;
 import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_SECOND;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
 import static io.trino.spi.type.TinyintType.TINYINT;
@@ -169,7 +182,6 @@ import static java.math.RoundingMode.UNNECESSARY;
 import static java.time.ZoneOffset.UTC;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
-import static ru.yandex.clickhouse.ClickHouseUtil.escape;
 
 public class ClickHouseClient
         extends BaseJdbcClient
@@ -181,10 +193,10 @@ public class ClickHouseClient
     // An empty character means that the table doesn't have a comment in ClickHouse
     private static final String NO_COMMENT = "";
 
-    public static final int CLICK_HOUSE_MAX_LIST_EXPRESSIONS = 1_000;
+    public static final int DEFAULT_DOMAIN_COMPACTION_THRESHOLD = 1_000;
 
-    private final ConnectorExpressionRewriter<String> connectorExpressionRewriter;
-    private final AggregateFunctionRewriter<JdbcExpression, String> aggregateFunctionRewriter;
+    private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
+    private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
     private final Type uuidType;
     private final Type ipAddressType;
     private final AtomicReference<ClickHouseVersion> clickHouseVersion = new AtomicReference<>();
@@ -195,9 +207,10 @@ public class ClickHouseClient
             ConnectionFactory connectionFactory,
             QueryBuilder queryBuilder,
             TypeManager typeManager,
-            IdentifierMapping identifierMapping)
+            IdentifierMapping identifierMapping,
+            RemoteQueryModifier queryModifier)
     {
-        super(config, "\"", connectionFactory, queryBuilder, identifierMapping);
+        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, false);
         this.uuidType = typeManager.getType(new TypeSignature(StandardTypes.UUID));
         this.ipAddressType = typeManager.getType(new TypeSignature(StandardTypes.IPADDRESS));
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
@@ -206,7 +219,7 @@ public class ClickHouseClient
                 .build();
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter<>(
                 this.connectorExpressionRewriter,
-                ImmutableSet.<AggregateFunctionRule<JdbcExpression, String>>builder()
+                ImmutableSet.<AggregateFunctionRule<JdbcExpression, ParameterizedExpression>>builder()
                         .add(new ImplementCountAll(bigintTypeHandle))
                         .add(new ImplementCount(bigintTypeHandle))
                         .add(new ImplementMinMax(false)) // TODO: Revisit once https://github.com/trinodb/trino/issues/7100 is resolved
@@ -247,7 +260,7 @@ public class ClickHouseClient
     }
 
     @Override
-    protected void copyTableSchema(Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
+    protected void copyTableSchema(ConnectorSession session, Connection connection, String catalogName, String schemaName, String tableName, String newTableName, List<String> columnNames)
     {
         // ClickHouse does not support `create table tbl as select * from tbl2 where 0=1`
         // ClickHouse supports the following two methods to copy schema
@@ -257,7 +270,12 @@ public class ClickHouseClient
                 "CREATE TABLE %s AS %s ",
                 quoted(null, schemaName, newTableName),
                 quoted(null, schemaName, tableName));
-        execute(connection, sql);
+        try {
+            execute(session, connection, sql);
+        }
+        catch (SQLException e) {
+            throw new TrinoException(JDBC_ERROR, e);
+        }
     }
 
     @Override
@@ -283,7 +301,7 @@ public class ClickHouseClient
         formatProperty(ClickHouseTableProperties.getOrderBy(tableProperties)).ifPresent(value -> tableOptions.add("ORDER BY " + value));
         formatProperty(ClickHouseTableProperties.getPrimaryKey(tableProperties)).ifPresent(value -> tableOptions.add("PRIMARY KEY " + value));
         formatProperty(ClickHouseTableProperties.getPartitionBy(tableProperties)).ifPresent(value -> tableOptions.add("PARTITION BY " + value));
-        ClickHouseTableProperties.getSampleBy(tableProperties).ifPresent(value -> tableOptions.add("SAMPLE BY " + value));
+        ClickHouseTableProperties.getSampleBy(tableProperties).ifPresent(value -> tableOptions.add("SAMPLE BY " + quoted(value)));
         tableMetadata.getComment().ifPresent(comment -> tableOptions.add(format("COMMENT %s", clickhouseVarcharLiteral(comment))));
 
         return format("CREATE TABLE %s (%s) %s", quoted(remoteTableName), join(", ", columns), join(" ", tableOptions.build()));
@@ -347,14 +365,14 @@ public class ClickHouseClient
                 .collect(toImmutableMap(Entry::getKey, entry -> entry.getValue().orElseThrow()));
 
         ImmutableList.Builder<String> tableOptions = ImmutableList.builder();
-        ClickHouseTableProperties.getSampleBy(properties).ifPresent(value -> tableOptions.add("SAMPLE BY " + value));
+        ClickHouseTableProperties.getSampleBy(properties).ifPresent(value -> tableOptions.add("SAMPLE BY " + quoted(value)));
 
         try (Connection connection = connectionFactory.openConnection(session)) {
             String sql = format(
                     "ALTER TABLE %s MODIFY %s",
                     quoted(handle.asPlainTable().getRemoteTableName()),
                     join(" ", tableOptions.build()));
-            execute(connection, sql);
+            execute(session, connection, sql);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
@@ -382,46 +400,48 @@ public class ClickHouseClient
     }
 
     @Override
-    public void createSchema(ConnectorSession session, String schemaName)
+    protected void createSchema(ConnectorSession session, Connection connection, String remoteSchemaName)
+            throws SQLException
     {
-        execute(session, "CREATE DATABASE " + quoted(schemaName));
+        execute(session, connection, "CREATE DATABASE " + quoted(remoteSchemaName));
     }
 
     @Override
-    public void dropSchema(ConnectorSession session, String schemaName)
+    protected void dropSchema(ConnectorSession session, Connection connection, String remoteSchemaName, boolean cascade)
+            throws SQLException
     {
-        execute(session, "DROP DATABASE " + quoted(schemaName));
+        // ClickHouse always deletes all tables inside the database https://clickhouse.com/docs/en/sql-reference/statements/drop
+        if (!cascade) {
+            try (ResultSet tables = getTables(connection, Optional.of(remoteSchemaName), Optional.empty())) {
+                if (tables.next()) {
+                    throw new TrinoException(SCHEMA_NOT_EMPTY, "Cannot drop non-empty schema '%s'".formatted(remoteSchemaName));
+                }
+            }
+        }
+        execute(session, connection, "DROP DATABASE " + quoted(remoteSchemaName));
     }
 
     @Override
-    protected String renameSchemaSql(String remoteSchemaName, String newRemoteSchemaName)
+    protected void renameSchema(ConnectorSession session, Connection connection, String remoteSchemaName, String newRemoteSchemaName)
+            throws SQLException
     {
-        return "RENAME DATABASE " + quoted(remoteSchemaName) + " TO " + quoted(newRemoteSchemaName);
+        execute(session, connection, "RENAME DATABASE " + quoted(remoteSchemaName) + " TO " + quoted(newRemoteSchemaName));
     }
 
     @Override
     public void addColumn(ConnectorSession session, JdbcTableHandle handle, ColumnMetadata column)
     {
         try (Connection connection = connectionFactory.openConnection(session)) {
-            String remoteColumnName = getIdentifierMapping().toRemoteColumnName(connection, column.getName());
+            String remoteColumnName = getIdentifierMapping().toRemoteColumnName(getRemoteIdentifiers(connection), column.getName());
             String sql = format(
                     "ALTER TABLE %s ADD COLUMN %s",
                     quoted(handle.asPlainTable().getRemoteTableName()),
                     getColumnDefinitionSql(session, column, remoteColumnName));
-            execute(connection, sql);
+            execute(session, connection, sql);
         }
         catch (SQLException e) {
             throw new TrinoException(JDBC_ERROR, e);
         }
-    }
-
-    @Override
-    protected String renameColumnSql(JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newRemoteColumnName)
-    {
-        return format("ALTER TABLE %s RENAME COLUMN %s TO %s ",
-                quoted(handle.asPlainTable().getRemoteTableName()),
-                quoted(jdbcColumn.getColumnName()),
-                quoted(newRemoteColumnName));
     }
 
     @Override
@@ -445,10 +465,16 @@ public class ClickHouseClient
         execute(session, sql);
     }
 
+    @Override
+    public void setColumnType(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Type type)
+    {
+        throw new TrinoException(NOT_SUPPORTED, "This connector does not support setting column types");
+    }
+
     private static String clickhouseVarcharLiteral(String value)
     {
         requireNonNull(value, "value is null");
-        return "'" + escape(value) + "'";
+        return convertToQuotedString(value);
     }
 
     @Override
@@ -458,20 +484,14 @@ public class ClickHouseClient
     }
 
     @Override
-    public void dropTable(ConnectorSession session, JdbcTableHandle handle)
+    protected void renameTable(ConnectorSession session, Connection connection, String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
+            throws SQLException
     {
-        String sql = "DROP TABLE " + quoted(handle.asPlainTable().getRemoteTableName());
-        execute(session, sql);
-    }
-
-    @Override
-    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
-    {
-        return format("RENAME TABLE %s.%s TO %s.%s",
+        execute(session, connection, format("RENAME TABLE %s.%s TO %s.%s",
                 quoted(remoteSchemaName),
                 quoted(remoteTableName),
                 quoted(newRemoteSchemaName),
-                quoted(newRemoteTableName));
+                quoted(newRemoteTableName)));
     }
 
     @Override
@@ -490,7 +510,7 @@ public class ClickHouseClient
     public OptionalLong delete(ConnectorSession session, JdbcTableHandle handle)
     {
         // ClickHouse does not support DELETE syntax, but is using custom: ALTER TABLE [db.]table [ON CLUSTER cluster] DELETE WHERE filter_expr
-        throw new TrinoException(NOT_SUPPORTED, "This connector does not support deletes");
+        throw new TrinoException(NOT_SUPPORTED, MODIFYING_ROWS_MESSAGE);
     }
 
     @Override
@@ -596,6 +616,7 @@ public class ClickHouseClient
 
             case Types.TIMESTAMP:
                 if (columnDataType == ClickHouseDataType.DateTime) {
+                    // ClickHouse DateTime does not have sub-second precision
                     verify(typeHandle.getRequiredDecimalDigits() == 0, "Expected 0 as timestamp precision, but got %s", typeHandle.getRequiredDecimalDigits());
                     return Optional.of(ColumnMapping.longMapping(
                             TIMESTAMP_SECONDS,
@@ -604,6 +625,16 @@ public class ClickHouseClient
                 }
                 // TODO (https://github.com/trinodb/trino/issues/10537) Add support for Datetime64 type
                 return Optional.of(timestampColumnMappingUsingSqlTimestampWithRounding(TIMESTAMP_MILLIS));
+
+            case Types.TIMESTAMP_WITH_TIMEZONE:
+                if (columnDataType == ClickHouseDataType.DateTime) {
+                    // ClickHouse DateTime does not have sub-second precision
+                    verify(typeHandle.getRequiredDecimalDigits() == 0, "Expected 0 as timestamp with time zone precision, but got %s", typeHandle.getRequiredDecimalDigits());
+                    return Optional.of(ColumnMapping.longMapping(
+                            TIMESTAMP_TZ_SECONDS,
+                            shortTimestampWithTimeZoneReadFunction(),
+                            shortTimestampWithTimeZoneWriteFunction()));
+                }
         }
 
         if (getUnsupportedTypeHandling(session) == CONVERT_TO_VARCHAR) {
@@ -699,10 +730,10 @@ public class ClickHouseClient
         }
         if (prop.size() == 1) {
             // only one column
-            return Optional.of(prop.get(0));
+            return Optional.of(quoted(prop.get(0)));
         }
         // include more than one column
-        return Optional.of("(" + String.join(",", prop) + ")");
+        return Optional.of(prop.stream().map(this::quoted).collect(Collectors.joining(",", "(", ")")));
     }
 
     private static LongWriteFunction uInt8WriteFunction(ClickHouseVersion version)
@@ -773,6 +804,23 @@ public class ClickHouseClient
             // ClickHouse stores incorrect results when the values are out of supported range.
             DATETIME.validate(version, timestamp);
             statement.setObject(index, timestamp);
+        };
+    }
+
+    private static LongReadFunction shortTimestampWithTimeZoneReadFunction()
+    {
+        return (resultSet, columnIndex) -> {
+            ZonedDateTime zonedDateTime = resultSet.getObject(columnIndex, ZonedDateTime.class);
+            return packDateTimeWithZone(zonedDateTime.toInstant().toEpochMilli(), zonedDateTime.getZone().getId());
+        };
+    }
+
+    private static LongWriteFunction shortTimestampWithTimeZoneWriteFunction()
+    {
+        return (statement, index, value) -> {
+            long millisUtc = unpackMillisUtc(value);
+            TimeZoneKey timeZoneKey = unpackZoneKey(value);
+            statement.setObject(index, Instant.ofEpochMilli(millisUtc).atZone(timeZoneKey.getZoneId()));
         };
     }
 

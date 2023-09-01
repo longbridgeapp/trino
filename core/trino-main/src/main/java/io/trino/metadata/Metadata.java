@@ -16,11 +16,11 @@ package io.trino.metadata;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
-import io.trino.connector.CatalogHandle;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.BeginTableExecuteResult;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
@@ -36,15 +36,18 @@ import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.MaterializedViewFreshness;
 import io.trino.spi.connector.ProjectionApplicationResult;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SampleApplicationResult;
 import io.trino.spi.connector.SampleType;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SortItem;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableColumnsMetadata;
 import io.trino.spi.connector.TableFunctionApplicationResult;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.connector.TopNApplicationResult;
+import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.function.AggregationFunctionMetadata;
 import io.trino.spi.function.FunctionMetadata;
@@ -67,8 +70,10 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 import static io.trino.spi.function.OperatorType.CAST;
 
@@ -121,13 +126,15 @@ public interface Metadata
 
     Optional<Object> getInfo(Session session, TableHandle handle);
 
+    CatalogSchemaTableName getTableName(Session session, TableHandle tableHandle);
+
     /**
      * Return table schema definition for the specified table handle.
      * Table schema definition is a set of information
      * required by semantic analyzer to analyze the query.
      *
      * @throws RuntimeException if table handle is no longer valid
-     * @see {@link #getTableMetadata(Session, TableHandle)}
+     * @see #getTableMetadata(Session, TableHandle)
      */
     TableSchema getTableSchema(Session session, TableHandle tableHandle);
 
@@ -135,7 +142,7 @@ public interface Metadata
      * Return the metadata for the specified table handle.
      *
      * @throws RuntimeException if table handle is no longer valid
-     * @see {@link #getTableSchema(Session, TableHandle)} which is less expensive.
+     * @see #getTableSchema(Session, TableHandle) a different method which is less expensive.
      */
     TableMetadata getTableMetadata(Session session, TableHandle tableHandle);
 
@@ -168,7 +175,13 @@ public interface Metadata
      * Gets the columns metadata for all tables that match the specified prefix.
      * TODO: consider returning a stream for more efficient processing
      */
-    List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix);
+    List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix, UnaryOperator<Set<SchemaTableName>> relationFilter);
+
+    /**
+     * Gets the comments metadata for all relations (tables, views, materialized views) that match the specified prefix.
+     * TODO: consider returning a stream for more efficient processing
+     */
+    List<RelationCommentMetadata> listRelationComments(Session session, String catalogName, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter);
 
     /**
      * Creates a schema.
@@ -180,7 +193,7 @@ public interface Metadata
     /**
      * Drops the specified schema.
      */
-    void dropSchema(Session session, CatalogSchemaName schema);
+    void dropSchema(Session session, CatalogSchemaName schema, boolean cascade);
 
     /**
      * Renames the specified schema.
@@ -202,7 +215,7 @@ public interface Metadata
     /**
      * Rename the specified table.
      */
-    void renameTable(Session session, TableHandle tableHandle, QualifiedObjectName newTableName);
+    void renameTable(Session session, TableHandle tableHandle, CatalogSchemaTableName currentTableName, QualifiedObjectName newTableName);
 
     /**
      * Set properties to the specified table.
@@ -220,6 +233,11 @@ public interface Metadata
     void setViewComment(Session session, QualifiedObjectName viewName, Optional<String> comment);
 
     /**
+     * Comments to the specified view column.
+     */
+    void setViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment);
+
+    /**
      * Comments to the specified column.
      */
     void setColumnComment(Session session, TableHandle tableHandle, ColumnHandle column, Optional<String> comment);
@@ -227,12 +245,32 @@ public interface Metadata
     /**
      * Rename the specified column.
      */
-    void renameColumn(Session session, TableHandle tableHandle, ColumnHandle source, String target);
+    void renameColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle source, String target);
+
+    /**
+     * Rename the specified field.
+     */
+    void renameField(Session session, TableHandle tableHandle, List<String> fieldPath, String target);
 
     /**
      * Add the specified column to the table.
      */
-    void addColumn(Session session, TableHandle tableHandle, ColumnMetadata column);
+    void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column);
+
+    /**
+     * Add the specified field to the column.
+     */
+    void addField(Session session, TableHandle tableHandle, List<String> parentPath, String fieldName, Type type, boolean ignoreExisting);
+
+    /**
+     * Set the specified type to the column.
+     */
+    void setColumnType(Session session, TableHandle tableHandle, ColumnHandle column, Type type);
+
+    /**
+     * Set the specified type to the field.
+     */
+    void setFieldType(Session session, TableHandle tableHandle, List<String> fieldPath, Type type);
 
     /**
      * Set the authorization (owner) of specified table's user/role
@@ -242,14 +280,19 @@ public interface Metadata
     /**
      * Drop the specified column.
      */
-    void dropColumn(Session session, TableHandle tableHandle, ColumnHandle column);
+    void dropColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle column);
+
+    /**
+     * Drop the specified field from the column.
+     */
+    void dropField(Session session, TableHandle tableHandle, ColumnHandle column, List<String> fieldPath);
 
     /**
      * Drops the specified table
      *
      * @throws RuntimeException if the table cannot be dropped or table handle is no longer valid
      */
-    void dropTable(Session session, TableHandle tableHandle);
+    void dropTable(Session session, TableHandle tableHandle, CatalogSchemaTableName tableName);
 
     /**
      * Truncates the specified table
@@ -338,16 +381,6 @@ public interface Metadata
             List<TableHandle> sourceTableHandles);
 
     /**
-     * Get the row ID column handle used with UpdatablePageSource#deleteRows.
-     */
-    ColumnHandle getDeleteRowIdColumnHandle(Session session, TableHandle tableHandle);
-
-    /**
-     * Get the row ID column handle used with UpdatablePageSource#updateRows.
-     */
-    ColumnHandle getUpdateRowIdColumnHandle(Session session, TableHandle tableHandle, List<ColumnHandle> updatedColumns);
-
-    /**
      * Push delete into connector
      */
     Optional<TableHandle> applyDelete(Session session, TableHandle tableHandle);
@@ -356,26 +389,6 @@ public interface Metadata
      * Execute delete in connector
      */
     OptionalLong executeDelete(Session session, TableHandle tableHandle);
-
-    /**
-     * Begin delete query
-     */
-    TableHandle beginDelete(Session session, TableHandle tableHandle);
-
-    /**
-     * Finish delete query
-     */
-    void finishDelete(Session session, TableHandle tableHandle, Collection<Slice> fragments);
-
-    /**
-     * Begin update query
-     */
-    TableHandle beginUpdate(Session session, TableHandle tableHandle, List<ColumnHandle> updatedColumns);
-
-    /**
-     * Finish update query
-     */
-    void finishUpdate(Session session, TableHandle tableHandle, Collection<Slice> fragments);
 
     /**
      * Return the row update paradigm supported by the connector on the table or throw
@@ -652,6 +665,8 @@ public interface Metadata
      */
     boolean isAggregationFunction(Session session, QualifiedName name);
 
+    boolean isWindowFunction(Session session, QualifiedName name);
+
     FunctionMetadata getFunctionMetadata(Session session, ResolvedFunction resolvedFunction);
 
     AggregationFunctionMetadata getAggregationFunctionMetadata(Session session, ResolvedFunction resolvedFunction);
@@ -706,6 +721,11 @@ public interface Metadata
     void setMaterializedViewProperties(Session session, QualifiedObjectName viewName, Map<String, Optional<Object>> properties);
 
     /**
+     * Comments to the specified materialized view column.
+     */
+    void setMaterializedViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment);
+
+    /**
      * Returns the result of redirecting the table scan on a given table to a different table.
      * This method is used by the engine during the plan optimization phase to allow a connector to offload table scans to any other connector.
      * This method is called after security checks against the original table.
@@ -723,17 +743,23 @@ public interface Metadata
     RedirectionAwareTableHandle getRedirectionAwareTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion);
 
     /**
-     * Returns true if the connector reports number of written bytes for an existing table. Otherwise, it returns false.
-     */
-    boolean supportsReportingWrittenBytes(Session session, TableHandle tableHandle);
-
-    /**
-     * Returns true if the connector reports number of written bytes for a new table. Otherwise, it returns false.
-     */
-    boolean supportsReportingWrittenBytes(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties);
-
-    /**
      * Returns a table handle for the specified table name with a specified version
      */
     Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName tableName, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion);
+
+    /**
+     * Returns maximum number of tasks that can be created while writing data to specific connector.
+     * Note: It is ignored when retry policy is set to TASK
+     */
+    OptionalInt getMaxWriterTasks(Session session, String catalogName);
+
+    /**
+     * Returns writer scaling options for the specified table. This method is called when table handle is not available during CTAS.
+     */
+    WriterScalingOptions getNewTableWriterScalingOptions(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties);
+
+    /**
+     * Returns writer scaling options for the specified table.
+     */
+    WriterScalingOptions getInsertWriterScalingOptions(Session session, TableHandle tableHandle);
 }

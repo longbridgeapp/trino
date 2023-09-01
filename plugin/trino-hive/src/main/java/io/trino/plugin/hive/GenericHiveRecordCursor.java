@@ -63,8 +63,8 @@ import static io.trino.plugin.base.util.Closables.closeAllSuppress;
 import static io.trino.plugin.hive.HiveColumnHandle.ColumnType.REGULAR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_CURSOR_ERROR;
-import static io.trino.plugin.hive.util.HiveUtil.getDeserializer;
-import static io.trino.plugin.hive.util.HiveUtil.getTableObjectInspector;
+import static io.trino.plugin.hive.util.HiveReaderUtil.getDeserializer;
+import static io.trino.plugin.hive.util.HiveReaderUtil.getTableObjectInspector;
 import static io.trino.plugin.hive.util.HiveUtil.isStructuralType;
 import static io.trino.plugin.hive.util.SerDeUtils.getBlockObject;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -217,11 +217,14 @@ public class GenericHiveRecordCursor<K, V extends Writable>
                 return false;
             }
 
-            // reset loaded flags
-            Arrays.fill(loaded, false);
+            // Only deserialize the value if atleast one column is required
+            if (types.length > 0) {
+                // reset loaded flags
+                Arrays.fill(loaded, false);
 
-            // decode value
-            rowData = deserializer.deserialize(value);
+                // decode value
+                rowData = deserializer.deserialize(value);
+            }
 
             return true;
         }
@@ -403,7 +406,7 @@ public class GenericHiveRecordCursor<K, V extends Writable>
         // create a slice view over the hive value and trim to character limits
         Slice value = trimStringToCharacterLimits(type, Slices.wrappedBuffer(hiveValue.getBytes(), 0, hiveValue.getLength()));
         // store a copy of the bytes, since the hive reader can reuse the underlying buffer
-        return Slices.copyOf(value);
+        return value.copy();
     }
 
     private static Slice parseStringFromPrimitiveJavaObjectValue(Type type, Object fieldValue)
@@ -428,7 +431,7 @@ public class GenericHiveRecordCursor<K, V extends Writable>
         value = trimStringToCharacterLimits(type, value);
         // Copy the slice if the value was trimmed and is now smaller than the backing buffer
         if (!value.isCompact()) {
-            return Slices.copyOf(value);
+            return value.copy();
         }
         return value;
     }
@@ -537,7 +540,7 @@ public class GenericHiveRecordCursor<K, V extends Writable>
         else if (type instanceof CharType) {
             parseStringColumn(column);
         }
-        else if (isStructuralType(hiveTypes[column])) {
+        else if (isStructuralType(type)) {
             parseObjectColumn(column);
         }
         else if (DATE.equals(type)) {

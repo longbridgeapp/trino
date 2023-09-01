@@ -28,12 +28,12 @@ import io.trino.spi.predicate.Range;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import org.apache.http.NameValuePair;
+import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.math.BigDecimal;
 import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -76,6 +76,13 @@ public class TestPrometheusSplit
         prometheusHttpServer = new PrometheusHttpServer();
     }
 
+    @AfterClass(alwaysRun = true)
+    public void tearDown()
+    {
+        prometheusHttpServer.stop();
+        prometheusHttpServer = null;
+    }
+
     @Test
     public void testAddresses()
     {
@@ -114,7 +121,6 @@ public class TestPrometheusSplit
 
     @Test
     public void testQueryWithTableNameNeedingURLEncodeInSplits()
-            throws URISyntaxException
     {
         Instant now = LocalDateTime.of(2019, 10, 2, 7, 26, 56, 0).toInstant(UTC);
         PrometheusConnectorConfig config = getCommonConfig(prometheusHttpServer.resolve("/prometheus-data/prom-metrics-non-standard-name.json"));
@@ -134,13 +140,12 @@ public class TestPrometheusSplit
                 config.getQueryChunkSizeDuration().toMillis() -
                 OFFSET_MILLIS * 20);
         assertEquals(queryInSplit,
-                new URI("http://doesnotmatter:9090/api/v1/query?query=up%20now[" + getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" + "&time=" +
+                URI.create("http://doesnotmatter:9090/api/v1/query?query=up%20now[" + getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" + "&time=" +
                         timeShouldBe).getQuery());
     }
 
     @Test
     public void testQueryDividedIntoSplitsFirstSplitHasRightTime()
-            throws URISyntaxException
     {
         Instant now = LocalDateTime.of(2019, 10, 2, 7, 26, 56, 0).toInstant(UTC);
         PrometheusConnectorConfig config = getCommonConfig(prometheusHttpServer.resolve("/prometheus-data/prometheus-metrics.json"));
@@ -160,13 +165,12 @@ public class TestPrometheusSplit
                 config.getQueryChunkSizeDuration().toMillis() -
                 OFFSET_MILLIS * 20);
         assertEquals(queryInSplit,
-                new URI("http://doesnotmatter:9090/api/v1/query?query=up[" + getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" + "&time=" +
+                URI.create("http://doesnotmatter:9090/api/v1/query?query=up[" + getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" + "&time=" +
                         timeShouldBe).getQuery());
     }
 
     @Test
     public void testQueryDividedIntoSplitsLastSplitHasRightTime()
-            throws URISyntaxException
     {
         Instant now = LocalDateTime.of(2019, 10, 2, 7, 26, 56, 0).toInstant(UTC);
         PrometheusConnectorConfig config = getCommonConfig(prometheusHttpServer.resolve("/prometheus-data/prometheus-metrics.json"));
@@ -184,7 +188,7 @@ public class TestPrometheusSplit
         PrometheusSplit lastSplit = (PrometheusSplit) splits.get(lastSplitIndex);
         String queryInSplit = URI.create(lastSplit.getUri()).getQuery();
         String timeShouldBe = decimalSecondString(now.toEpochMilli());
-        URI uriAsFormed = new URI("http://doesnotmatter:9090/api/v1/query?query=up[" +
+        URI uriAsFormed = URI.create("http://doesnotmatter:9090/api/v1/query?query=up[" +
                 getQueryChunkSizeDurationAsPrometheusCompatibleDurationString(config) + "]" +
                 "&time=" + timeShouldBe);
         assertEquals(queryInSplit, uriAsFormed.getQuery());

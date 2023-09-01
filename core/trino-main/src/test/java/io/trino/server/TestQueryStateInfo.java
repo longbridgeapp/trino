@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import io.trino.client.NodeVersion;
 import io.trino.execution.QueryInfo;
 import io.trino.execution.QueryState;
 import io.trino.execution.QueryStats;
@@ -31,6 +32,7 @@ import org.testng.annotations.Test;
 import java.net.URI;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalDouble;
 
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -117,6 +119,7 @@ public class TestQueryStateInfo
                         new Duration(9, MINUTES),
                         new Duration(10, MINUTES),
                         new Duration(11, MINUTES),
+                        new Duration(1, SECONDS),
                         new Duration(12, MINUTES),
                         13,
                         14,
@@ -139,6 +142,8 @@ public class TestQueryStateInfo
                         DataSize.valueOf("28GB"),
                         DataSize.valueOf("29GB"),
                         true,
+                        OptionalDouble.of(8.88),
+                        OptionalDouble.of(0),
                         new Duration(23, MINUTES),
                         new Duration(24, MINUTES),
                         new Duration(25, MINUTES),
@@ -176,10 +181,13 @@ public class TestQueryStateInfo
                         DataSize.valueOf("41GB"),
                         ImmutableList.of(),
                         DynamicFiltersStats.EMPTY,
+                        ImmutableList.of(),
                         ImmutableList.of()),
                 Optional.empty(),
                 Optional.empty(),
                 Optional.empty(),
+                Optional.empty(),
+                false,
                 ImmutableMap.of(),
                 ImmutableSet.of(),
                 ImmutableMap.of(),
@@ -199,6 +207,8 @@ public class TestQueryStateInfo
                 false,
                 Optional.empty(),
                 Optional.of(QueryType.SELECT),
-                RetryPolicy.NONE);
+                RetryPolicy.NONE,
+                false,
+                new NodeVersion("version"));
     }
 }

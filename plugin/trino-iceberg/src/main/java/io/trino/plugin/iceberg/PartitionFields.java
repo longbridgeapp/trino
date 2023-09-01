@@ -33,7 +33,7 @@ import static java.util.regex.Pattern.CASE_INSENSITIVE;
 
 public final class PartitionFields
 {
-    private static final String UNQUOTED_IDENTIFIER = "[a-z_][a-z0-9_]*";
+    private static final String UNQUOTED_IDENTIFIER = "[a-zA-Z_][a-zA-Z0-9_]*";
     private static final String QUOTED_IDENTIFIER = "\"(?:\"\"|[^\"])*\"";
     public static final String IDENTIFIER = "(" + UNQUOTED_IDENTIFIER + "|" + QUOTED_IDENTIFIER + ")";
     private static final Pattern UNQUOTED_IDENTIFIER_PATTERN = Pattern.compile(UNQUOTED_IDENTIFIER);
@@ -72,23 +72,20 @@ public final class PartitionFields
 
     public static void parsePartitionField(PartitionSpec.Builder builder, String field)
     {
-        @SuppressWarnings("PointlessBooleanExpression")
-        boolean matched = false ||
-                tryMatch(field, IDENTITY_PATTERN, match -> builder.identity(fromIdentifierToColumn(match.group()))) ||
+        boolean matched = tryMatch(field, IDENTITY_PATTERN, match -> builder.identity(fromIdentifierToColumn(match.group()))) ||
                 tryMatch(field, YEAR_PATTERN, match -> builder.year(fromIdentifierToColumn(match.group(1)))) ||
                 tryMatch(field, MONTH_PATTERN, match -> builder.month(fromIdentifierToColumn(match.group(1)))) ||
                 tryMatch(field, DAY_PATTERN, match -> builder.day(fromIdentifierToColumn(match.group(1)))) ||
                 tryMatch(field, HOUR_PATTERN, match -> builder.hour(fromIdentifierToColumn(match.group(1)))) ||
                 tryMatch(field, BUCKET_PATTERN, match -> builder.bucket(fromIdentifierToColumn(match.group(1)), parseInt(match.group(2)))) ||
                 tryMatch(field, TRUNCATE_PATTERN, match -> builder.truncate(fromIdentifierToColumn(match.group(1)), parseInt(match.group(2)))) ||
-                tryMatch(field, VOID_PATTERN, match -> builder.alwaysNull(fromIdentifierToColumn(match.group(1)))) ||
-                false;
+                tryMatch(field, VOID_PATTERN, match -> builder.alwaysNull(fromIdentifierToColumn(match.group(1))));
         if (!matched) {
             throw new IllegalArgumentException("Invalid partition field declaration: " + field);
         }
     }
 
-    private static String fromIdentifierToColumn(String identifier)
+    public static String fromIdentifierToColumn(String identifier)
     {
         if (QUOTED_IDENTIFIER_PATTERN.matcher(identifier).matches()) {
             // We only support lowercase quoted identifiers for now.
@@ -157,7 +154,7 @@ public final class PartitionFields
         return quotedName(column);
     }
 
-    private static String quotedName(String name)
+    public static String quotedName(String name)
     {
         if (UNQUOTED_IDENTIFIER_PATTERN.matcher(name).matches()) {
             return name;

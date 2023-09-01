@@ -15,6 +15,7 @@ package io.trino.spi.eventlistener;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.trino.spi.Unstable;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
 import io.trino.spi.session.ResourceEstimates;
@@ -31,6 +32,7 @@ import static java.util.Objects.requireNonNull;
 public class QueryContext
 {
     private final String user;
+    private final String originalUser;
     private final Optional<String> principal;
     private final Set<String> groups;
     private final Optional<String> traceToken;
@@ -58,8 +60,10 @@ public class QueryContext
     private final String retryPolicy;
 
     @JsonCreator
+    @Unstable
     public QueryContext(
             String user,
+            String originalUser,
             Optional<String> principal,
             Set<String> groups,
             Optional<String> traceToken,
@@ -81,6 +85,7 @@ public class QueryContext
             String retryPolicy)
     {
         this.user = requireNonNull(user, "user is null");
+        this.originalUser = requireNonNull(originalUser, "originalUser is null");
         this.principal = requireNonNull(principal, "principal is null");
         this.groups = requireNonNull(groups, "groups is null");
         this.traceToken = requireNonNull(traceToken, "traceToken is null");
@@ -99,13 +104,19 @@ public class QueryContext
         this.serverVersion = requireNonNull(serverVersion, "serverVersion is null");
         this.environment = requireNonNull(environment, "environment is null");
         this.queryType = requireNonNull(queryType, "queryType is null");
-        this.retryPolicy = requireNonNull(retryPolicy, "retryMode is null");
+        this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy is null");
     }
 
     @JsonProperty
     public String getUser()
     {
         return user;
+    }
+
+    @JsonProperty
+    public String getOriginalUser()
+    {
+        return originalUser;
     }
 
     @JsonProperty

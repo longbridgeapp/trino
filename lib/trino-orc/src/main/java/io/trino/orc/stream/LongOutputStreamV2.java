@@ -23,13 +23,13 @@ import io.trino.orc.metadata.CompressionKind;
 import io.trino.orc.metadata.OrcColumnId;
 import io.trino.orc.metadata.Stream;
 import io.trino.orc.metadata.Stream.StreamKind;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.orc.stream.LongOutputStreamV2.SerializationUtils.encodeBitWidth;
 import static io.trino.orc.stream.LongOutputStreamV2.SerializationUtils.findClosestNumBits;
 import static io.trino.orc.stream.LongOutputStreamV2.SerializationUtils.getClosestAlignedFixedBits;
@@ -55,7 +55,7 @@ public class LongOutputStreamV2
         }
     }
 
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(LongOutputStreamV2.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(LongOutputStreamV2.class);
     private static final int MAX_SCOPE = 512;
     private static final int MIN_REPEAT = 3;
     private static final int MAX_SHORT_REPEAT_LENGTH = 10;
@@ -756,7 +756,7 @@ public class LongOutputStreamV2
     @Override
     public long getBufferedBytes()
     {
-        return buffer.estimateOutputDataSize() + (Long.BYTES * numLiterals);
+        return buffer.estimateOutputDataSize() + (Long.BYTES * (long) numLiterals);
     }
 
     @Override
@@ -1057,7 +1057,7 @@ public class LongOutputStreamV2
                 int bitsToWrite = bitSize;
                 while (bitsToWrite > bitsLeft) {
                     // add the bits to the bottom of the current word
-                    current |= value >>> (bitsToWrite - bitsLeft);
+                    current = (byte) (current | value >>> (bitsToWrite - bitsLeft));
                     // subtract out the bits we just added
                     bitsToWrite -= bitsLeft;
                     // zero out the bits above bitsToWrite
@@ -1067,7 +1067,7 @@ public class LongOutputStreamV2
                     bitsLeft = 8;
                 }
                 bitsLeft -= bitsToWrite;
-                current |= value << bitsLeft;
+                current = (byte) (current | value << bitsLeft);
                 if (bitsLeft == 0) {
                     output.write(current);
                     current = 0;

@@ -50,9 +50,9 @@ public abstract class ForwardingConnectorAccessControl
     protected abstract ConnectorAccessControl delegate();
 
     @Override
-    public void checkCanCreateSchema(ConnectorSecurityContext context, String schemaName)
+    public void checkCanCreateSchema(ConnectorSecurityContext context, String schemaName, Map<String, Object> properties)
     {
-        delegate().checkCanCreateSchema(context, schemaName);
+        delegate().checkCanCreateSchema(context, schemaName, properties);
     }
 
     @Override
@@ -182,6 +182,12 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
+    public void checkCanAlterColumn(ConnectorSecurityContext context, SchemaTableName tableName)
+    {
+        delegate().checkCanAlterColumn(context, tableName);
+    }
+
+    @Override
     public void checkCanSetTableAuthorization(ConnectorSecurityContext context, SchemaTableName tableName, TrinoPrincipal principal)
     {
         delegate().checkCanSetTableAuthorization(context, tableName, principal);
@@ -272,6 +278,12 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
+    public void checkCanGrantExecuteFunctionPrivilege(ConnectorSecurityContext context, FunctionKind functionKind, SchemaRoutineName functionName, TrinoPrincipal grantee, boolean grantOption)
+    {
+        delegate().checkCanGrantExecuteFunctionPrivilege(context, functionKind, functionName, grantee, grantOption);
+    }
+
+    @Override
     public void checkCanSetMaterializedViewProperties(ConnectorSecurityContext context, SchemaTableName materializedViewName, Map<String, Optional<Object>> properties)
     {
         delegate().checkCanSetMaterializedViewProperties(context, materializedViewName, properties);
@@ -358,12 +370,6 @@ public abstract class ForwardingConnectorAccessControl
     }
 
     @Override
-    public void checkCanShowRoleAuthorizationDescriptors(ConnectorSecurityContext context)
-    {
-        delegate().checkCanShowRoleAuthorizationDescriptors(context);
-    }
-
-    @Override
     public void checkCanShowRoles(ConnectorSecurityContext context)
     {
         delegate().checkCanShowRoles(context);
@@ -403,6 +409,12 @@ public abstract class ForwardingConnectorAccessControl
     public List<ViewExpression> getRowFilters(ConnectorSecurityContext context, SchemaTableName tableName)
     {
         return delegate().getRowFilters(context, tableName);
+    }
+
+    @Override
+    public Optional<ViewExpression> getColumnMask(ConnectorSecurityContext context, SchemaTableName tableName, String columnName, Type type)
+    {
+        return delegate().getColumnMask(context, tableName, columnName, type);
     }
 
     @Override

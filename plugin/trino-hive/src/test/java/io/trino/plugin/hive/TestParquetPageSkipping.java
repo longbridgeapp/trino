@@ -14,6 +14,7 @@
 package io.trino.plugin.hive;
 
 import com.google.common.collect.ImmutableMap;
+import com.google.common.io.Resources;
 import io.trino.Session;
 import io.trino.execution.QueryStats;
 import io.trino.operator.OperatorStats;
@@ -29,12 +30,14 @@ import org.intellij.lang.annotations.Language;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
+import java.io.File;
+import java.net.URISyntaxException;
 import java.util.Map;
 
 import static com.google.common.collect.MoreCollectors.onlyElement;
 import static io.trino.parquet.reader.ParquetReader.COLUMN_INDEX_ROWS_FILTERED;
 import static io.trino.testing.QueryAssertions.assertEqualsIgnoreOrder;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,53 +52,34 @@ public class TestParquetPageSkipping
                 .setHiveProperties(
                         ImmutableMap.of(
                                 "parquet.use-column-index", "true",
-                                // Small max-buffer-size allows testing mix of small and large ranges in HdfsParquetDataSource#planRead
-                                "parquet.max-buffer-size", "400B"))
+                                "parquet.max-buffer-size", "1MB"))
                 .build();
     }
 
-    private void buildSortedTables(String tableName, String sortByColumnName, String sortByColumnType)
-    {
-        String createTableTemplate =
-                "CREATE TABLE %s ( " +
-                        "   orderkey bigint, " +
-                        "   custkey bigint, " +
-                        "   orderstatus varchar(1), " +
-                        "   totalprice double, " +
-                        "   orderdate date, " +
-                        "   orderpriority varchar(15), " +
-                        "   clerk varchar(15), " +
-                        "   shippriority integer, " +
-                        "   comment varchar(79), " +
-                        "   rvalues double array " +
-                        ") " +
-                        "WITH ( " +
-                        "   format = 'PARQUET', " +
-                        "   bucketed_by = array['orderstatus'], " +
-                        "   bucket_count = 1, " +
-                        "   sorted_by = array['%s'] " +
-                        ")";
-        createTableTemplate = createTableTemplate.replaceFirst(sortByColumnName + "[ ]+([^,]*)", sortByColumnName + " " + sortByColumnType);
-
-        assertUpdate(format(
-                createTableTemplate,
-                tableName,
-                sortByColumnName));
-        String catalog = getSession().getCatalog().orElseThrow();
-        assertUpdate(
-                Session.builder(getSession())
-                        .setCatalogSessionProperty(catalog, "parquet_writer_page_size", "10000B")
-                        .setCatalogSessionProperty(catalog, "parquet_writer_block_size", "100GB")
-                        .build(),
-                format("INSERT INTO %s SELECT *, ARRAY[rand(), rand(), rand()] FROM tpch.tiny.orders", tableName),
-                15000);
-    }
-
     @Test
-    public void testAndPredicates()
+    public void testRowGroupPruningFromPageIndexes()
+            throws Exception
     {
-        String tableName = "test_and_predicate_" + randomTableSuffix();
-        buildSortedTables(tableName, "totalprice", "double");
+        String tableName = "test_row_group_pruning_" + randomNameSuffix();
+        File parquetFile = new File(Resources.getResource("parquet_page_skipping/orders_sorted_by_totalprice").toURI());
+        assertUpdate(
+                """
+                        CREATE TABLE %s (
+                           orderkey bigint,
+                           custkey bigint,
+                           orderstatus varchar(1),
+                           totalprice double,
+                           orderdate date,
+                           orderpriority varchar(15),
+                           clerk varchar(15),
+                           shippriority integer,
+                           comment varchar(79),
+                           rvalues double array)
+                        WITH (
+                           format = 'PARQUET',
+                           external_location = '%s')
+                        """.formatted(tableName, parquetFile.getAbsolutePath()));
+
         int rowCount = assertColumnIndexResults("SELECT * FROM " + tableName + " WHERE totalprice BETWEEN 100000 AND 131280 AND clerk = 'Clerk#000000624'");
         assertThat(rowCount).isGreaterThan(0);
 
@@ -107,19 +91,14 @@ public class TestParquetPageSkipping
 
     @Test
     public void testPageSkippingWithNonSequentialOffsets()
+            throws URISyntaxException
     {
-        String tableName = "test_random_" + randomTableSuffix();
-        int updateCount = 8192;
-        assertUpdate(
-                "CREATE TABLE " + tableName + " (col) WITH (format = 'PARQUET') AS " +
-                        "SELECT * FROM unnest(transform(repeat(1, 8192), x -> rand()))",
-                updateCount);
-        for (int i = 0; i < 8; i++) {
-            assertUpdate(
-                    "INSERT INTO " + tableName + " SELECT rand() FROM " + tableName,
-                    updateCount);
-            updateCount += updateCount;
-        }
+        String tableName = "test_random_" + randomNameSuffix();
+        File parquetFile = new File(Resources.getResource("parquet_page_skipping/random").toURI());
+        assertUpdate(format(
+                "CREATE TABLE %s (col double) WITH (format = 'PARQUET', external_location = '%s')",
+                tableName,
+                parquetFile.getAbsolutePath()));
         // These queries select a subset of pages which are stored at non-sequential offsets
         // This reproduces the issue identified in https://github.com/trinodb/trino/issues/9097
         for (double i = 0; i < 1; i += 0.1) {
@@ -130,12 +109,17 @@ public class TestParquetPageSkipping
 
     @Test
     public void testFilteringOnColumnNameWithDot()
+            throws URISyntaxException
     {
         String nameInSql = "\"a.dot\"";
-        String tableName = "test_column_name_with_dot_" + randomTableSuffix();
+        String tableName = "test_column_name_with_dot_" + randomNameSuffix();
 
-        assertUpdate("CREATE TABLE " + tableName + "(key varchar(50), " + nameInSql + " varchar(50)) WITH (format = 'PARQUET')");
-        assertUpdate("INSERT INTO " + tableName + " VALUES ('null value', NULL), ('sample value', 'abc'), ('other value', 'xyz')", 3);
+        File parquetFile = new File(Resources.getResource("parquet_page_skipping/column_name_with_dot").toURI());
+        assertUpdate(format(
+                "CREATE TABLE %s (key varchar(50), %s varchar(50)) WITH (format = 'PARQUET', external_location = '%s')",
+                tableName,
+                nameInSql,
+                parquetFile.getAbsolutePath()));
 
         assertQuery("SELECT key FROM " + tableName + " WHERE " + nameInSql + " IS NULL", "VALUES ('null value')");
         assertQuery("SELECT key FROM " + tableName + " WHERE " + nameInSql + " = 'abc'", "VALUES ('sample value')");
@@ -146,7 +130,7 @@ public class TestParquetPageSkipping
     @Test(dataProvider = "dataType")
     public void testPageSkipping(String sortByColumn, String sortByColumnType, Object[][] valuesArray)
     {
-        String tableName = "test_page_skipping_" + randomTableSuffix();
+        String tableName = "test_page_skipping_" + randomNameSuffix();
         buildSortedTables(tableName, sortByColumn, sortByColumnType);
         for (Object[] values : valuesArray) {
             Object lowValue = values[0];
@@ -172,17 +156,15 @@ public class TestParquetPageSkipping
 
     @Test
     public void testFilteringWithColumnIndex()
+            throws URISyntaxException
     {
-        String tableName = "test_page_filtering_" + randomTableSuffix();
-        String catalog = getSession().getCatalog().orElseThrow();
-        assertUpdate(
-                Session.builder(getSession())
-                        .setCatalogSessionProperty(catalog, "parquet_writer_page_size", "32kB")
-                        .build(),
-                "CREATE TABLE " + tableName + " " +
-                        "WITH (format = 'PARQUET', bucket_count = 1, bucketed_by = ARRAY['suppkey'], sorted_by = ARRAY['suppkey']) AS " +
-                        "SELECT suppkey, extendedprice, shipmode, comment FROM tpch.tiny.lineitem",
-                60175);
+        String tableName = "test_page_filtering_" + randomNameSuffix();
+        File parquetFile = new File(Resources.getResource("parquet_page_skipping/lineitem_sorted_by_suppkey").toURI());
+        assertUpdate(format(
+                "CREATE TABLE %s (suppkey bigint, extendedprice decimal(12, 2), shipmode varchar(10), comment varchar(44)) " +
+                        "WITH (format = 'PARQUET', external_location = '%s')",
+                tableName,
+                parquetFile.getAbsolutePath()));
 
         verifyFilteringWithColumnIndex("SELECT * FROM " + tableName + " WHERE suppkey = 10");
         verifyFilteringWithColumnIndex("SELECT * FROM " + tableName + " WHERE suppkey BETWEEN 25 AND 35");
@@ -297,5 +279,42 @@ public class TestParquetPageSkipping
                 .stream()
                 .filter(summary -> summary.getOperatorType().startsWith("TableScan") || summary.getOperatorType().startsWith("Scan"))
                 .collect(onlyElement());
+    }
+
+    private void buildSortedTables(String tableName, String sortByColumnName, String sortByColumnType)
+    {
+        String createTableTemplate =
+                "CREATE TABLE %s ( " +
+                        "   orderkey bigint, " +
+                        "   custkey bigint, " +
+                        "   orderstatus varchar(1), " +
+                        "   totalprice double, " +
+                        "   orderdate date, " +
+                        "   orderpriority varchar(15), " +
+                        "   clerk varchar(15), " +
+                        "   shippriority integer, " +
+                        "   comment varchar(79), " +
+                        "   rvalues double array " +
+                        ") " +
+                        "WITH ( " +
+                        "   format = 'PARQUET', " +
+                        "   bucketed_by = array['orderstatus'], " +
+                        "   bucket_count = 1, " +
+                        "   sorted_by = array['%s'] " +
+                        ")";
+        createTableTemplate = createTableTemplate.replaceFirst(sortByColumnName + "[ ]+([^,]*)", sortByColumnName + " " + sortByColumnType);
+
+        assertUpdate(format(
+                createTableTemplate,
+                tableName,
+                sortByColumnName));
+        String catalog = getSession().getCatalog().orElseThrow();
+        assertUpdate(
+                Session.builder(getSession())
+                        .setCatalogSessionProperty(catalog, "parquet_writer_page_size", "10000B")
+                        .setCatalogSessionProperty(catalog, "parquet_writer_block_size", "2GB")
+                        .build(),
+                format("INSERT INTO %s SELECT *, ARRAY[rand(), rand(), rand()] FROM tpch.tiny.orders", tableName),
+                15000);
     }
 }

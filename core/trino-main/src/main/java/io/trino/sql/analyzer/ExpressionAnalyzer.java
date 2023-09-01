@@ -27,6 +27,7 @@ import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.OperatorNotFoundException;
 import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.ResolvedFunction;
+import io.trino.operator.scalar.ArrayConstructor;
 import io.trino.operator.scalar.FormatFunction;
 import io.trino.security.AccessControl;
 import io.trino.security.SecurityContext;
@@ -63,7 +64,7 @@ import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.TypeProvider;
 import io.trino.sql.tree.ArithmeticBinaryExpression;
 import io.trino.sql.tree.ArithmeticUnaryExpression;
-import io.trino.sql.tree.ArrayConstructor;
+import io.trino.sql.tree.Array;
 import io.trino.sql.tree.AtTimeZone;
 import io.trino.sql.tree.BetweenPredicate;
 import io.trino.sql.tree.BinaryLiteral;
@@ -147,8 +148,7 @@ import io.trino.type.FunctionType;
 import io.trino.type.JsonPath2016Type;
 import io.trino.type.TypeCoercion;
 import io.trino.type.UnknownType;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -169,8 +169,8 @@ import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.trino.collect.cache.CacheUtils.uncheckedCacheGet;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.CacheUtils.uncheckedCacheGet;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.operator.scalar.json.JsonArrayFunction.JSON_ARRAY_FUNCTION_NAME;
 import static io.trino.operator.scalar.json.JsonExistsFunction.JSON_EXISTS_FUNCTION_NAME;
 import static io.trino.operator.scalar.json.JsonInputFunctions.VARBINARY_TO_JSON;
@@ -197,6 +197,7 @@ import static io.trino.spi.StandardErrorCode.INVALID_LITERAL;
 import static io.trino.spi.StandardErrorCode.INVALID_NAVIGATION_NESTING;
 import static io.trino.spi.StandardErrorCode.INVALID_ORDER_BY;
 import static io.trino.spi.StandardErrorCode.INVALID_PARAMETER_USAGE;
+import static io.trino.spi.StandardErrorCode.INVALID_PATH;
 import static io.trino.spi.StandardErrorCode.INVALID_PATTERN_RECOGNITION_FUNCTION;
 import static io.trino.spi.StandardErrorCode.INVALID_PROCESSING_MODE;
 import static io.trino.spi.StandardErrorCode.INVALID_WINDOW_FRAME;
@@ -223,9 +224,9 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimeType.TIME;
+import static io.trino.spi.type.TimeType.TIME_MILLIS;
 import static io.trino.spi.type.TimeType.createTimeType;
-import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimeWithTimeZoneType.TIME_TZ_MILLIS;
 import static io.trino.spi.type.TimeWithTimeZoneType.createTimeWithTimeZoneType;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TimestampType.createTimestampType;
@@ -243,7 +244,6 @@ import static io.trino.sql.analyzer.SemanticExceptions.missingAttributeException
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.toTypeSignature;
-import static io.trino.sql.tree.ArrayConstructor.ARRAY_CONSTRUCTOR;
 import static io.trino.sql.tree.DereferenceExpression.isQualifiedAllFieldsReference;
 import static io.trino.sql.tree.FrameBound.Type.CURRENT_ROW;
 import static io.trino.sql.tree.FrameBound.Type.FOLLOWING;
@@ -627,13 +627,13 @@ public class ExpressionAnalyzer
                     if (node.getPrecision() != null) {
                         yield setExpressionType(node, createTimeWithTimeZoneType(node.getPrecision()));
                     }
-                    yield setExpressionType(node, TIME_WITH_TIME_ZONE);
+                    yield setExpressionType(node, TIME_TZ_MILLIS);
                 }
                 case LOCALTIME -> {
                     if (node.getPrecision() != null) {
                         yield setExpressionType(node, createTimeType(node.getPrecision()));
                     }
-                    yield setExpressionType(node, TIME);
+                    yield setExpressionType(node, TIME_MILLIS);
                 }
                 case TIMESTAMP -> setExpressionType(node, createTimestampWithTimeZoneType(firstNonNull(node.getPrecision(), TimestampWithTimeZoneType.DEFAULT_PRECISION)));
                 case LOCALTIMESTAMP -> {
@@ -746,11 +746,10 @@ public class ExpressionAnalyzer
             }
 
             Type baseType = process(node.getBase(), context);
-            if (!(baseType instanceof RowType)) {
+            if (!(baseType instanceof RowType rowType)) {
                 throw semanticException(TYPE_MISMATCH, node.getBase(), "Expression %s is not of type ROW", node.getBase());
             }
 
-            RowType rowType = (RowType) baseType;
             Identifier field = node.getField().orElseThrow();
             String fieldName = field.getValue();
 
@@ -997,7 +996,7 @@ public class ExpressionAnalyzer
                 if (!indexType.equals(INTEGER)) {
                     throw semanticException(TYPE_MISMATCH, node.getIndex(), "Subscript expression on ROW requires integer index, found %s", indexType);
                 }
-                int indexValue = toIntExact(((LongLiteral) node.getIndex()).getValue());
+                int indexValue = toIntExact(((LongLiteral) node.getIndex()).getParsedValue());
                 if (indexValue <= 0) {
                     throw semanticException(INVALID_FUNCTION_ARGUMENT, node.getIndex(), "Invalid subscript index: %s. ROW indices start at 1", indexValue);
                 }
@@ -1013,7 +1012,7 @@ public class ExpressionAnalyzer
         }
 
         @Override
-        protected Type visitArrayConstructor(ArrayConstructor node, StackableAstVisitorContext<Context> context)
+        protected Type visitArray(Array node, StackableAstVisitorContext<Context> context)
         {
             Type type = coerceToSingleType(context, "All ARRAY elements", node.getValues());
             Type arrayType = plannerContext.getTypeManager().getParameterizedType(ARRAY.getName(), ImmutableList.of(TypeSignatureParameter.typeParameter(type.getTypeSignature())));
@@ -1043,7 +1042,7 @@ public class ExpressionAnalyzer
         @Override
         protected Type visitLongLiteral(LongLiteral node, StackableAstVisitorContext<Context> context)
         {
-            if (node.getValue() >= Integer.MIN_VALUE && node.getValue() <= Integer.MAX_VALUE) {
+            if (node.getParsedValue() >= Integer.MIN_VALUE && node.getParsedValue() <= Integer.MAX_VALUE) {
                 return setExpressionType(node, INTEGER);
             }
 
@@ -1064,7 +1063,7 @@ public class ExpressionAnalyzer
                 parseResult = Decimals.parse(node.getValue());
             }
             catch (RuntimeException e) {
-                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid decimal literal", node.getValue());
+                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid DECIMAL literal", node.getValue());
             }
             return setExpressionType(node, parseResult.getType());
         }
@@ -1101,7 +1100,7 @@ public class ExpressionAnalyzer
                 literalInterpreter.evaluate(node, type);
             }
             catch (RuntimeException e) {
-                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid %s literal", node.getValue(), type.getDisplayName());
+                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid %s literal", node.getValue(), type.getDisplayName().toUpperCase(ENGLISH));
             }
 
             return setExpressionType(node, type);
@@ -1127,7 +1126,7 @@ public class ExpressionAnalyzer
                 throw new TrinoException(e::getErrorCode, extractLocation(node), e.getMessage(), e);
             }
             catch (IllegalArgumentException e) {
-                throw semanticException(INVALID_LITERAL, node, "'%s' is not a valid time literal", node.getValue());
+                throw semanticException(INVALID_LITERAL, node, "'%s' is not a valid TIME literal", node.getValue());
             }
 
             return setExpressionType(node, type);
@@ -1153,7 +1152,7 @@ public class ExpressionAnalyzer
                 throw new TrinoException(e::getErrorCode, extractLocation(node), e.getMessage(), e);
             }
             catch (Exception e) {
-                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid timestamp literal", node.getValue());
+                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid TIMESTAMP literal", node.getValue());
             }
 
             return setExpressionType(node, type);
@@ -1173,7 +1172,7 @@ public class ExpressionAnalyzer
                 literalInterpreter.evaluate(node, type);
             }
             catch (RuntimeException e) {
-                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid interval literal", node.getValue());
+                throw semanticException(INVALID_LITERAL, node, e, "'%s' is not a valid INTERVAL literal", node.getValue());
             }
             return setExpressionType(node, type);
         }
@@ -1231,7 +1230,8 @@ public class ExpressionAnalyzer
 
             if (node.getFilter().isPresent()) {
                 Expression expression = node.getFilter().get();
-                process(expression, context);
+                Type type = process(expression, context);
+                coerceType(expression, type, BOOLEAN, "Filter expression");
             }
 
             List<TypeSignatureProvider> argumentTypes = getCallArgumentTypes(node.getArguments(), context);
@@ -1270,7 +1270,7 @@ public class ExpressionAnalyzer
                 throw new TrinoException(e::getErrorCode, extractLocation(node), e.getMessage(), e);
             }
 
-            if (function.getSignature().getName().equalsIgnoreCase(ARRAY_CONSTRUCTOR)) {
+            if (function.getSignature().getName().equalsIgnoreCase(ArrayConstructor.NAME)) {
                 // After optimization, array constructor is rewritten to a function call.
                 // For historic reasons array constructor is allowed to have 254 arguments
                 if (node.getArguments().size() > 254) {
@@ -1294,7 +1294,9 @@ public class ExpressionAnalyzer
             for (int i = 0; i < argumentTypes.size(); i++) {
                 Expression expression = node.getArguments().get(i);
                 Type expectedType = signature.getArgumentTypes().get(i);
-                requireNonNull(expectedType, format("Type '%s' not found", signature.getArgumentTypes().get(i)));
+                if (expectedType == null) {
+                    throw new NullPointerException(format("Type '%s' not found", signature.getArgumentTypes().get(i)));
+                }
                 if (node.isDistinct() && !expectedType.isComparable()) {
                     throw semanticException(TYPE_MISMATCH, node, "DISTINCT can only be applied to comparable types (actual: %s)", expectedType);
                 }
@@ -1311,12 +1313,19 @@ public class ExpressionAnalyzer
 
             resolvedFunctions.put(NodeRef.of(node), function);
 
-            FunctionMetadata functionMetadata = plannerContext.getMetadata().getFunctionMetadata(session, function);
-            if (functionMetadata.isDeprecated()) {
-                warningCollector.add(new TrinoWarning(DEPRECATED_FUNCTION,
-                        format("Use of deprecated function: %s: %s",
-                                functionMetadata.getSignature().getName(),
-                                functionMetadata.getDescription())));
+            // FunctionMetadata should only be fetched on the coordinator, as workers do not have FunctionMetadata for all functions
+            // Since warning collector is also only set on the coordinator, this check is sufficient
+            // TODO remove this when workers no longer reanalyze expressions
+            if (warningCollector != WarningCollector.NOOP) {
+                FunctionMetadata functionMetadata = plannerContext.getMetadata().getFunctionMetadata(session, function);
+                if (functionMetadata.isDeprecated()) {
+                    warningCollector.add(new TrinoWarning(
+                            DEPRECATED_FUNCTION,
+                            format(
+                                    "Use of deprecated function: %s: %s",
+                                    functionMetadata.getSignature().getName(),
+                                    functionMetadata.getDescription())));
+                }
             }
 
             Type type = signature.getReturnType();
@@ -1684,7 +1693,7 @@ public class ExpressionAnalyzer
                         if (!(node.getArguments().get(1) instanceof LongLiteral)) {
                             throw semanticException(INVALID_FUNCTION_ARGUMENT, node, "%s pattern recognition navigation function requires a number as the second argument", node.getName());
                         }
-                        long offset = ((LongLiteral) node.getArguments().get(1)).getValue();
+                        long offset = ((LongLiteral) node.getArguments().get(1)).getParsedValue();
                         if (offset < 0) {
                             throw semanticException(NUMERIC_VALUE_OUT_OF_RANGE, node, "%s pattern recognition navigation function requires a non-negative number as the second argument (actual: %s)", node.getName(), offset);
                         }
@@ -1711,10 +1720,9 @@ public class ExpressionAnalyzer
                     }
                     if (node.getArguments().size() == 1) {
                         Node argument = node.getArguments().get(0);
-                        if (!(argument instanceof Identifier)) {
+                        if (!(argument instanceof Identifier identifier)) {
                             throw semanticException(TYPE_MISMATCH, argument, "CLASSIFIER function argument should be primary pattern variable or subset name. Actual: %s", argument.getClass().getSimpleName());
                         }
-                        Identifier identifier = (Identifier) argument;
                         String label = label(identifier);
                         if (!context.getContext().getLabels().contains(label)) {
                             throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "%s is not a primary pattern variable or subset name", identifier.getValue());
@@ -2070,8 +2078,8 @@ public class ExpressionAnalyzer
             if (parameters.size() == 0) {
                 throw semanticException(INVALID_PARAMETER_USAGE, node, "Query takes no parameters");
             }
-            if (node.getPosition() >= parameters.size()) {
-                throw semanticException(INVALID_PARAMETER_USAGE, node, "Invalid parameter index %s, max value is %s", node.getPosition(), parameters.size() - 1);
+            if (node.getId() >= parameters.size()) {
+                throw semanticException(INVALID_PARAMETER_USAGE, node, "Invalid parameter index %s, max value is %s", node.getId(), parameters.size() - 1);
             }
 
             Expression providedValue = parameters.get(NodeRef.of(node));
@@ -2251,8 +2259,7 @@ public class ExpressionAnalyzer
                         });
             }
 
-            if (valueList instanceof InListExpression) {
-                InListExpression inListExpression = (InListExpression) valueList;
+            if (valueList instanceof InListExpression inListExpression) {
                 Type type = coerceToSingleType(context,
                         "IN value and list items",
                         ImmutableList.<Expression>builder().add(value).addAll(inListExpression.getValues()).build());
@@ -2688,6 +2695,10 @@ public class ExpressionAnalyzer
 
         private List<Type> analyzeJsonPathInvocation(String functionName, Expression node, JsonPathInvocation jsonPathInvocation, StackableAstVisitorContext<Context> context)
         {
+            jsonPathInvocation.getPathName().ifPresent(pathName -> {
+                throw semanticException(INVALID_PATH, pathName, "JSON path name is not allowed in %s function", functionName);
+            });
+
             // ANALYZE THE CONTEXT ITEM
             // analyze context item type
             Expression inputExpression = jsonPathInvocation.getInputExpression();

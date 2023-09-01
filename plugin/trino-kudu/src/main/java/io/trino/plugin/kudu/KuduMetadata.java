@@ -15,6 +15,7 @@ package io.trino.plugin.kudu;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.inject.Inject;
 import io.airlift.slice.Slice;
 import io.trino.plugin.kudu.properties.KuduTableProperties;
 import io.trino.plugin.kudu.properties.PartitionDesign;
@@ -55,8 +56,6 @@ import org.apache.kudu.Schema;
 import org.apache.kudu.client.KuduTable;
 import org.apache.kudu.client.PartitionSchema.HashBucketSchema;
 
-import javax.inject.Inject;
-
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -66,9 +65,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
-import java.util.Set;
 import java.util.function.Consumer;
 
+import static com.google.common.base.Strings.emptyToNull;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.plugin.kudu.KuduColumnHandle.ROW_ID;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
@@ -163,6 +162,8 @@ public class KuduMetadata
     {
         KuduTable table = tableHandle.getTable(clientSession);
         Schema schema = table.getSchema();
+        // Kudu returns empty string as a table comment by default
+        Optional<String> tableComment = Optional.ofNullable(emptyToNull(table.getComment()));
 
         List<ColumnMetadata> columnsMetaList = schema.getColumns().stream()
                 .filter(column -> !column.isKey() || !column.getName().equals(ROW_ID))
@@ -170,7 +171,7 @@ public class KuduMetadata
                 .collect(toImmutableList());
 
         Map<String, Object> properties = clientSession.getTableProperties(tableHandle);
-        return new ConnectorTableMetadata(tableHandle.getSchemaTableName(), columnsMetaList, properties);
+        return new ConnectorTableMetadata(tableHandle.getSchemaTableName(), columnsMetaList, properties, tableComment);
     }
 
     @Override
@@ -241,17 +242,14 @@ public class KuduMetadata
     }
 
     @Override
-    public void dropSchema(ConnectorSession session, String schemaName)
+    public void dropSchema(ConnectorSession session, String schemaName, boolean cascade)
     {
-        clientSession.dropSchema(schemaName);
+        clientSession.dropSchema(schemaName, cascade);
     }
 
     @Override
     public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, boolean ignoreExisting)
     {
-        if (tableMetadata.getComment().isPresent()) {
-            throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with table comment");
-        }
         if (tableMetadata.getColumns().stream().anyMatch(column -> column.getComment() != null)) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with column comment");
         }
@@ -339,9 +337,6 @@ public class KuduMetadata
         if (retryMode != NO_RETRIES) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support query retries");
         }
-        if (tableMetadata.getComment().isPresent()) {
-            throw new TrinoException(NOT_SUPPORTED, "This connector does not support creating tables with table comment");
-        }
         PartitionDesign design = KuduTableProperties.getPartitionDesign(tableMetadata.getProperties());
         boolean generateUUID = !design.hasPartitions();
         ConnectorTableMetadata finalTableMetadata = tableMetadata;
@@ -394,33 +389,6 @@ public class KuduMetadata
     }
 
     @Override
-    public ColumnHandle getDeleteRowIdColumnHandle(ConnectorSession session, ConnectorTableHandle tableHandle)
-    {
-        return KuduColumnHandle.ROW_ID_HANDLE;
-    }
-
-    @Override
-    public ConnectorTableHandle beginDelete(ConnectorSession session, ConnectorTableHandle table, RetryMode retryMode)
-    {
-        if (retryMode != NO_RETRIES) {
-            throw new TrinoException(NOT_SUPPORTED, "This connector does not support query retries");
-        }
-        KuduTableHandle handle = (KuduTableHandle) table;
-        return new KuduTableHandle(
-                handle.getSchemaTableName(),
-                handle.getConstraint(),
-                handle.getDesiredColumns(),
-                true,
-                handle.getBucketCount(),
-                handle.getLimit());
-    }
-
-    @Override
-    public void finishDelete(ConnectorSession session, ConnectorTableHandle tableHandle, Collection<Slice> fragments)
-    {
-    }
-
-    @Override
     public RowChangeParadigm getRowChangeParadigm(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         return CHANGE_ONLY_UPDATED_COLUMNS;
@@ -449,12 +417,12 @@ public class KuduMetadata
         PartitionDesign design = KuduTableProperties.getPartitionDesign(tableMetadata.getProperties());
         boolean generateUUID = !design.hasPartitions();
         return new KuduMergeTableHandle(
-                kuduTableHandle,
+                kuduTableHandle.withRequiresRowId(true),
                 new KuduOutputTableHandle(tableMetadata.getTable(), columnOriginalTypes, columnTypes, generateUUID, table));
     }
 
     @Override
-    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle tableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    public void finishMerge(ConnectorSession session, ConnectorMergeTableHandle mergeTableHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
     {
         // For Kudu, nothing needs to be done finish the merge.
     }
@@ -465,13 +433,11 @@ public class KuduMetadata
         KuduTableHandle handle = (KuduTableHandle) table;
 
         Optional<ConnectorTablePartitioning> tablePartitioning = Optional.empty();
-        Optional<Set<ColumnHandle>> partitioningColumns = Optional.empty();
         List<LocalProperty<ColumnHandle>> localProperties = ImmutableList.of();
 
         return new ConnectorTableProperties(
                 handle.getConstraint(),
                 tablePartitioning,
-                partitioningColumns,
                 Optional.empty(),
                 localProperties);
     }
@@ -492,7 +458,7 @@ public class KuduMetadata
                 handle.getTable(clientSession),
                 newDomain,
                 handle.getDesiredColumns(),
-                handle.isDeleteHandle(),
+                handle.isRequiresRowId(),
                 handle.getBucketCount(),
                 handle.getLimit());
 
@@ -550,7 +516,7 @@ public class KuduMetadata
                 handle.getTable(clientSession),
                 handle.getConstraint(),
                 Optional.of(desiredColumns.build()),
-                handle.isDeleteHandle(),
+                handle.isRequiresRowId(),
                 handle.getBucketCount(),
                 handle.getLimit());
 
@@ -571,7 +537,7 @@ public class KuduMetadata
                 handle.getTable(clientSession),
                 handle.getConstraint(),
                 handle.getDesiredColumns(),
-                handle.isDeleteHandle(),
+                handle.isRequiresRowId(),
                 handle.getBucketCount(),
                 OptionalLong.of(limit));
 

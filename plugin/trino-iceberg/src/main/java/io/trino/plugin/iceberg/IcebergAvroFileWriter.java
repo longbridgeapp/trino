@@ -25,12 +25,12 @@ import org.apache.iceberg.data.Record;
 import org.apache.iceberg.data.avro.DataWriter;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.OutputFile;
-import org.openjdk.jol.info.ClassLayout;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.util.List;
-import java.util.concurrent.Callable;
 
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.plugin.iceberg.IcebergAvroDataConversion.toIcebergRecords;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_WRITER_CLOSE_ERROR;
 import static io.trino.plugin.iceberg.IcebergErrorCode.ICEBERG_WRITER_OPEN_ERROR;
@@ -41,7 +41,7 @@ import static org.apache.iceberg.TableProperties.AVRO_COMPRESSION;
 public class IcebergAvroFileWriter
         implements IcebergFileWriter
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(IcebergAvroFileWriter.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(IcebergAvroFileWriter.class);
 
     // Use static table name instead of the actual name because it becomes outdated once the table is renamed
     public static final String AVRO_TABLE_NAME = "table";
@@ -49,11 +49,11 @@ public class IcebergAvroFileWriter
     private final Schema icebergSchema;
     private final List<Type> types;
     private final FileAppender<Record> avroWriter;
-    private final Callable<Void> rollbackAction;
+    private final Closeable rollbackAction;
 
     public IcebergAvroFileWriter(
             OutputFile file,
-            Callable<Void> rollbackAction,
+            Closeable rollbackAction,
             Schema icebergSchema,
             List<Type> types,
             HiveCompressionCodec hiveCompressionCodec)
@@ -96,14 +96,14 @@ public class IcebergAvroFileWriter
     }
 
     @Override
-    public void commit()
+    public Closeable commit()
     {
         try {
             avroWriter.close();
         }
         catch (IOException e) {
             try {
-                rollbackAction.call();
+                rollbackAction.close();
             }
             catch (Exception ex) {
                 if (!e.equals(ex)) {
@@ -112,18 +112,15 @@ public class IcebergAvroFileWriter
             }
             throw new TrinoException(ICEBERG_WRITER_CLOSE_ERROR, "Error closing Avro file", e);
         }
+
+        return rollbackAction;
     }
 
     @Override
     public void rollback()
     {
-        try {
-            try {
-                avroWriter.close();
-            }
-            finally {
-                rollbackAction.call();
-            }
+        try (rollbackAction) {
+            avroWriter.close();
         }
         catch (Exception e) {
             throw new TrinoException(ICEBERG_WRITER_CLOSE_ERROR, "Error rolling back write to Avro file", e);

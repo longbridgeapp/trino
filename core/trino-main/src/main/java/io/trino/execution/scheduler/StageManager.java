@@ -17,6 +17,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.graph.Traverser;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
 import io.trino.execution.BasicStageStats;
 import io.trino.execution.NodeTaskMap;
@@ -27,23 +28,16 @@ import io.trino.execution.StageId;
 import io.trino.execution.StageInfo;
 import io.trino.execution.TableInfo;
 import io.trino.execution.TaskId;
-import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.Metadata;
-import io.trino.metadata.TableProperties;
-import io.trino.metadata.TableSchema;
 import io.trino.spi.QueryId;
 import io.trino.sql.planner.PlanFragment;
 import io.trino.sql.planner.SubPlan;
 import io.trino.sql.planner.plan.PlanFragmentId;
-import io.trino.sql.planner.plan.PlanNode;
-import io.trino.sql.planner.plan.PlanNodeId;
-import io.trino.sql.planner.plan.TableScanNode;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -51,7 +45,6 @@ import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.trino.execution.BasicStageStats.aggregateBasicStageStats;
 import static io.trino.execution.SqlStage.createSqlStage;
-import static io.trino.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 import static java.lang.Integer.parseInt;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
@@ -73,7 +66,7 @@ class StageManager
             Metadata metadata,
             RemoteTaskFactory taskFactory,
             NodeTaskMap nodeTaskMap,
-            ExecutorService executor,
+            Tracer tracer,
             SplitSchedulerStats schedulerStats,
             SubPlan planTree,
             boolean summarizeTaskInfo)
@@ -91,12 +84,13 @@ class StageManager
             SqlStage stage = createSqlStage(
                     getStageId(session.getQueryId(), fragment.getId()),
                     fragment,
-                    extractTableInfo(session, metadata, fragment),
+                    TableInfo.extract(session, metadata, fragment),
                     taskFactory,
                     session,
                     summarizeTaskInfo,
                     nodeTaskMap,
-                    executor,
+                    queryStateMachine.getStateMachineExecutor(),
+                    tracer,
                     schedulerStats);
             StageId stageId = stage.getStageId();
             stages.put(stageId, stage);
@@ -127,27 +121,6 @@ class StageManager
                 parents.buildOrThrow());
         stageManager.initialize();
         return stageManager;
-    }
-
-    private static Map<PlanNodeId, TableInfo> extractTableInfo(Session session, Metadata metadata, PlanFragment fragment)
-    {
-        return searchFrom(fragment.getRoot())
-                .where(TableScanNode.class::isInstance)
-                .findAll()
-                .stream()
-                .map(TableScanNode.class::cast)
-                .collect(toImmutableMap(PlanNode::getId, node -> getTableInfo(session, metadata, node)));
-    }
-
-    private static TableInfo getTableInfo(Session session, Metadata metadata, TableScanNode node)
-    {
-        TableSchema tableSchema = metadata.getTableSchema(session, node.getTable());
-        TableProperties tableProperties = metadata.getTableProperties(session, node.getTable());
-        Optional<String> connectorName = metadata.listCatalogs(session).stream()
-                .filter(catalogInfo -> catalogInfo.getCatalogName().equals(tableSchema.getCatalogName()))
-                .map(CatalogInfo::getConnectorName)
-                .findFirst();
-        return new TableInfo(connectorName, tableSchema.getQualifiedName(), tableProperties.getPredicate());
     }
 
     private static StageId getStageId(QueryId queryId, PlanFragmentId fragmentId)

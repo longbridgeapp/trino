@@ -16,16 +16,13 @@ package io.trino.operator;
 import io.trino.spi.Page;
 import io.trino.spi.PageIndexer;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeOperators;
 import io.trino.sql.gen.JoinCompiler;
-import io.trino.type.BlockTypeOperators;
 
 import java.util.List;
-import java.util.Optional;
-import java.util.stream.IntStream;
 
 import static com.google.common.base.Verify.verify;
 import static io.trino.operator.UpdateMemory.NOOP;
-import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public class GroupByHashPageIndexer
@@ -33,17 +30,9 @@ public class GroupByHashPageIndexer
 {
     private final GroupByHash hash;
 
-    public GroupByHashPageIndexer(List<? extends Type> hashTypes, JoinCompiler joinCompiler, BlockTypeOperators blockTypeOperators)
+    public GroupByHashPageIndexer(List<Type> hashTypes, JoinCompiler joinCompiler, TypeOperators typeOperators)
     {
-        this(GroupByHash.createGroupByHash(
-                hashTypes,
-                IntStream.range(0, hashTypes.size()).toArray(),
-                Optional.empty(),
-                20,
-                false,
-                joinCompiler,
-                blockTypeOperators,
-                NOOP));
+        this(GroupByHash.createGroupByHash(false, hashTypes, false, 20, false, joinCompiler, typeOperators, NOOP));
     }
 
     public GroupByHashPageIndexer(GroupByHash hash)
@@ -54,16 +43,11 @@ public class GroupByHashPageIndexer
     @Override
     public int[] indexPage(Page page)
     {
-        Work<GroupByIdBlock> work = hash.getGroupIds(page);
+        Work<int[]> work = hash.getGroupIds(page);
         boolean done = work.process();
         // TODO: this class does not yield wrt memory limit; enable it
         verify(done);
-        GroupByIdBlock groupIds = work.getResult();
-        int[] indexes = new int[page.getPositionCount()];
-        for (int i = 0; i < indexes.length; i++) {
-            indexes[i] = toIntExact(groupIds.getGroupId(i));
-        }
-        return indexes;
+        return work.getResult();
     }
 
     @Override

@@ -100,6 +100,20 @@ public interface AccessControl
     void checkCanKillQueryOwnedBy(Identity identity, Identity queryOwner);
 
     /**
+     * Check if identity is allowed to create the specified catalog.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanCreateCatalog(SecurityContext context, String catalog);
+
+    /**
+     * Check if identity is allowed to drop the specified catalog.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanDropCatalog(SecurityContext context, String catalog);
+
+    /**
      * Filter the list of catalogs to those visible to the identity.
      */
     Set<String> filterCatalogs(SecurityContext context, Set<String> catalogs);
@@ -109,7 +123,7 @@ public interface AccessControl
      *
      * @throws AccessDeniedException if not allowed
      */
-    void checkCanCreateSchema(SecurityContext context, CatalogSchemaName schemaName);
+    void checkCanCreateSchema(SecurityContext context, CatalogSchemaName schemaName, Map<String, Object> properties);
 
     /**
      * Check if identity is allowed to drop the specified schema.
@@ -256,6 +270,13 @@ public interface AccessControl
      * @throws AccessDeniedException if not allowed
      */
     void checkCanDropColumn(SecurityContext context, QualifiedObjectName tableName);
+
+    /**
+     * Check if identity is allowed to alter columns to the specified table.
+     *
+     * @throws AccessDeniedException if not allowed
+     */
+    void checkCanAlterColumn(SecurityContext context, QualifiedObjectName tableName);
 
     /**
      * Check if identity is allowed to change the specified table's user/role.
@@ -495,14 +516,6 @@ public interface AccessControl
     void checkCanSetCatalogRole(SecurityContext context, String role, String catalogName);
 
     /**
-     * Check if identity is allowed to show role authorization descriptors (i.e. RoleGrants).
-     *
-     * @param catalogName if present, the role catalog; otherwise the role is a system role
-     * @throws AccessDeniedException if not allowed
-     */
-    void checkCanShowRoleAuthorizationDescriptors(SecurityContext context, Optional<String> catalogName);
-
-    /**
      * Check if identity is allowed to show roles on the specified catalog.
      *
      * @param catalogName if present, the role catalog; otherwise the role is a system role
@@ -559,8 +572,8 @@ public interface AccessControl
         return ImmutableList.of();
     }
 
-    default List<ViewExpression> getColumnMasks(SecurityContext context, QualifiedObjectName tableName, String columnName, Type type)
+    default Optional<ViewExpression> getColumnMask(SecurityContext context, QualifiedObjectName tableName, String columnName, Type type)
     {
-        return ImmutableList.of();
+        return Optional.empty();
     }
 }

@@ -19,6 +19,7 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Resources;
+import com.google.inject.Inject;
 import com.google.inject.Key;
 import com.google.inject.Module;
 import io.airlift.http.server.HttpServerConfig;
@@ -44,6 +45,12 @@ import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.BasicPrincipal;
 import io.trino.spi.security.Identity;
 import io.trino.spi.security.SystemSecurityContext;
+import jakarta.servlet.http.HttpServlet;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import jakarta.ws.rs.GET;
+import jakarta.ws.rs.core.Context;
+import jakarta.ws.rs.core.HttpHeaders;
 import okhttp3.Cookie;
 import okhttp3.CookieJar;
 import okhttp3.Credentials;
@@ -58,13 +65,6 @@ import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
 import javax.crypto.SecretKey;
-import javax.inject.Inject;
-import javax.servlet.http.HttpServlet;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
-import javax.ws.rs.GET;
-import javax.ws.rs.core.Context;
-import javax.ws.rs.core.HttpHeaders;
 
 import java.io.File;
 import java.io.IOException;
@@ -111,20 +111,20 @@ import static io.trino.server.ui.FormWebUiAuthenticationFilter.UI_LOCATION;
 import static io.trino.server.ui.OAuthWebUiCookie.OAUTH2_COOKIE;
 import static io.trino.spi.security.AccessDeniedException.denyImpersonateUser;
 import static io.trino.spi.security.AccessDeniedException.denyReadSystemInformationAccess;
-import static io.trino.testing.assertions.Assert.assertEquals;
+import static jakarta.servlet.http.HttpServletResponse.SC_FORBIDDEN;
+import static jakarta.servlet.http.HttpServletResponse.SC_OK;
+import static jakarta.servlet.http.HttpServletResponse.SC_SEE_OTHER;
+import static jakarta.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
+import static jakarta.ws.rs.core.HttpHeaders.LOCATION;
+import static jakarta.ws.rs.core.HttpHeaders.SET_COOKIE;
+import static jakarta.ws.rs.core.HttpHeaders.WWW_AUTHENTICATE;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.time.Instant.now;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MINUTES;
-import static javax.servlet.http.HttpServletResponse.SC_FORBIDDEN;
-import static javax.servlet.http.HttpServletResponse.SC_OK;
-import static javax.servlet.http.HttpServletResponse.SC_SEE_OTHER;
-import static javax.servlet.http.HttpServletResponse.SC_UNAUTHORIZED;
-import static javax.ws.rs.core.HttpHeaders.LOCATION;
-import static javax.ws.rs.core.HttpHeaders.SET_COOKIE;
-import static javax.ws.rs.core.HttpHeaders.WWW_AUTHENTICATE;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertTrue;
 
@@ -195,9 +195,7 @@ public class TestResourceSecurity
             throws Exception
     {
         try (TestingTrinoServer server = TestingTrinoServer.builder()
-                .setProperties(ImmutableMap.<String, String>builder()
-                        .put("http-server.authentication.insecure.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
-                        .buildOrThrow())
+                .setProperties(ImmutableMap.of("http-server.authentication.insecure.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN))
                 .build()) {
             server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.WITH_IMPERSONATION);
             HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
@@ -296,7 +294,8 @@ public class TestResourceSecurity
                     .headers(Headers.of("Authorization", Credentials.basic(TEST_USER_LOGIN, "wrong_password")))
                     .build();
             try (Response response = client.newCall(request).execute()) {
-                assertThat(response.message()).isEqualTo("Access Denied: Invalid credentials | Access Denied: Invalid credentials2");
+                assertThat(requireNonNull(response.body()).string())
+                        .isEqualTo("Access Denied: Invalid credentials | Access Denied: Invalid credentials2");
             }
         }
     }
@@ -678,8 +677,8 @@ public class TestResourceSecurity
             if (refreshTokensEnabled) {
                 TokenPairSerializer serializer = server.getInstance(Key.get(TokenPairSerializer.class));
                 TokenPair tokenPair = serializer.deserialize(getOauthToken(client, bearer.getTokenServer()));
-                assertEquals(tokenPair.getAccessToken(), tokenServer.getAccessToken());
-                assertEquals(tokenPair.getRefreshToken(), Optional.of(tokenServer.getRefreshToken()));
+                assertEquals(tokenPair.accessToken(), tokenServer.getAccessToken());
+                assertEquals(tokenPair.refreshToken(), Optional.of(tokenServer.getRefreshToken()));
             }
             else {
                 assertEquals(getOauthToken(client, bearer.getTokenServer()), tokenServer.getAccessToken());
@@ -785,7 +784,7 @@ public class TestResourceSecurity
                                 .put("web-ui.enabled", "true")
                                 .put("http-server.authentication.type", "oauth2")
                                 .putAll(getOAuth2Properties(tokenServer))
-                                .put("http-server.authentication.oauth2.groups-field", GROUPS_CLAIM)
+                                .put("deprecated.http-server.authentication.oauth2.groups-field", GROUPS_CLAIM)
                                 .buildOrThrow())
                         .setAdditionalModule(oauth2Module(tokenServer))
                         .build()) {
@@ -855,20 +854,22 @@ public class TestResourceSecurity
         };
     }
 
-    @Test
-    public void testJwtAndOAuth2AuthenticatorsSeparation()
+    @Test(dataProvider = "authenticators")
+    public void testJwtAndOAuth2AuthenticatorsSeparation(String authenticators)
             throws Exception
     {
         TestingHttpServer jwkServer = createTestingJwkServer();
         jwkServer.start();
-        try (TokenServer tokenServer = new TokenServer(Optional.empty());
+        try (TokenServer tokenServer = new TokenServer(Optional.of("preferred_username"));
                 TestingTrinoServer server = TestingTrinoServer.builder()
                         .setProperties(
                                 ImmutableMap.<String, String>builder()
                                         .putAll(SECURE_PROPERTIES)
-                                        .put("http-server.authentication.type", "jwt,oauth2")
+                                        .put("http-server.authentication.type", authenticators)
                                         .put("http-server.authentication.jwt.key-file", jwkServer.getBaseUrl().toString())
+                                        .put("http-server.authentication.jwt.principal-field", "sub")
                                         .putAll(getOAuth2Properties(tokenServer))
+                                        .put("http-server.authentication.oauth2.principal-field", "preferred_username")
                                         .put("web-ui.enabled", "true")
                                         .buildOrThrow())
                         .setAdditionalModule(oauth2Module(tokenServer))
@@ -900,6 +901,15 @@ public class TestResourceSecurity
                     .build();
             assertAuthenticationAutomatic(httpServerInfo.getHttpsUri(), clientWithJwt);
         }
+    }
+
+    @DataProvider(name = "authenticators")
+    public static Object[][] authenticators()
+    {
+        return new Object[][] {
+                {"jwt,oauth2"},
+                {"oauth2,jwt"}
+        };
     }
 
     @Test
@@ -941,6 +951,38 @@ public class TestResourceSecurity
                             .build())
                     .build();
             assertAuthenticationAutomatic(httpServerInfo.getHttpsUri(), clientWithJwt);
+        }
+    }
+
+    @Test
+    public void testResourceSecurityImpersonation()
+            throws Exception
+    {
+        try (TestingTrinoServer server = TestingTrinoServer.builder()
+                .setProperties(ImmutableMap.<String, String>builder()
+                        .putAll(SECURE_PROPERTIES)
+                        .put("password-authenticator.config-files", passwordConfigDummy.toString())
+                        .put("http-server.authentication.type", "password")
+                        .put("http-server.authentication.password.user-mapping.pattern", ALLOWED_USER_MAPPING_PATTERN)
+                        .buildOrThrow())
+                .setAdditionalModule(binder -> jaxrsBinder(binder).bind(TestResource.class))
+                .build()) {
+            server.getInstance(Key.get(PasswordAuthenticatorManager.class)).setAuthenticators(TestResourceSecurity::authenticate);
+            server.getInstance(Key.get(AccessControlManager.class)).addSystemAccessControl(TestSystemAccessControl.NO_IMPERSONATION);
+            HttpServerInfo httpServerInfo = server.getInstance(Key.get(HttpServerInfo.class));
+
+            // Authenticated user TEST_USER_LOGIN impersonates impersonated-user by passing request header X-Trino-Authorization-User
+            Request request = new Request.Builder()
+                    .url(getLocation(httpServerInfo.getHttpsUri(), "/protocol/identity"))
+                    .addHeader("Authorization", Credentials.basic(TEST_USER_LOGIN, TEST_PASSWORD))
+                    .addHeader("X-Trino-Original-User", TEST_USER_LOGIN)
+                    .addHeader("X-Trino-User", "impersonated-user")
+                    .build();
+            try (Response response = client.newCall(request).execute()) {
+                assertEquals(response.code(), SC_OK);
+                assertEquals(response.header("user"), "impersonated-user");
+                assertEquals(response.header("principal"), TEST_USER_LOGIN);
+            }
         }
     }
 
@@ -1121,7 +1163,7 @@ public class TestResourceSecurity
         }
     }
 
-    @javax.ws.rs.Path("/")
+    @jakarta.ws.rs.Path("/")
     public static class TestResource
     {
         private final HttpRequestSessionContextFactory sessionContextFactory;
@@ -1138,24 +1180,24 @@ public class TestResourceSecurity
 
         @ResourceSecurity(AUTHENTICATED_USER)
         @GET
-        @javax.ws.rs.Path("/protocol/identity")
-        public javax.ws.rs.core.Response protocolIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
+        @jakarta.ws.rs.Path("/protocol/identity")
+        public jakarta.ws.rs.core.Response protocolIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
         {
             return echoIdentity(servletRequest, httpHeaders);
         }
 
         @ResourceSecurity(WEB_UI)
         @GET
-        @javax.ws.rs.Path("/ui/api/identity")
-        public javax.ws.rs.core.Response webUiIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
+        @jakarta.ws.rs.Path("/ui/api/identity")
+        public jakarta.ws.rs.core.Response webUiIdentity(@Context HttpServletRequest servletRequest, @Context HttpHeaders httpHeaders)
         {
             return echoIdentity(servletRequest, httpHeaders);
         }
 
-        public javax.ws.rs.core.Response echoIdentity(HttpServletRequest servletRequest, HttpHeaders httpHeaders)
+        public jakarta.ws.rs.core.Response echoIdentity(HttpServletRequest servletRequest, HttpHeaders httpHeaders)
         {
             Identity identity = sessionContextFactory.extractAuthorizedIdentity(servletRequest, httpHeaders, Optional.empty());
-            return javax.ws.rs.core.Response.ok()
+            return jakarta.ws.rs.core.Response.ok()
                     .header("user", identity.getUser())
                     .header("principal", identity.getPrincipal().map(Principal::getName).orElse(null))
                     .header("groups", toHeader(identity.getGroups()))

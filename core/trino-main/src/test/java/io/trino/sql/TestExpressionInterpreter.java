@@ -60,7 +60,7 @@ import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.DecimalType.createDecimalType;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
-import static io.trino.spi.type.TimeType.TIME;
+import static io.trino.spi.type.TimeType.TIME_MILLIS;
 import static io.trino.spi.type.TimeZoneKey.getTimeZoneKey;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -95,7 +95,7 @@ public class TestExpressionInterpreter
             .put(new Symbol("bound_double"), DOUBLE)
             .put(new Symbol("bound_boolean"), BOOLEAN)
             .put(new Symbol("bound_date"), DATE)
-            .put(new Symbol("bound_time"), TIME)
+            .put(new Symbol("bound_time"), TIME_MILLIS)
             .put(new Symbol("bound_timestamp"), TIMESTAMP_MILLIS)
             .put(new Symbol("bound_pattern"), VARCHAR)
             .put(new Symbol("bound_null_string"), VARCHAR)
@@ -111,7 +111,7 @@ public class TestExpressionInterpreter
             .put(new Symbol("unbound_double"), DOUBLE)
             .put(new Symbol("unbound_boolean"), BOOLEAN)
             .put(new Symbol("unbound_date"), DATE)
-            .put(new Symbol("unbound_time"), TIME)
+            .put(new Symbol("unbound_time"), TIME_MILLIS)
             .put(new Symbol("unbound_timestamp"), TIMESTAMP_MILLIS)
             .put(new Symbol("unbound_interval"), INTERVAL_DAY_TIME)
             .put(new Symbol("unbound_pattern"), VARCHAR)
@@ -285,6 +285,25 @@ public class TestExpressionInterpreter
     }
 
     @Test
+    public void testLambdaBody()
+    {
+        assertOptimizedEquals("transform(ARRAY[bound_long], n -> CAST(n as BIGINT))",
+                "transform(ARRAY[bound_long], n -> n)");
+        assertOptimizedEquals("transform(ARRAY[bound_long], n -> CAST(n as VARCHAR(5)))",
+                "transform(ARRAY[bound_long], n -> CAST(n as VARCHAR(5)))");
+        assertOptimizedEquals("transform(ARRAY[bound_long], n -> IF(false, 1, 0 / 0))",
+                "transform(ARRAY[bound_long], n -> 0 / 0)");
+        assertOptimizedEquals("transform(ARRAY[bound_long], n -> 5 / 0)",
+                "transform(ARRAY[bound_long], n -> 5 / 0)");
+        assertOptimizedEquals("transform(ARRAY[bound_long], n -> nullif(true, true))",
+                "transform(ARRAY[bound_long], n -> CAST(null AS Boolean))");
+        assertOptimizedEquals("transform(ARRAY[bound_long], n -> n + 10 * 10)",
+                "transform(ARRAY[bound_long], n -> n + 100)");
+        assertOptimizedEquals("reduce_agg(bound_long, 0, (a, b) -> IF(false, a, b), (a, b) -> IF(true, a, b))",
+                "reduce_agg(bound_long, 0, (a, b) -> b, (a, b) -> a)");
+    }
+
+    @Test
     public void testNullIf()
     {
         assertOptimizedEquals("nullif(true, true)", "NULL");
@@ -396,6 +415,8 @@ public class TestExpressionInterpreter
         assertOptimizedEquals("NULL BETWEEN 2 AND 4", "NULL");
         assertOptimizedEquals("3 BETWEEN NULL AND 4", "NULL");
         assertOptimizedEquals("3 BETWEEN 2 AND NULL", "NULL");
+        assertOptimizedEquals("2 BETWEEN 3 AND NULL", "false");
+        assertOptimizedEquals("8 BETWEEN NULL AND 6", "false");
 
         assertOptimizedEquals("'cc' BETWEEN 'b' AND 'd'", "true");
         assertOptimizedEquals("'b' BETWEEN 'cc' AND 'd'", "false");
@@ -1698,16 +1719,6 @@ public class TestExpressionInterpreter
     }
 
     @Test
-    public void testOptimizeInvalidLike()
-    {
-        assertOptimizedMatches("unbound_string LIKE 'abc' ESCAPE ''", "unbound_string LIKE 'abc' ESCAPE ''");
-        assertOptimizedMatches("unbound_string LIKE 'abc' ESCAPE 'bc'", "unbound_string LIKE 'abc' ESCAPE 'bc'");
-        assertOptimizedMatches("unbound_string LIKE '#' ESCAPE '#'", "unbound_string LIKE '#' ESCAPE '#'");
-        assertOptimizedMatches("unbound_string LIKE '#abc' ESCAPE '#'", "unbound_string LIKE '#abc' ESCAPE '#'");
-        assertOptimizedMatches("unbound_string LIKE 'ab#' ESCAPE '#'", "unbound_string LIKE 'ab#' ESCAPE '#'");
-    }
-
-    @Test
     public void testEvaluateInvalidLike()
     {
         // TODO This doesn't fail (https://github.com/trinodb/trino/issues/7273)
@@ -1780,11 +1791,11 @@ public class TestExpressionInterpreter
     {
         optimize("ARRAY[]");
         assertOptimizedEquals("ARRAY[(unbound_long + 0), (unbound_long + 1), (unbound_long + 2)]",
-                "array_constructor((unbound_long + 0), (unbound_long + 1), (unbound_long + 2))");
+                "\"$array\"((unbound_long + 0), (unbound_long + 1), (unbound_long + 2))");
         assertOptimizedEquals("ARRAY[(bound_long + 0), (unbound_long + 1), (bound_long + 2)]",
-                "array_constructor((bound_long + 0), (unbound_long + 1), (bound_long + 2))");
+                "\"$array\"((bound_long + 0), (unbound_long + 1), (bound_long + 2))");
         assertOptimizedEquals("ARRAY[(bound_long + 0), (unbound_long + 1), NULL]",
-                "array_constructor((bound_long + 0), (unbound_long + 1), NULL)");
+                "\"$array\"((bound_long + 0), (unbound_long + 1), NULL)");
     }
 
     @Test

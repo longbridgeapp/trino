@@ -18,6 +18,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Multimap;
 import com.google.common.collect.Multimaps;
+import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 import io.airlift.node.NodeInfo;
@@ -58,6 +59,7 @@ import io.trino.spi.eventlistener.QueryMetadata;
 import io.trino.spi.eventlistener.QueryOutputMetadata;
 import io.trino.spi.eventlistener.QueryStatistics;
 import io.trino.spi.eventlistener.StageCpuDistribution;
+import io.trino.spi.eventlistener.StageOutputBufferUtilization;
 import io.trino.spi.metrics.Metrics;
 import io.trino.spi.resourcegroups.QueryType;
 import io.trino.spi.resourcegroups.ResourceGroupId;
@@ -74,8 +76,7 @@ import io.trino.sql.planner.planprinter.ValuePrinter;
 import io.trino.transaction.TransactionId;
 import org.joda.time.DateTime;
 
-import javax.inject.Inject;
-
+import java.time.Duration;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -106,7 +107,7 @@ public class QueryMonitor
     private final JsonCodec<ExecutionFailureInfo> executionFailureInfoCodec;
     private final JsonCodec<StatsAndCosts> statsAndCostsCodec;
     private final EventListenerManager eventListenerManager;
-    private final String serverVersion;
+    private final NodeVersion serverVersion;
     private final String serverAddress;
     private final String environment;
     private final SessionPropertyManager sessionPropertyManager;
@@ -133,7 +134,7 @@ public class QueryMonitor
         this.operatorStatsCodec = requireNonNull(operatorStatsCodec, "operatorStatsCodec is null");
         this.statsAndCostsCodec = requireNonNull(statsAndCostsCodec, "statsAndCostsCodec is null");
         this.executionFailureInfoCodec = requireNonNull(executionFailureInfoCodec, "executionFailureInfoCodec is null");
-        this.serverVersion = nodeVersion.toString();
+        this.serverVersion = nodeVersion;
         this.serverAddress = nodeInfo.getExternalAddress();
         this.environment = nodeInfo.getEnvironment();
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
@@ -198,6 +199,9 @@ public class QueryMonitor
                         Optional.empty(),
                         Optional.empty(),
                         Optional.empty(),
+                        Optional.empty(),
+                        Optional.empty(),
+                        0,
                         0,
                         0,
                         0,
@@ -218,6 +222,8 @@ public class QueryMonitor
                         ImmutableList.of(),
                         0,
                         true,
+                        ImmutableList.of(),
+                        ImmutableList.of(),
                         ImmutableList.of(),
                         ImmutableList.of(),
                         Optional.empty()),
@@ -298,11 +304,13 @@ public class QueryMonitor
                 Optional.of(ofMillis(queryStats.getResourceWaitingTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getAnalysisTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getPlanningTime().toMillis())),
+                Optional.of(ofMillis(queryStats.getPlanningCpuTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getExecutionTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getInputBlockedTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getFailedInputBlockedTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getOutputBlockedTime().toMillis())),
                 Optional.of(ofMillis(queryStats.getFailedOutputBlockedTime().toMillis())),
+                Optional.of(ofMillis(queryStats.getPhysicalInputReadTime().toMillis())),
                 queryStats.getPeakUserMemoryReservation().toBytes(),
                 queryStats.getPeakTaskUserMemory().toBytes(),
                 queryStats.getPeakTaskTotalMemory().toBytes(),
@@ -318,13 +326,16 @@ public class QueryMonitor
                 queryStats.getOutputPositions(),
                 queryStats.getLogicalWrittenDataSize().toBytes(),
                 queryStats.getWrittenPositions(),
+                queryStats.getSpilledDataSize().toBytes(),
                 queryStats.getCumulativeUserMemory(),
                 queryStats.getFailedCumulativeUserMemory(),
                 queryStats.getStageGcStatistics(),
                 queryStats.getCompletedDrivers(),
                 queryInfo.isFinalQueryInfo(),
                 getCpuDistributions(queryInfo),
+                getStageOutputBufferUtilizations(queryInfo),
                 operatorSummaries.build(),
+                ImmutableList.copyOf(queryInfo.getQueryStats().getOptimizerRulesSummaries()),
                 serializedPlanNodeStatsAndCosts);
     }
 
@@ -332,6 +343,7 @@ public class QueryMonitor
     {
         return new QueryContext(
                 session.getUser(),
+                session.getOriginalUser(),
                 session.getPrincipal(),
                 session.getGroups(),
                 session.getTraceToken(),
@@ -347,7 +359,7 @@ public class QueryMonitor
                 mergeSessionAndCatalogProperties(session),
                 session.getResourceEstimates(),
                 serverAddress,
-                serverVersion,
+                serverVersion.toString(),
                 environment,
                 queryType,
                 retryPolicy.toString());
@@ -362,7 +374,8 @@ public class QueryMonitor
                         queryInfo.getQueryStats(),
                         new ValuePrinter(metadata, functionManager, queryInfo.getSession().toSession(sessionPropertyManager)),
                         false,
-                        anonymizer));
+                        anonymizer,
+                        serverVersion));
             }
         }
         catch (Exception e) {
@@ -419,6 +432,7 @@ public class QueryMonitor
 
             inputs.add(new QueryInputMetadata(
                     input.getCatalogName(),
+                    input.getCatalogVersion(),
                     input.getSchema(),
                     input.getTable(),
                     input.getColumns().stream()
@@ -450,6 +464,7 @@ public class QueryMonitor
             output = Optional.of(
                     new QueryOutputMetadata(
                             queryInfo.getOutput().get().getCatalogName(),
+                            queryInfo.getOutput().get().getCatalogVersion(),
                             queryInfo.getOutput().get().getSchema(),
                             queryInfo.getOutput().get().getTable(),
                             outputColumnsMetadata,
@@ -701,6 +716,44 @@ public class QueryMonitor
                 (long) snapshot.getMax(),
                 (long) snapshot.getTotal(),
                 snapshot.getTotal() / snapshot.getCount());
+    }
+
+    private static List<StageOutputBufferUtilization> getStageOutputBufferUtilizations(QueryInfo queryInfo)
+    {
+        if (queryInfo.getOutputStage().isEmpty()) {
+            return ImmutableList.of();
+        }
+
+        ImmutableList.Builder<StageOutputBufferUtilization> builder = ImmutableList.builder();
+        populateStageOutputBufferUtilization(queryInfo.getOutputStage().get(), builder);
+
+        return builder.build();
+    }
+
+    private static void populateStageOutputBufferUtilization(StageInfo stageInfo, ImmutableList.Builder<StageOutputBufferUtilization> utilizations)
+    {
+        stageInfo.getStageStats().getOutputBufferUtilization()
+                .ifPresent(utilization -> {
+                    utilizations.add(new StageOutputBufferUtilization(
+                            stageInfo.getStageId().getId(),
+                            stageInfo.getTasks().size(),
+                            // scale ratio to percentages
+                            utilization.getP01() * 100,
+                            utilization.getP05() * 100,
+                            utilization.getP10() * 100,
+                            utilization.getP25() * 100,
+                            utilization.getP50() * 100,
+                            utilization.getP75() * 100,
+                            utilization.getP90() * 100,
+                            utilization.getP95() * 100,
+                            utilization.getP99() * 100,
+                            utilization.getMin() * 100,
+                            utilization.getMax() * 100,
+                            Duration.ofNanos(utilization.getTotal())));
+                });
+        for (StageInfo subStage : stageInfo.getSubStages()) {
+            populateStageOutputBufferUtilization(subStage, utilizations);
+        }
     }
 
     private static class FragmentNode

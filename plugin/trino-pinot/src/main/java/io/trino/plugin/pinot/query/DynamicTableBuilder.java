@@ -33,7 +33,7 @@ import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.core.query.reduce.PostAggregationHandler;
 import org.apache.pinot.core.query.request.context.QueryContext;
-import org.apache.pinot.core.query.request.context.utils.BrokerRequestToQueryContextConverter;
+import org.apache.pinot.core.query.request.context.utils.QueryContextConverterUtils;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
 import org.apache.pinot.sql.parsers.CalciteSqlCompiler;
 
@@ -46,7 +46,6 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.plugin.pinot.PinotColumnHandle.fromNonAggregateColumnHandle;
 import static io.trino.plugin.pinot.PinotErrorCode.PINOT_EXCEPTION;
 import static io.trino.plugin.pinot.query.PinotExpressionRewriter.rewriteExpression;
 import static io.trino.plugin.pinot.query.PinotPatterns.WILDCARD;
@@ -62,7 +61,6 @@ import static org.apache.pinot.segment.spi.AggregationFunctionType.getAggregatio
 
 public final class DynamicTableBuilder
 {
-    private static final CalciteSqlCompiler REQUEST_COMPILER = new CalciteSqlCompiler();
     public static final String OFFLINE_SUFFIX = "_OFFLINE";
     public static final String REALTIME_SUFFIX = "_REALTIME";
     private static final Set<AggregationFunctionType> NON_NULL_ON_EMPTY_AGGREGATIONS = EnumSet.of(COUNT, DISTINCTCOUNT, DISTINCTCOUNTHLL);
@@ -77,9 +75,10 @@ public final class DynamicTableBuilder
         requireNonNull(schemaTableName, "schemaTableName is null");
         requireNonNull(typeConverter, "typeConverter is null");
         String query = schemaTableName.getTableName();
-        BrokerRequest request = REQUEST_COMPILER.compileToBrokerRequest(query);
+        BrokerRequest request = CalciteSqlCompiler.compileToBrokerRequest(query);
         PinotQuery pinotQuery = request.getPinotQuery();
-        QueryContext queryContext = BrokerRequestToQueryContextConverter.convert(request);
+        QueryContext queryContext = QueryContextConverterUtils.getQueryContext(pinotQuery);
+
         String tableName = request.getQuerySource().getTableName();
         String trinoTableName = stripSuffix(tableName).toLowerCase(ENGLISH);
         String pinotTableName = pinotClient.getPinotTableNameFromTrinoTableName(trinoTableName);
@@ -141,7 +140,8 @@ public final class DynamicTableBuilder
             // Since Pinot doesn't support subqueries yet, we can only have one occurrence of SELECT *
             if (expressionContext.getType() == ExpressionContext.Type.IDENTIFIER && expressionContext.getIdentifier().equals(WILDCARD)) {
                 pinotColumnsBuilder.addAll(columnHandles.values().stream()
-                        .map(handle -> fromNonAggregateColumnHandle((PinotColumnHandle) handle))
+                        .map(PinotColumnHandle.class::cast)
+                        .map(PinotMetadata::toNonAggregateColumnHandle)
                         .collect(toImmutableList()));
             }
             else {

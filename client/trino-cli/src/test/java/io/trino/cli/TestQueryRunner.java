@@ -21,6 +21,8 @@ import io.trino.client.ClientTypeSignature;
 import io.trino.client.Column;
 import io.trino.client.QueryResults;
 import io.trino.client.StatementStats;
+import io.trino.client.uri.PropertyName;
+import io.trino.client.uri.TrinoUri;
 import okhttp3.logging.HttpLoggingInterceptor;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
@@ -30,9 +32,12 @@ import org.testng.annotations.Test;
 
 import java.io.IOException;
 import java.io.PrintStream;
+import java.sql.SQLException;
 import java.time.ZoneId;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.Properties;
 
 import static com.google.common.io.ByteStreams.nullOutputStream;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
@@ -67,6 +72,7 @@ public class TestQueryRunner
             throws IOException
     {
         server.close();
+        server = null;
     }
 
     @Test
@@ -84,18 +90,27 @@ public class TestQueryRunner
                 .addHeader(CONTENT_TYPE, "application/json")
                 .setBody(createResults(server)));
 
-        QueryRunner queryRunner = createQueryRunner(createClientSession(server), false);
+        QueryRunner queryRunner = createQueryRunner(createTrinoUri(server, false), createClientSession(server));
 
         try (Query query = queryRunner.startQuery("first query will introduce a cookie")) {
-            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, false, false);
+            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, Optional.of(""), false);
         }
         try (Query query = queryRunner.startQuery("second query should carry the cookie")) {
-            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, false, false);
+            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, Optional.of(""), false);
         }
 
         assertNull(server.takeRequest().getHeader("Cookie"));
         assertEquals(server.takeRequest().getHeader("Cookie"), "a=apple");
         assertEquals(server.takeRequest().getHeader("Cookie"), "a=apple");
+    }
+
+    static TrinoUri createTrinoUri(MockWebServer server, boolean insecureSsl)
+            throws SQLException
+    {
+        Properties properties = new Properties();
+        properties.setProperty(PropertyName.EXTERNAL_AUTHENTICATION_REDIRECT_HANDLERS.toString(), PRINT.name());
+        properties.setProperty(PropertyName.SSL.toString(), Boolean.toString(!insecureSsl));
+        return TrinoUri.create(server.url("/").uri(), properties);
     }
 
     static ClientSession createClientSession(MockWebServer server)
@@ -124,7 +139,11 @@ public class TestQueryRunner
                 null,
                 ImmutableList.of(new Column("_col0", BIGINT, new ClientTypeSignature(BIGINT))),
                 ImmutableList.of(ImmutableList.of(123)),
-                StatementStats.builder().setState("FINISHED").build(),
+                StatementStats.builder()
+                        .setState("FINISHED")
+                        .setProgressPercentage(OptionalDouble.empty())
+                        .setRunningPercentage(OptionalDouble.empty())
+                        .build(),
                 //new StatementStats("FINISHED", false, true, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, null),
                 null,
                 ImmutableList.of(),
@@ -133,35 +152,13 @@ public class TestQueryRunner
         return QUERY_RESULTS_CODEC.toJson(queryResults);
     }
 
-    static QueryRunner createQueryRunner(ClientSession clientSession, boolean insecureSsl)
+    static QueryRunner createQueryRunner(TrinoUri uri, ClientSession clientSession)
     {
         return new QueryRunner(
+                uri,
                 clientSession,
                 false,
-                HttpLoggingInterceptor.Level.NONE,
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                false,
-                insecureSsl,
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                Optional.empty(),
-                false,
-                false,
-                false,
-                ImmutableList.of(PRINT));
+                HttpLoggingInterceptor.Level.NONE);
     }
 
     static PrintStream nullPrintStream()

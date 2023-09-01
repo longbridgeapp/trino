@@ -13,6 +13,7 @@
  */
 package io.trino.plugin.hive;
 
+import com.google.inject.Inject;
 import io.trino.spi.NodeManager;
 import io.trino.spi.connector.BucketFunction;
 import io.trino.spi.connector.ConnectorBucketNodeMap;
@@ -24,8 +25,6 @@ import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeManager;
 import io.trino.spi.type.TypeOperators;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Optional;
@@ -57,6 +56,9 @@ public class HiveNodePartitioningProvider
             List<Type> partitionChannelTypes,
             int bucketCount)
     {
+        if (partitioningHandle instanceof HiveUpdateHandle) {
+            return new HiveUpdateBucketFunction(bucketCount);
+        }
         HivePartitioningHandle handle = (HivePartitioningHandle) partitioningHandle;
         List<HiveType> hiveBucketTypes = handle.getHiveTypes();
         if (!handle.isUsePartitionedBucketing()) {

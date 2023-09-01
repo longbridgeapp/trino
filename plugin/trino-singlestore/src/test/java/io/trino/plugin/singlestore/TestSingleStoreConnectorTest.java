@@ -32,14 +32,15 @@ import java.util.OptionalInt;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.singlestore.SingleStoreQueryRunner.createSingleStoreQueryRunner;
+import static io.trino.spi.connector.ConnectorMetadata.MODIFYING_ROWS_MESSAGE;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.testing.MaterializedResult.resultBuilder;
-import static io.trino.testing.assertions.Assert.assertEquals;
 import static java.lang.String.format;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.IntStream.range;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
@@ -65,39 +66,25 @@ public class TestSingleStoreConnectorTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY:
-            case SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY:
-                return false;
-
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_JOIN_PUSHDOWN:
-                return true;
-
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN:
-            case SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM:
-                return false;
-
-            case SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT:
-            case SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT:
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-            case SUPPORTS_ADD_COLUMN_WITH_COMMENT:
-                return false;
-
-            case SUPPORTS_ARRAY:
-            case SUPPORTS_ROW_TYPE:
-                return false;
-
-            case SUPPORTS_RENAME_SCHEMA:
-            case SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_JOIN_PUSHDOWN -> true;
+            case SUPPORTS_ADD_COLUMN_WITH_COMMENT,
+                    SUPPORTS_AGGREGATION_PUSHDOWN,
+                    SUPPORTS_ARRAY,
+                    SUPPORTS_COMMENT_ON_COLUMN,
+                    SUPPORTS_COMMENT_ON_TABLE,
+                    SUPPORTS_CREATE_TABLE_WITH_COLUMN_COMMENT,
+                    SUPPORTS_CREATE_TABLE_WITH_TABLE_COMMENT,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_DISTINCT_FROM,
+                    SUPPORTS_JOIN_PUSHDOWN_WITH_FULL_JOIN,
+                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_EQUALITY,
+                    SUPPORTS_PREDICATE_PUSHDOWN_WITH_VARCHAR_INEQUALITY,
+                    SUPPORTS_RENAME_SCHEMA,
+                    SUPPORTS_RENAME_TABLE_ACROSS_SCHEMAS,
+                    SUPPORTS_ROW_TYPE,
+                    SUPPORTS_SET_COLUMN_TYPE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -175,7 +162,7 @@ public class TestSingleStoreConnectorTest
     public void testDeleteWithLike()
     {
         assertThatThrownBy(super::testDeleteWithLike)
-                .hasStackTraceContaining("TrinoException: Unsupported delete");
+                .hasStackTraceContaining("TrinoException: " + MODIFYING_ROWS_MESSAGE);
     }
 
     @Test
@@ -205,12 +192,10 @@ public class TestSingleStoreConnectorTest
     {
         onRemoteDatabase().execute("CREATE TABLE tpch.mysql_test_tinyint1 (c_tinyint tinyint(1))");
 
-        MaterializedResult actual = computeActual("SHOW COLUMNS FROM mysql_test_tinyint1");
-        MaterializedResult expected = resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
-                .row("c_tinyint", "tinyint", "", "")
-                .build();
-
-        assertEquals(actual, expected);
+        assertThat(query("SHOW COLUMNS FROM mysql_test_tinyint1"))
+                .matches(resultBuilder(getSession(), VARCHAR, VARCHAR, VARCHAR, VARCHAR)
+                        .row("c_tinyint", "tinyint", "", "")
+                        .build());
 
         onRemoteDatabase().execute("INSERT INTO tpch.mysql_test_tinyint1 VALUES (127), (-128)");
         MaterializedResult materializedRows = computeActual("SELECT * FROM tpch.mysql_test_tinyint1 WHERE c_tinyint = 127");
@@ -266,6 +251,25 @@ public class TestSingleStoreConnectorTest
                 "VALUES ('col1', 'test comment'), ('col2', null), ('col3', null)");
 
         assertUpdate("DROP TABLE test_column_comment");
+    }
+
+    @Override
+    public void testAddNotNullColumn()
+    {
+        assertThatThrownBy(super::testAddNotNullColumn)
+                .isInstanceOf(AssertionError.class)
+                .hasMessage("Should fail to add not null column without a default value to a non-empty table");
+
+        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_add_nn_col", "(a_varchar varchar)")) {
+            String tableName = table.getName();
+
+            assertUpdate("INSERT INTO " + tableName + " VALUES ('a')", 1);
+            assertUpdate("ALTER TABLE " + tableName + " ADD COLUMN b_varchar varchar NOT NULL");
+            assertThat(query("TABLE " + tableName))
+                    .skippingTypesCheck()
+                    // SingleStore adds implicit default value of '' for b_varchar
+                    .matches("VALUES ('a', '')");
+        }
     }
 
     @Test

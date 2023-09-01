@@ -13,7 +13,6 @@
  */
 package io.trino.orc.metadata;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.spi.TrinoException;
@@ -216,15 +215,14 @@ public class OrcType
         if (REAL.equals(type)) {
             return ImmutableList.of(new OrcType(OrcTypeKind.FLOAT));
         }
-        if (type instanceof VarcharType) {
-            VarcharType varcharType = (VarcharType) type;
+        if (type instanceof VarcharType varcharType) {
             if (varcharType.isUnbounded()) {
                 return ImmutableList.of(new OrcType(OrcTypeKind.STRING));
             }
             return ImmutableList.of(new OrcType(OrcTypeKind.VARCHAR, varcharType.getBoundedLength()));
         }
-        if (type instanceof CharType) {
-            return ImmutableList.of(new OrcType(OrcTypeKind.CHAR, ((CharType) type).getLength()));
+        if (type instanceof CharType charType) {
+            return ImmutableList.of(new OrcType(OrcTypeKind.CHAR, charType.getLength()));
         }
         if (VARBINARY.equals(type)) {
             return ImmutableList.of(new OrcType(OrcTypeKind.BINARY));
@@ -238,8 +236,7 @@ public class OrcType
         if (TIMESTAMP_TZ_MILLIS.equals(type) || TIMESTAMP_TZ_MICROS.equals(type) || TIMESTAMP_TZ_NANOS.equals(type)) {
             return ImmutableList.of(new OrcType(OrcTypeKind.TIMESTAMP_INSTANT));
         }
-        if (type instanceof DecimalType) {
-            DecimalType decimalType = (DecimalType) type;
+        if (type instanceof DecimalType decimalType) {
             return ImmutableList.of(new OrcType(OrcTypeKind.DECIMAL, decimalType.getPrecision(), decimalType.getScale()));
         }
         if (type instanceof ArrayType) {
@@ -293,7 +290,6 @@ public class OrcType
         return createRootOrcType(fieldNames, fieldTypes, Optional.empty());
     }
 
-    @VisibleForTesting
     public static ColumnMetadata<OrcType> createRootOrcType(List<String> fieldNames, List<Type> fieldTypes, Optional<Function<Type, Optional<OrcType>>> additionalTypeMapping)
     {
         return new ColumnMetadata<>(createOrcRowType(0, fieldNames, fieldTypes, additionalTypeMapping));

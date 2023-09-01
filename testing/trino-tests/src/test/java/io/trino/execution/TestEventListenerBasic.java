@@ -122,9 +122,13 @@ public class TestEventListenerBasic
             public Iterable<ConnectorFactory> getConnectorFactories()
             {
                 MockConnectorFactory connectorFactory = MockConnectorFactory.builder()
-                        .withListTables((session, s) -> ImmutableList.of(
-                                new SchemaTableName("default", "tests_table"),
-                                new SchemaTableName("tiny", "nation")))
+                        .withListTables((session, schemaName) -> {
+                            return switch (schemaName) {
+                                case "default" -> List.of("tests_table");
+                                case "tiny" -> List.of("nation");
+                                default -> List.of();
+                            };
+                        })
                         .withGetColumns(schemaTableName -> {
                             if (schemaTableName.equals(new SchemaTableName("tiny", "nation"))) {
                                 return TPCH_NATION_SCHEMA;
@@ -150,7 +154,7 @@ public class TestEventListenerBasic
                                     "SELECT nationkey AS test_column FROM tpch.tiny.nation",
                                     Optional.empty(),
                                     Optional.empty(),
-                                    ImmutableList.of(new ConnectorViewDefinition.ViewColumn("test_column", BIGINT.getTypeId())),
+                                    ImmutableList.of(new ConnectorViewDefinition.ViewColumn("test_column", BIGINT.getTypeId(), Optional.empty())),
                                     Optional.empty(),
                                     Optional.empty(),
                                     true);
@@ -349,7 +353,7 @@ public class TestEventListenerBasic
 
         ColumnInfo column = table.getColumns().get(0);
         assertEquals(column.getColumn(), "linenumber");
-        assertTrue(column.getMasks().isEmpty());
+        assertTrue(column.getMask().isEmpty());
 
         List<RoutineInfo> routines = event.getMetadata().getRoutines();
         assertEquals(tables.size(), 1);
@@ -381,7 +385,7 @@ public class TestEventListenerBasic
 
         ColumnInfo column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("nationkey");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
 
         table = tables.get(1);
         assertThat(table.getCatalog()).isEqualTo("mock");
@@ -394,7 +398,7 @@ public class TestEventListenerBasic
 
         column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("test_column");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
     }
 
     @Test
@@ -418,7 +422,7 @@ public class TestEventListenerBasic
 
         ColumnInfo column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("nationkey");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
 
         table = tables.get(1);
         assertThat(table.getCatalog()).isEqualTo("mock");
@@ -431,7 +435,7 @@ public class TestEventListenerBasic
 
         column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("test_column");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
     }
 
     @Test
@@ -518,7 +522,7 @@ public class TestEventListenerBasic
 
         ColumnInfo column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("name");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
 
         table = tables.get(1);
         assertThat(table.getCatalog()).isEqualTo("mock");
@@ -531,7 +535,7 @@ public class TestEventListenerBasic
 
         column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("test_varchar");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
     }
 
     @Test
@@ -566,7 +570,7 @@ public class TestEventListenerBasic
 
         ColumnInfo column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("orderkey");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
 
         table = tables.get(1);
         assertThat(table.getCatalog()).isEqualTo("mock");
@@ -579,11 +583,11 @@ public class TestEventListenerBasic
 
         column = table.getColumns().get(0);
         assertThat(column.getColumn()).isEqualTo("test_varchar");
-        assertThat(column.getMasks()).hasSize(1);
+        assertThat(column.getMask()).isPresent();
 
         column = table.getColumns().get(1);
         assertThat(column.getColumn()).isEqualTo("test_bigint");
-        assertThat(column.getMasks()).isEmpty();
+        assertThat(column.getMask()).isEmpty();
     }
 
     @Test
@@ -725,6 +729,7 @@ public class TestEventListenerBasic
         assertEquals(statistics.getOutputRows(), queryStats.getOutputPositions());
         assertEquals(statistics.getWrittenBytes(), queryStats.getLogicalWrittenDataSize().toBytes());
         assertEquals(statistics.getWrittenRows(), queryStats.getWrittenPositions());
+        assertEquals(statistics.getSpilledBytes(), queryStats.getSpilledDataSize().toBytes());
         assertEquals(statistics.getCumulativeMemory(), queryStats.getCumulativeUserMemory());
         assertEquals(statistics.getStageGcStatistics(), queryStats.getStageGcStatistics());
         assertEquals(statistics.getCompletedSplits(), queryStats.getCompletedDrivers());
@@ -1070,6 +1075,65 @@ public class TestEventListenerBasic
         QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
         assertThat(event.getIoMetadata().getOutput().get().getColumns().get())
                 .containsExactly(new OutputColumnMetadata("test_varchar", VARCHAR_TYPE, ImmutableSet.of()));
+    }
+
+    @Test
+    public void testOutputColumnsForUpdatingColumnWithSelectQuery()
+            throws Exception
+    {
+        QueryEvents queryEvents = runQueryAndWaitForEvents("UPDATE mock.default.table_for_output SET test_varchar = (SELECT name from nation LIMIT 1)").getQueryEvents();
+        QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
+        assertThat(event.getIoMetadata().getOutput().get().getColumns().get())
+                .containsExactly(new OutputColumnMetadata("test_varchar", VARCHAR_TYPE, ImmutableSet.of(new ColumnDetail("tpch", "tiny", "nation", "name"))));
+    }
+
+    @Test
+    public void testOutputColumnsForUpdatingColumnWithSelectQueryWithAliasedField()
+            throws Exception
+    {
+        QueryEvents queryEvents = runQueryAndWaitForEvents("UPDATE mock.default.table_for_output SET test_varchar = (SELECT name AS aliased_name from nation LIMIT 1)").getQueryEvents();
+        QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
+        assertThat(event.getIoMetadata().getOutput().get().getColumns().get())
+                .containsExactly(new OutputColumnMetadata("test_varchar", VARCHAR_TYPE, ImmutableSet.of(new ColumnDetail("tpch", "tiny", "nation", "name"))));
+    }
+
+    @Test
+    public void testOutputColumnsForUpdatingColumnsWithSelectQueries()
+            throws Exception
+    {
+        QueryEvents queryEvents = runQueryAndWaitForEvents("""
+                UPDATE mock.default.table_for_output SET test_varchar = (SELECT name AS aliased_name from nation LIMIT 1), test_bigint = (SELECT nationkey FROM nation LIMIT 1)
+                """).getQueryEvents();
+        QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
+        assertThat(event.getIoMetadata().getOutput().get().getColumns().get())
+                .containsExactlyInAnyOrder(
+                        new OutputColumnMetadata("test_varchar", VARCHAR_TYPE, ImmutableSet.of(new ColumnDetail("tpch", "tiny", "nation", "name"))),
+                        new OutputColumnMetadata("test_bigint", BIGINT_TYPE, ImmutableSet.of(new ColumnDetail("tpch", "tiny", "nation", "nationkey"))));
+    }
+
+    @Test
+    public void testOutputColumnsForUpdatingColumnsWithSelectQueryAndRawValue()
+            throws Exception
+    {
+        QueryEvents queryEvents = runQueryAndWaitForEvents("""
+                UPDATE mock.default.table_for_output SET test_varchar = (SELECT name AS aliased_name from nation LIMIT 1), test_bigint = 1
+                """).getQueryEvents();
+        QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
+        assertThat(event.getIoMetadata().getOutput().get().getColumns().get())
+                .containsExactlyInAnyOrder(
+                        new OutputColumnMetadata("test_varchar", VARCHAR_TYPE, ImmutableSet.of(new ColumnDetail("tpch", "tiny", "nation", "name"))),
+                        new OutputColumnMetadata("test_bigint", BIGINT_TYPE, ImmutableSet.of()));
+    }
+
+    @Test
+    public void testOutputColumnsForUpdatingColumnWithSelectQueryAndWhereClauseWithOuterColumn()
+            throws Exception
+    {
+        QueryEvents queryEvents = runQueryAndWaitForEvents("""
+                UPDATE mock.default.table_for_output SET test_varchar = (SELECT name from nation WHERE test_bigint = nationkey)""").getQueryEvents();
+        QueryCompletedEvent event = queryEvents.getQueryCompletedEvent();
+        assertThat(event.getIoMetadata().getOutput().get().getColumns().get())
+                .containsExactly(new OutputColumnMetadata("test_varchar", VARCHAR_TYPE, ImmutableSet.of(new ColumnDetail("tpch", "tiny", "nation", "name"))));
     }
 
     @Test

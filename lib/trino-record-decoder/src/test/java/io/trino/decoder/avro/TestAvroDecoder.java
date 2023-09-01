@@ -21,6 +21,7 @@ import io.trino.decoder.DecoderColumnHandle;
 import io.trino.decoder.DecoderTestColumnHandle;
 import io.trino.decoder.FieldValueProvider;
 import io.trino.decoder.RowDecoder;
+import io.trino.decoder.RowDecoderSpec;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.type.ArrayType;
@@ -31,7 +32,6 @@ import io.trino.spi.type.DoubleType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.VarbinaryType;
-import org.apache.avro.AvroTypeException;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
 import org.apache.avro.SchemaBuilder.FieldAssembler;
@@ -60,6 +60,8 @@ import java.util.Set;
 import static io.trino.decoder.avro.AvroDecoderTestUtil.checkArrayValues;
 import static io.trino.decoder.avro.AvroDecoderTestUtil.checkMapValues;
 import static io.trino.decoder.avro.AvroDecoderTestUtil.checkRowValues;
+import static io.trino.decoder.avro.AvroRowDecoderFactory.DATA_SCHEMA;
+import static io.trino.decoder.util.DecoderTestUtil.TESTING_SESSION;
 import static io.trino.decoder.util.DecoderTestUtil.checkIsNull;
 import static io.trino.decoder.util.DecoderTestUtil.checkValue;
 import static io.trino.spi.type.BigintType.BIGINT;
@@ -75,6 +77,7 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.trino.spi.type.VarcharType.createVarcharType;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
+import static java.lang.Float.floatToIntBits;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
@@ -83,7 +86,6 @@ import static org.testng.Assert.assertTrue;
 
 public class TestAvroDecoder
 {
-    private static final String DATA_SCHEMA = "dataSchema";
     private static final AvroRowDecoderFactory DECODER_FACTORY = new AvroRowDecoderFactory(new FixedSchemaAvroReaderSupplier.Factory(), new AvroFileDeserializer.Factory());
 
     private static final Type VARCHAR_MAP_TYPE = TESTING_TYPE_MANAGER.getType(mapType(VARCHAR.getTypeSignature(), VARCHAR.getTypeSignature()));
@@ -163,9 +165,9 @@ public class TestAvroDecoder
 
     private static Map<DecoderColumnHandle, FieldValueProvider> decodeRow(byte[] avroData, Set<DecoderColumnHandle> columns, Map<String, String> dataParams)
     {
-        RowDecoder rowDecoder = DECODER_FACTORY.create(dataParams, columns);
+        RowDecoder rowDecoder = DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(AvroRowDecoderFactory.NAME, dataParams, columns));
         return rowDecoder.decodeRow(avroData)
-                .orElseThrow(AssertionError::new);
+                .orElseThrow(() -> new IllegalStateException("Problems during decode phase"));
     }
 
     private static byte[] buildAvroData(Schema schema, String name, Object value)
@@ -363,10 +365,8 @@ public class TestAvroDecoder
                 .toString();
 
         assertThatThrownBy(() -> decodeRow(originalIntData, ImmutableSet.of(stringColumnReadingIntData), ImmutableMap.of(DATA_SCHEMA, changedTypeSchema)))
-                .isInstanceOf(TrinoException.class)
-                .hasCauseExactlyInstanceOf(AvroTypeException.class)
-                .hasStackTraceContaining("Found int, expecting string")
-                .hasMessageMatching("Decoding Avro record failed.");
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageMatching("Problems during decode phase");
     }
 
     @Test
@@ -415,21 +415,12 @@ public class TestAvroDecoder
     }
 
     @Test
-    public void testFloatDecodedAsDouble()
-    {
-        DecoderTestColumnHandle row = new DecoderTestColumnHandle(0, "row", DOUBLE, "float_field", null, null, false, false, false);
-        Map<DecoderColumnHandle, FieldValueProvider> decodedRow = buildAndDecodeColumn(row, "float_field", "\"float\"", 10.2f);
-
-        checkValue(decodedRow, row, 10.2);
-    }
-
-    @Test
     public void testFloatDecodedAsReal()
     {
         DecoderTestColumnHandle row = new DecoderTestColumnHandle(0, "row", REAL, "float_field", null, null, false, false, false);
         Map<DecoderColumnHandle, FieldValueProvider> decodedRow = buildAndDecodeColumn(row, "float_field", "\"float\"", 10.2f);
 
-        checkValue(decodedRow, row, 10.2);
+        checkValue(decodedRow, row, floatToIntBits(10.2f));
     }
 
     @Test
@@ -1110,9 +1101,7 @@ public class TestAvroDecoder
                         null));
         data = new GenericRecordBuilder(schema)
                 .set("f10", array)
-                .set("f11", ImmutableMap.builder()
-                        .put("key1", new GenericRecordBuilder(schema.getField("f11").schema().getTypes().get(1).getValueType().getTypes().get(1)).build())
-                        .buildOrThrow())
+                .set("f11", ImmutableMap.of("key1", new GenericRecordBuilder(schema.getField("f11").schema().getTypes().get(1).getValueType().getTypes().get(1)).build()))
                 .set("f12", new GenericRecordBuilder(schema.getField("f12").schema().getTypes().get(1)).build())
                 .build();
         decodedRow = buildAndDecodeColumn(row, "record_field", schema.toString(), data);
@@ -1218,7 +1207,7 @@ public class TestAvroDecoder
                 .name("dummy").type().longType().noDefault()
                 .endRecord()
                 .toString();
-        DECODER_FACTORY.create(ImmutableMap.of(DATA_SCHEMA, someSchema), ImmutableSet.of(new DecoderTestColumnHandle(0, "some_column", columnType, "0", null, null, false, false, false)));
+        DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(AvroRowDecoderFactory.NAME, ImmutableMap.of(DATA_SCHEMA, someSchema), ImmutableSet.of(new DecoderTestColumnHandle(0, "some_column", columnType, "0", null, null, false, false, false))));
     }
 
     private void singleColumnDecoder(Type columnType, String mapping, String dataFormat, String formatHint, boolean keyDecoder, boolean hidden, boolean internal)
@@ -1228,6 +1217,6 @@ public class TestAvroDecoder
                 .endRecord()
                 .toString();
 
-        DECODER_FACTORY.create(ImmutableMap.of(DATA_SCHEMA, someSchema), ImmutableSet.of(new DecoderTestColumnHandle(0, "some_column", columnType, mapping, dataFormat, formatHint, keyDecoder, hidden, internal)));
+        DECODER_FACTORY.create(TESTING_SESSION, new RowDecoderSpec(AvroRowDecoderFactory.NAME, ImmutableMap.of(DATA_SCHEMA, someSchema), ImmutableSet.of(new DecoderTestColumnHandle(0, "some_column", columnType, mapping, dataFormat, formatHint, keyDecoder, hidden, internal))));
     }
 }

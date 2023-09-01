@@ -14,17 +14,16 @@
 package io.trino.plugin.hudi;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.ArrayType;
-
-import javax.inject.Inject;
 
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.session.PropertyMetadata.stringProperty;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static java.util.Locale.ENGLISH;
@@ -52,9 +51,9 @@ public class HudiTableProperties
                         List.class,
                         ImmutableList.of(),
                         false,
-                        value -> ImmutableList.copyOf(((Collection<String>) value).stream()
+                        value -> ((Collection<String>) value).stream()
                                 .map(name -> name.toLowerCase(ENGLISH))
-                                .collect(Collectors.toList())),
+                                .collect(toImmutableList()),
                         value -> value))
                 .build();
     }

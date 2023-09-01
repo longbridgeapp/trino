@@ -20,13 +20,13 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.trino.Session;
-import io.trino.connector.CatalogHandle;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.metadata.ResolvedFunction.ResolvedFunctionDecoder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.connector.AggregationApplicationResult;
 import io.trino.spi.connector.BeginTableExecuteResult;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
@@ -42,15 +42,18 @@ import io.trino.spi.connector.JoinType;
 import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.MaterializedViewFreshness;
 import io.trino.spi.connector.ProjectionApplicationResult;
+import io.trino.spi.connector.RelationCommentMetadata;
 import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SampleApplicationResult;
 import io.trino.spi.connector.SampleType;
+import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SortItem;
 import io.trino.spi.connector.SystemTable;
 import io.trino.spi.connector.TableColumnsMetadata;
 import io.trino.spi.connector.TableFunctionApplicationResult;
 import io.trino.spi.connector.TableScanRedirectApplicationResult;
 import io.trino.spi.connector.TopNApplicationResult;
+import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.function.AggregationFunctionMetadata;
 import io.trino.spi.function.BoundSignature;
@@ -75,8 +78,10 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.function.UnaryOperator;
 
 import static io.trino.metadata.RedirectionAwareTableHandle.noRedirection;
 import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
@@ -186,6 +191,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public CatalogSchemaTableName getTableName(Session session, TableHandle tableHandle)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public TableSchema getTableSchema(Session session, TableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
@@ -222,7 +233,13 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix)
+    public List<TableColumnsMetadata> listTableColumns(Session session, QualifiedTablePrefix prefix, UnaryOperator<Set<SchemaTableName>> relationFilter)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public List<RelationCommentMetadata> listRelationComments(Session session, String catalogName, Optional<String> schemaName, UnaryOperator<Set<SchemaTableName>> relationFilter)
     {
         throw new UnsupportedOperationException();
     }
@@ -234,7 +251,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void dropSchema(Session session, CatalogSchemaName schema)
+    public void dropSchema(Session session, CatalogSchemaName schema, boolean cascade)
     {
         throw new UnsupportedOperationException();
     }
@@ -258,7 +275,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void renameTable(Session session, TableHandle tableHandle, QualifiedObjectName newTableName)
+    public void renameTable(Session session, TableHandle tableHandle, CatalogSchemaTableName currentTableName, QualifiedObjectName newTableName)
     {
         throw new UnsupportedOperationException();
     }
@@ -282,25 +299,61 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public void setViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public void setColumnComment(Session session, TableHandle tableHandle, ColumnHandle column, Optional<String> comment)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void renameColumn(Session session, TableHandle tableHandle, ColumnHandle source, String target)
+    public void renameColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle source, String target)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void addColumn(Session session, TableHandle tableHandle, ColumnMetadata column)
+    public void renameField(Session session, TableHandle tableHandle, List<String> fieldPath, String target)
     {
         throw new UnsupportedOperationException();
     }
 
     @Override
-    public void dropColumn(Session session, TableHandle tableHandle, ColumnHandle column)
+    public void addColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnMetadata column)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void addField(Session session, TableHandle tableHandle, List<String> parentPath, String fieldName, Type type, boolean ignoreExisting)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropColumn(Session session, TableHandle tableHandle, CatalogSchemaTableName table, ColumnHandle column)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void dropField(Session session, TableHandle tableHandle, ColumnHandle column, List<String> fieldPath)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setColumnType(Session session, TableHandle tableHandle, ColumnHandle column, Type type)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void setFieldType(Session session, TableHandle tableHandle, List<String> fieldPath, Type type)
     {
         throw new UnsupportedOperationException();
     }
@@ -312,7 +365,7 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public void dropTable(Session session, TableHandle tableHandle)
+    public void dropTable(Session session, TableHandle tableHandle, CatalogSchemaTableName tableName)
     {
         throw new UnsupportedOperationException();
     }
@@ -426,18 +479,6 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public ColumnHandle getDeleteRowIdColumnHandle(Session session, TableHandle tableHandle)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public ColumnHandle getUpdateRowIdColumnHandle(Session session, TableHandle tableHandle, List<ColumnHandle> updatedColumns)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public Optional<TableHandle> applyDelete(Session session, TableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
@@ -445,30 +486,6 @@ public abstract class AbstractMockMetadata
 
     @Override
     public OptionalLong executeDelete(Session session, TableHandle tableHandle)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public TableHandle beginDelete(Session session, TableHandle tableHandle)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void finishDelete(Session session, TableHandle tableHandle, Collection<Slice> fragments)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public TableHandle beginUpdate(Session session, TableHandle tableHandle, List<ColumnHandle> updatedColumns)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void finishUpdate(Session session, TableHandle tableHandle, Collection<Slice> fragments)
     {
         throw new UnsupportedOperationException();
     }
@@ -798,6 +815,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public boolean isWindowFunction(Session session, QualifiedName name)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public FunctionMetadata getFunctionMetadata(Session session, ResolvedFunction resolvedFunction)
     {
         BoundSignature signature = resolvedFunction.getSignature();
@@ -878,6 +901,12 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
+    public void setMaterializedViewColumnComment(Session session, QualifiedObjectName viewName, String columnName, Optional<String> comment)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
     public Optional<TableScanRedirectApplicationResult> applyTableScanRedirect(Session session, TableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
@@ -896,19 +925,25 @@ public abstract class AbstractMockMetadata
     }
 
     @Override
-    public boolean supportsReportingWrittenBytes(Session session, TableHandle tableHandle)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public boolean supportsReportingWrittenBytes(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties)
-    {
-        throw new UnsupportedOperationException();
-    }
-
-    @Override
     public Optional<TableHandle> getTableHandle(Session session, QualifiedObjectName table, Optional<TableVersion> startVersion, Optional<TableVersion> endVersion)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public OptionalInt getMaxWriterTasks(Session session, String catalogName)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public WriterScalingOptions getNewTableWriterScalingOptions(Session session, QualifiedObjectName tableName, Map<String, Object> tableProperties)
+    {
+        throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public WriterScalingOptions getInsertWriterScalingOptions(Session session, TableHandle tableHandle)
     {
         throw new UnsupportedOperationException();
     }

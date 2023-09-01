@@ -13,18 +13,17 @@
  */
 package io.trino.plugin.hudi.testing;
 
+import io.trino.hdfs.HdfsEnvironment;
 import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.testing.QueryRunner;
-import org.apache.hadoop.conf.Configuration;
 
 public interface HudiTablesInitializer
 {
     void initializeTables(
             QueryRunner queryRunner,
             HiveMetastore metastore,
-            CatalogSchemaName hudiCatalogSchema,
+            String schemaName,
             String dataDir,
-            Configuration conf)
+            HdfsEnvironment hdfsEnvironment)
             throws Exception;
 }

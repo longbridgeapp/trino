@@ -17,10 +17,11 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.drift.TException;
 import io.airlift.drift.client.DriftClient;
 import io.airlift.units.Duration;
-import io.trino.collect.cache.NonEvictableLoadingCache;
+import io.trino.cache.NonEvictableLoadingCache;
 import io.trino.plugin.thrift.annotations.ForMetadataRefresh;
 import io.trino.plugin.thrift.api.TrinoThriftNullableSchemaName;
 import io.trino.plugin.thrift.api.TrinoThriftNullableTableMetadata;
@@ -36,7 +37,6 @@ import io.trino.spi.connector.ConnectorResolvedIndex;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
-import io.trino.spi.connector.ConnectorTableProperties;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
 import io.trino.spi.connector.ProjectionApplicationResult;
@@ -46,8 +46,6 @@ import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.expression.ConnectorExpression;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.TypeManager;
-
-import javax.inject.Inject;
 
 import java.util.List;
 import java.util.Map;
@@ -59,7 +57,7 @@ import java.util.concurrent.Executor;
 import static com.google.common.cache.CacheLoader.asyncReloading;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
 import static io.trino.plugin.thrift.ThriftErrorCode.THRIFT_SERVICE_INVALID_RESPONSE;
 import static io.trino.plugin.thrift.util.ThriftExceptions.toTrinoException;
 import static java.util.Objects.requireNonNull;
@@ -162,12 +160,6 @@ public class ThriftMetadata
             return Optional.of(new ConnectorResolvedIndex(new ThriftIndexHandle(tableMetadata.getSchemaTableName(), tupleDomain, session), tupleDomain));
         }
         return Optional.empty();
-    }
-
-    @Override
-    public ConnectorTableProperties getTableProperties(ConnectorSession session, ConnectorTableHandle table)
-    {
-        return new ConnectorTableProperties();
     }
 
     @Override

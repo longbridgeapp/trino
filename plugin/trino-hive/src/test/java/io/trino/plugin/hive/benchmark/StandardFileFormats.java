@@ -14,9 +14,13 @@
 package io.trino.plugin.hive.benchmark;
 
 import com.google.common.collect.ImmutableMap;
-import io.airlift.slice.OutputStreamSliceOutput;
 import io.trino.filesystem.hdfs.HdfsFileSystemFactory;
+import io.trino.filesystem.local.LocalOutputFile;
 import io.trino.hdfs.HdfsEnvironment;
+import io.trino.hive.formats.encodings.ColumnEncodingFactory;
+import io.trino.hive.formats.encodings.binary.BinaryColumnEncodingFactory;
+import io.trino.hive.formats.encodings.text.TextColumnEncodingFactory;
+import io.trino.hive.formats.rcfile.RcFileWriter;
 import io.trino.orc.OrcReaderOptions;
 import io.trino.orc.OrcWriter;
 import io.trino.orc.OrcWriterOptions;
@@ -30,24 +34,14 @@ import io.trino.plugin.hive.FileFormatDataSourceStats;
 import io.trino.plugin.hive.HiveCompressionCodec;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HivePageSourceFactory;
-import io.trino.plugin.hive.HiveRecordCursorProvider;
 import io.trino.plugin.hive.HiveStorageFormat;
-import io.trino.plugin.hive.RecordFileWriter;
 import io.trino.plugin.hive.orc.OrcPageSourceFactory;
 import io.trino.plugin.hive.parquet.ParquetPageSourceFactory;
 import io.trino.plugin.hive.parquet.ParquetReaderConfig;
 import io.trino.plugin.hive.rcfile.RcFilePageSourceFactory;
-import io.trino.rcfile.AircompressorCodecFactory;
-import io.trino.rcfile.HadoopCodecFactory;
-import io.trino.rcfile.RcFileEncoding;
-import io.trino.rcfile.RcFileWriter;
-import io.trino.rcfile.binary.BinaryRcFileEncoding;
-import io.trino.rcfile.text.TextRcFileEncoding;
 import io.trino.spi.Page;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.type.Type;
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobConf;
 import org.joda.time.DateTimeZone;
 
 import java.io.File;
@@ -59,11 +53,8 @@ import java.util.Optional;
 import static io.trino.orc.OrcWriteValidation.OrcWriteValidationMode.BOTH;
 import static io.trino.parquet.writer.ParquetSchemaConverter.HIVE_PARQUET_USE_INT96_TIMESTAMP_ENCODING;
 import static io.trino.parquet.writer.ParquetSchemaConverter.HIVE_PARQUET_USE_LEGACY_DECIMAL_ENCODING;
-import static io.trino.plugin.hive.HiveTestUtils.createGenericHiveRecordCursorProvider;
-import static io.trino.plugin.hive.benchmark.AbstractFileFormat.createSchema;
-import static io.trino.plugin.hive.metastore.StorageFormat.fromHiveStorageFormat;
-import static io.trino.plugin.hive.util.CompressionConfigUtil.configureCompression;
-import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_STATS;
 import static org.joda.time.DateTimeZone.UTC;
 
 public final class StandardFileFormats
@@ -81,7 +72,7 @@ public final class StandardFileFormats
         @Override
         public Optional<HivePageSourceFactory> getHivePageSourceFactory(HdfsEnvironment hdfsEnvironment)
         {
-            return Optional.of(new RcFilePageSourceFactory(TESTING_TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats(), new HiveConfig().setRcfileTimeZone("UTC")));
+            return Optional.of(new RcFilePageSourceFactory(HDFS_FILE_SYSTEM_FACTORY, new HiveConfig().setRcfileTimeZone("UTC")));
         }
 
         @Override
@@ -96,7 +87,7 @@ public final class StandardFileFormats
             return new PrestoRcFileFormatWriter(
                     targetFile,
                     columnTypes,
-                    new BinaryRcFileEncoding(UTC),
+                    new BinaryColumnEncodingFactory(UTC),
                     compressionCodec);
         }
     };
@@ -112,7 +103,7 @@ public final class StandardFileFormats
         @Override
         public Optional<HivePageSourceFactory> getHivePageSourceFactory(HdfsEnvironment hdfsEnvironment)
         {
-            return Optional.of(new RcFilePageSourceFactory(TESTING_TYPE_MANAGER, hdfsEnvironment, new FileFormatDataSourceStats(), new HiveConfig().setRcfileTimeZone("UTC")));
+            return Optional.of(new RcFilePageSourceFactory(HDFS_FILE_SYSTEM_FACTORY, new HiveConfig().setRcfileTimeZone("UTC")));
         }
 
         @Override
@@ -127,7 +118,7 @@ public final class StandardFileFormats
             return new PrestoRcFileFormatWriter(
                     targetFile,
                     columnTypes,
-                    new TextRcFileEncoding(),
+                    new TextColumnEncodingFactory(),
                     compressionCodec);
         }
     };
@@ -143,7 +134,7 @@ public final class StandardFileFormats
         @Override
         public Optional<HivePageSourceFactory> getHivePageSourceFactory(HdfsEnvironment hdfsEnvironment)
         {
-            return Optional.of(new OrcPageSourceFactory(new OrcReaderOptions(), hdfsEnvironment, new FileFormatDataSourceStats(), UTC));
+            return Optional.of(new OrcPageSourceFactory(new OrcReaderOptions(), HDFS_FILE_SYSTEM_FACTORY, new FileFormatDataSourceStats(), UTC));
         }
 
         @Override
@@ -175,7 +166,7 @@ public final class StandardFileFormats
         public Optional<HivePageSourceFactory> getHivePageSourceFactory(HdfsEnvironment hdfsEnvironment)
         {
             return Optional.of(new ParquetPageSourceFactory(
-                    new HdfsFileSystemFactory(hdfsEnvironment),
+                    new HdfsFileSystemFactory(hdfsEnvironment, HDFS_FILE_SYSTEM_STATS),
                     new FileFormatDataSourceStats(),
                     new ParquetReaderConfig(),
                     new HiveConfig()));
@@ -191,110 +182,6 @@ public final class StandardFileFormats
                 throws IOException
         {
             return new PrestoParquetFormatWriter(targetFile, columnNames, columnTypes, compressionCodec);
-        }
-    };
-
-    public static final FileFormat HIVE_RCBINARY = new AbstractFileFormat()
-    {
-        @Override
-        public HiveStorageFormat getFormat()
-        {
-            return HiveStorageFormat.RCBINARY;
-        }
-
-        @Override
-        public Optional<HiveRecordCursorProvider> getHiveRecordCursorProvider(HdfsEnvironment hdfsEnvironment)
-        {
-            return Optional.of(createGenericHiveRecordCursorProvider(hdfsEnvironment));
-        }
-
-        @Override
-        public FormatWriter createFileFormatWriter(
-                ConnectorSession session,
-                File targetFile,
-                List<String> columnNames,
-                List<Type> columnTypes,
-                HiveCompressionCodec compressionCodec)
-        {
-            return new RecordFormatWriter(targetFile, columnNames, columnTypes, compressionCodec, HiveStorageFormat.RCBINARY, session);
-        }
-    };
-
-    public static final FileFormat HIVE_RCTEXT = new AbstractFileFormat()
-    {
-        @Override
-        public HiveStorageFormat getFormat()
-        {
-            return HiveStorageFormat.RCTEXT;
-        }
-
-        @Override
-        public Optional<HiveRecordCursorProvider> getHiveRecordCursorProvider(HdfsEnvironment hdfsEnvironment)
-        {
-            return Optional.of(createGenericHiveRecordCursorProvider(hdfsEnvironment));
-        }
-
-        @Override
-        public FormatWriter createFileFormatWriter(
-                ConnectorSession session,
-                File targetFile,
-                List<String> columnNames,
-                List<Type> columnTypes,
-                HiveCompressionCodec compressionCodec)
-        {
-            return new RecordFormatWriter(targetFile, columnNames, columnTypes, compressionCodec, HiveStorageFormat.RCTEXT, session);
-        }
-    };
-
-    public static final FileFormat HIVE_ORC = new AbstractFileFormat()
-    {
-        @Override
-        public HiveStorageFormat getFormat()
-        {
-            return HiveStorageFormat.ORC;
-        }
-
-        @Override
-        public Optional<HiveRecordCursorProvider> getHiveRecordCursorProvider(HdfsEnvironment hdfsEnvironment)
-        {
-            return Optional.of(createGenericHiveRecordCursorProvider(hdfsEnvironment));
-        }
-
-        @Override
-        public FormatWriter createFileFormatWriter(
-                ConnectorSession session,
-                File targetFile,
-                List<String> columnNames,
-                List<Type> columnTypes,
-                HiveCompressionCodec compressionCodec)
-        {
-            return new RecordFormatWriter(targetFile, columnNames, columnTypes, compressionCodec, HiveStorageFormat.ORC, session);
-        }
-    };
-
-    public static final FileFormat HIVE_PARQUET = new AbstractFileFormat()
-    {
-        @Override
-        public HiveStorageFormat getFormat()
-        {
-            return HiveStorageFormat.PARQUET;
-        }
-
-        @Override
-        public Optional<HiveRecordCursorProvider> getHiveRecordCursorProvider(HdfsEnvironment hdfsEnvironment)
-        {
-            return Optional.of(createGenericHiveRecordCursorProvider(hdfsEnvironment));
-        }
-
-        @Override
-        public FormatWriter createFileFormatWriter(
-                ConnectorSession session,
-                File targetFile,
-                List<String> columnNames,
-                List<Type> columnTypes,
-                HiveCompressionCodec compressionCodec)
-        {
-            return new RecordFormatWriter(targetFile, columnNames, columnTypes, compressionCodec, HiveStorageFormat.PARQUET, session);
         }
     };
 
@@ -347,7 +234,7 @@ public final class StandardFileFormats
                 throws IOException
         {
             writer = new OrcWriter(
-                    new OutputStreamOrcDataSink(new FileOutputStream(targetFile)),
+                    OutputStreamOrcDataSink.create(new LocalOutputFile(targetFile)),
                     columnNames,
                     types,
                     OrcType.createRootOrcType(columnNames, types),
@@ -379,15 +266,14 @@ public final class StandardFileFormats
     {
         private final RcFileWriter writer;
 
-        public PrestoRcFileFormatWriter(File targetFile, List<Type> types, RcFileEncoding encoding, HiveCompressionCodec compressionCodec)
+        public PrestoRcFileFormatWriter(File targetFile, List<Type> types, ColumnEncodingFactory encoding, HiveCompressionCodec compressionCodec)
                 throws IOException
         {
             writer = new RcFileWriter(
-                    new OutputStreamSliceOutput(new FileOutputStream(targetFile)),
+                    new FileOutputStream(targetFile),
                     types,
                     encoding,
-                    compressionCodec.getCodec().map(Class::getName),
-                    new AircompressorCodecFactory(new HadoopCodecFactory(getClass().getClassLoader())),
+                    compressionCodec.getHiveCompressionKind(),
                     ImmutableMap.of(),
                     true);
         }
@@ -404,49 +290,6 @@ public final class StandardFileFormats
                 throws IOException
         {
             writer.close();
-        }
-    }
-
-    private static class RecordFormatWriter
-            implements FormatWriter
-    {
-        private final RecordFileWriter recordWriter;
-
-        public RecordFormatWriter(
-                File targetFile,
-                List<String> columnNames,
-                List<Type> columnTypes,
-                HiveCompressionCodec compressionCodec,
-                HiveStorageFormat format,
-                ConnectorSession session)
-        {
-            JobConf config = new JobConf(AbstractFileFormat.conf);
-            configureCompression(config, compressionCodec);
-
-            recordWriter = new RecordFileWriter(
-                    new Path(targetFile.toURI()),
-                    columnNames,
-                    fromHiveStorageFormat(format),
-                    createSchema(format, columnNames, columnTypes),
-                    format.getEstimatedWriterMemoryUsage(),
-                    config,
-                    TESTING_TYPE_MANAGER,
-                    UTC,
-                    session);
-        }
-
-        @Override
-        public void writePage(Page page)
-        {
-            for (int position = 0; position < page.getPositionCount(); position++) {
-                recordWriter.appendRow(page, position);
-            }
-        }
-
-        @Override
-        public void close()
-        {
-            recordWriter.commit();
         }
     }
 }

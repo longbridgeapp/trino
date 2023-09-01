@@ -16,35 +16,34 @@ package io.trino.operator;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.common.primitives.Ints;
+import com.google.common.primitives.Shorts;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.DictionaryBlock;
-import io.trino.spi.block.LongArrayBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeOperators;
 import io.trino.sql.gen.JoinCompiler;
-import io.trino.type.BlockTypeOperators;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Optional;
 import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
+import static io.trino.operator.InterpretedHashGenerator.createPagePrefixHashGenerator;
 import static io.trino.operator.SyntheticAddress.encodeSyntheticAddress;
 import static io.trino.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.gen.JoinCompiler.PagesHashStrategyFactory;
-import static io.trino.util.HashCollisionsEstimator.estimateNumberOfHashCollisions;
 import static it.unimi.dsi.fastutil.HashCommon.arraySize;
 import static it.unimi.dsi.fastutil.HashCommon.murmurHash3;
 import static java.lang.Math.min;
@@ -56,7 +55,7 @@ import static java.util.Objects.requireNonNull;
 public class MultiChannelGroupByHash
         implements GroupByHash
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(MultiChannelGroupByHash.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(MultiChannelGroupByHash.class);
     private static final float FILL_RATIO = 0.75f;
     private static final int BATCH_SIZE = 1024;
     // Max (page value count / cumulative dictionary size) to trigger the low cardinality case
@@ -66,12 +65,11 @@ public class MultiChannelGroupByHash
     private static final int VALUES_PAGE_MASK = VALUES_PAGE_MAX_ROW_COUNT - 1;
 
     private final List<Type> types;
-    private final List<Type> hashTypes;
     private final int[] channels;
 
     private final PagesHashStrategy hashStrategy;
     private final List<ObjectArrayList<Block>> channelBuilders;
-    private final Optional<Integer> inputHashChannel;
+    private final boolean hasPrecomputedHash;
     private final HashGenerator hashGenerator;
     private final OptionalInt precomputedHashChannel;
     private final boolean processDictionary;
@@ -89,8 +87,6 @@ public class MultiChannelGroupByHash
 
     private int nextGroupId;
     private DictionaryLookBack dictionaryLookBack;
-    private long hashCollisions;
-    private double expectedHashCollisions;
 
     // reserve enough memory before rehash
     private final UpdateMemory updateMemory;
@@ -98,47 +94,44 @@ public class MultiChannelGroupByHash
     private long currentPageSizeInBytes;
 
     public MultiChannelGroupByHash(
-            List<? extends Type> hashTypes,
-            int[] hashChannels,
-            Optional<Integer> inputHashChannel,
+            List<Type> hashTypes,
+            boolean hasPrecomputedHash,
             int expectedSize,
             boolean processDictionary,
             JoinCompiler joinCompiler,
-            BlockTypeOperators blockTypeOperators,
+            TypeOperators typeOperators,
             UpdateMemory updateMemory)
     {
-        this.hashTypes = ImmutableList.copyOf(requireNonNull(hashTypes, "hashTypes is null"));
+        this.hasPrecomputedHash = hasPrecomputedHash;
 
         requireNonNull(joinCompiler, "joinCompiler is null");
-        requireNonNull(hashChannels, "hashChannels is null");
-        checkArgument(hashTypes.size() == hashChannels.length, "hashTypes and hashChannels have different sizes");
         checkArgument(expectedSize > 0, "expectedSize must be greater than zero");
 
-        this.inputHashChannel = requireNonNull(inputHashChannel, "inputHashChannel is null");
-        this.types = inputHashChannel.isPresent() ? ImmutableList.copyOf(Iterables.concat(hashTypes, ImmutableList.of(BIGINT))) : this.hashTypes;
-        this.channels = hashChannels.clone();
+        this.channels = new int[hashTypes.size()];
+        for (int i = 0; i < hashTypes.size(); i++) {
+            channels[i] = i;
+        }
+        this.types = ImmutableList.copyOf(hasPrecomputedHash ? Iterables.concat(hashTypes, ImmutableList.of(BIGINT)) : hashTypes);
 
-        this.hashGenerator = inputHashChannel.isPresent() ? new PrecomputedHashGenerator(inputHashChannel.get()) : new InterpretedHashGenerator(this.hashTypes, hashChannels, blockTypeOperators);
-        this.processDictionary = processDictionary;
+        this.hashGenerator = hasPrecomputedHash ? new PrecomputedHashGenerator(hashTypes.size()) : createPagePrefixHashGenerator(hashTypes, typeOperators);
+        this.processDictionary = processDictionary && hashTypes.size() == 1;
 
         // For each hashed channel, create an appendable list to hold the blocks (builders).  As we
         // add new values we append them to the existing block builder until it fills up and then
         // we add a new block builder to each list.
-        ImmutableList.Builder<Integer> outputChannels = ImmutableList.builder();
         ImmutableList.Builder<ObjectArrayList<Block>> channelBuilders = ImmutableList.builder();
-        for (int i = 0; i < hashChannels.length; i++) {
-            outputChannels.add(i);
+        for (int i = 0; i < channels.length; i++) {
             channelBuilders.add(ObjectArrayList.wrap(new Block[1024], 0));
         }
-        if (inputHashChannel.isPresent()) {
-            this.precomputedHashChannel = OptionalInt.of(hashChannels.length);
+        if (hasPrecomputedHash) {
+            this.precomputedHashChannel = OptionalInt.of(hashTypes.size());
             channelBuilders.add(ObjectArrayList.wrap(new Block[1024], 0));
         }
         else {
             this.precomputedHashChannel = OptionalInt.empty();
         }
         this.channelBuilders = channelBuilders.build();
-        PagesHashStrategyFactory pagesHashStrategyFactory = joinCompiler.compilePagesHashStrategyFactory(this.types, outputChannels.build());
+        PagesHashStrategyFactory pagesHashStrategyFactory = joinCompiler.compilePagesHashStrategyFactory(types, Ints.asList(channels));
         hashStrategy = pagesHashStrategyFactory.createPagesHashStrategy(this.channelBuilders, this.precomputedHashChannel);
 
         startNewPage();
@@ -174,25 +167,8 @@ public class MultiChannelGroupByHash
                 currentPageBuilder.getRetainedSizeInBytes() +
                 sizeOf(groupIdsByHash) +
                 sizeOf(rawHashByHashPosition) +
-                preallocatedMemoryInBytes;
-    }
-
-    @Override
-    public long getHashCollisions()
-    {
-        return hashCollisions;
-    }
-
-    @Override
-    public double getExpectedHashCollisions()
-    {
-        return expectedHashCollisions + estimateNumberOfHashCollisions(getGroupCount(), hashCapacity);
-    }
-
-    @Override
-    public List<Type> getTypes()
-    {
-        return types;
+                preallocatedMemoryInBytes +
+                (dictionaryLookBack != null ? dictionaryLookBack.getRetainedSizeInBytes() : 0);
     }
 
     @Override
@@ -227,7 +203,7 @@ public class MultiChannelGroupByHash
     }
 
     @Override
-    public Work<GroupByIdBlock> getGroupIds(Page page)
+    public Work<int[]> getGroupIds(Page page)
     {
         currentPageSizeInBytes = page.getRetainedSizeInBytes();
         if (isRunLengthEncoded(page)) {
@@ -241,31 +217,6 @@ public class MultiChannelGroupByHash
         }
 
         return new GetNonDictionaryGroupIdsWork(page);
-    }
-
-    @Override
-    public boolean contains(int position, Page page, int[] hashChannels)
-    {
-        long rawHash = hashStrategy.hashRow(position, page);
-        return contains(position, page, hashChannels, rawHash);
-    }
-
-    @Override
-    public boolean contains(int position, Page page, int[] hashChannels, long rawHash)
-    {
-        int hashPosition = getHashPosition(rawHash, mask);
-
-        // look for a slot containing this key
-        while (groupIdsByHash[hashPosition] != -1) {
-            if (positionNotDistinctFromCurrentRow(groupIdsByHash[hashPosition], hashPosition, position, page, (byte) rawHash, hashChannels)) {
-                // found an existing slot for this key
-                return true;
-            }
-            // increment position and mask to handle wrap around
-            hashPosition = (hashPosition + 1) & mask;
-        }
-
-        return false;
     }
 
     @VisibleForTesting
@@ -296,7 +247,6 @@ public class MultiChannelGroupByHash
             }
             // increment position and mask to handle wrap around
             hashPosition = (hashPosition + 1) & mask;
-            hashCollisions++;
         }
 
         // did we find an existing group?
@@ -310,9 +260,7 @@ public class MultiChannelGroupByHash
     {
         // add the row to the open page
         for (int i = 0; i < channels.length; i++) {
-            int hashChannel = channels[i];
-            Type type = types.get(i);
-            type.appendTo(page.getBlock(hashChannel), position, currentPageBuilder.getBlockBuilder(i));
+            types.get(i).appendTo(page.getBlock(i), position, currentPageBuilder.getBlockBuilder(i));
         }
         if (precomputedHashChannel.isPresent()) {
             BIGINT.writeLong(currentPageBuilder.getBlockBuilder(precomputedHashChannel.getAsInt()), rawHash);
@@ -372,15 +320,12 @@ public class MultiChannelGroupByHash
 
         // An estimate of how much extra memory is needed before we can go ahead and expand the hash table.
         // This includes the new capacity for rawHashByHashPosition, groupIdsByHash as well as the size of the current page
-        preallocatedMemoryInBytes = (newCapacity - hashCapacity) * (long) (Integer.BYTES + Byte.BYTES)
+        preallocatedMemoryInBytes = newCapacity * (long) (Integer.BYTES + Byte.BYTES)
                 + currentPageSizeInBytes;
         if (!updateMemory.update()) {
             // reserved memory but has exceeded the limit
             return false;
         }
-        preallocatedMemoryInBytes = 0;
-
-        expectedHashCollisions += estimateNumberOfHashCollisions(getGroupCount(), hashCapacity);
 
         int newMask = newCapacity - 1;
         byte[] rawHashes = new byte[newCapacity];
@@ -399,7 +344,6 @@ public class MultiChannelGroupByHash
             int pos = getHashPosition(rawHash, newMask);
             while (newGroupIdByHash[pos] != -1) {
                 pos = (pos + 1) & newMask;
-                hashCollisions++;
             }
 
             // record the mapping
@@ -412,6 +356,10 @@ public class MultiChannelGroupByHash
         this.maxFill = calculateMaxFill(newCapacity);
         this.rawHashByHashPosition = rawHashes;
         this.groupIdsByHash = newGroupIdByHash;
+
+        preallocatedMemoryInBytes = 0;
+        // release temporary memory reservation
+        updateMemory.update();
         return true;
     }
 
@@ -469,36 +417,32 @@ public class MultiChannelGroupByHash
     private Page createPageWithExtractedDictionary(Page page)
     {
         Block[] blocks = new Block[page.getChannelCount()];
-        Block dictionary = ((DictionaryBlock) page.getBlock(channels[0])).getDictionary();
+        Block dictionary = ((DictionaryBlock) page.getBlock(0)).getDictionary();
 
         // extract data dictionary
-        blocks[channels[0]] = dictionary;
+        blocks[0] = dictionary;
 
         // extract hash dictionary
-        inputHashChannel.ifPresent(integer -> blocks[integer] = ((DictionaryBlock) page.getBlock(integer)).getDictionary());
+        if (hasPrecomputedHash) {
+            blocks[1] = ((DictionaryBlock) page.getBlock(1)).getDictionary();
+        }
 
         return new Page(dictionary.getPositionCount(), blocks);
     }
 
     private boolean canProcessDictionary(Page page)
     {
-        if (!this.processDictionary || channels.length > 1 || !(page.getBlock(channels[0]) instanceof DictionaryBlock)) {
+        if (!processDictionary || !(page.getBlock(0) instanceof DictionaryBlock inputDictionary)) {
             return false;
         }
 
-        if (inputHashChannel.isPresent()) {
-            Block inputHashBlock = page.getBlock(inputHashChannel.get());
-            DictionaryBlock inputDataBlock = (DictionaryBlock) page.getBlock(channels[0]);
-
-            if (!(inputHashBlock instanceof DictionaryBlock)) {
-                // data channel is dictionary encoded but hash channel is not
-                return false;
-            }
-            // dictionarySourceIds of data block and hash block do not match
-            return ((DictionaryBlock) inputHashBlock).getDictionarySourceId().equals(inputDataBlock.getDictionarySourceId());
+        if (!hasPrecomputedHash) {
+            return true;
         }
 
-        return true;
+        // dictionarySourceIds of data block and hash block must match
+        return page.getBlock(1) instanceof DictionaryBlock hashDictionary &&
+                hashDictionary.getDictionarySourceId().equals(inputDictionary.getDictionarySourceId());
     }
 
     private boolean canProcessLowCardinalityDictionary(Page page)
@@ -506,11 +450,11 @@ public class MultiChannelGroupByHash
         // We don't have to rely on 'optimizer.dictionary-aggregations' here since there is little to none chance of regression
         int positionCount = page.getPositionCount();
         long cardinality = 1;
-        for (int channel : channels) {
-            if (!(page.getBlock(channel) instanceof DictionaryBlock)) {
+        for (int channel = 0; channel < channels.length; channel++) {
+            if (!(page.getBlock(channel) instanceof DictionaryBlock dictionaryBlock)) {
                 return false;
             }
-            cardinality = multiplyExact(cardinality, ((DictionaryBlock) page.getBlock(channel)).getDictionary().getPositionCount());
+            cardinality = multiplyExact(cardinality, dictionaryBlock.getDictionary().getPositionCount());
             if (cardinality > positionCount * SMALL_DICTIONARIES_MAX_CARDINALITY_RATIO
                     || cardinality > Short.MAX_VALUE) { // Need to fit into short array
                 return false;
@@ -522,7 +466,7 @@ public class MultiChannelGroupByHash
 
     private boolean isRunLengthEncoded(Page page)
     {
-        for (int channel : channels) {
+        for (int channel = 0; channel < channels.length; channel++) {
             if (!(page.getBlock(channel) instanceof RunLengthEncodedBlock)) {
                 return false;
             }
@@ -543,6 +487,7 @@ public class MultiChannelGroupByHash
 
     private static final class DictionaryLookBack
     {
+        private static final int INSTANCE_SIZE = instanceSize(DictionaryLookBack.class);
         private final Block dictionary;
         private final int[] processed;
 
@@ -571,6 +516,13 @@ public class MultiChannelGroupByHash
         public void setProcessed(int position, int groupId)
         {
             processed[position] = groupId;
+        }
+
+        public long getRetainedSizeInBytes()
+        {
+            return INSTANCE_SIZE +
+                    sizeOf(processed) +
+                    dictionary.getRetainedSizeInBytes();
         }
     }
 
@@ -631,7 +583,7 @@ public class MultiChannelGroupByHash
         {
             verify(canProcessDictionary(page), "invalid call to addDictionaryPage");
             this.page = requireNonNull(page, "page is null");
-            this.dictionaryBlock = (DictionaryBlock) page.getBlock(channels[0]);
+            this.dictionaryBlock = (DictionaryBlock) page.getBlock(0);
             updateDictionaryLookBack(dictionaryBlock.getDictionary());
             this.dictionaryPage = createPageWithExtractedDictionary(page);
         }
@@ -757,9 +709,9 @@ public class MultiChannelGroupByHash
 
     @VisibleForTesting
     class GetNonDictionaryGroupIdsWork
-            implements Work<GroupByIdBlock>
+            implements Work<int[]>
     {
-        private final long[] groupIds;
+        private final int[] groupIds;
         private final Page page;
 
         private boolean finished;
@@ -769,7 +721,7 @@ public class MultiChannelGroupByHash
         {
             this.page = requireNonNull(page, "page is null");
             // we know the exact size required for the block
-            groupIds = new long[page.getPositionCount()];
+            groupIds = new int[page.getPositionCount()];
         }
 
         @Override
@@ -800,21 +752,21 @@ public class MultiChannelGroupByHash
         }
 
         @Override
-        public GroupByIdBlock getResult()
+        public int[] getResult()
         {
             checkState(lastPosition == page.getPositionCount(), "process has not yet finished");
             checkState(!finished, "result has produced");
             finished = true;
-            return new GroupByIdBlock(nextGroupId, new LongArrayBlock(groupIds.length, Optional.empty(), groupIds));
+            return groupIds;
         }
     }
 
     @VisibleForTesting
     class GetLowCardinalityDictionaryGroupIdsWork
-            implements Work<GroupByIdBlock>
+            implements Work<int[]>
     {
         private final Page page;
-        private final long[] groupIds;
+        private final int[] groupIds;
         @Nullable
         private short[] positionToCombinationId;
         @Nullable
@@ -825,7 +777,7 @@ public class MultiChannelGroupByHash
         public GetLowCardinalityDictionaryGroupIdsWork(Page page)
         {
             this.page = requireNonNull(page, "page is null");
-            groupIds = new long[page.getPositionCount()];
+            groupIds = new int[page.getPositionCount()];
         }
 
         @Override
@@ -863,19 +815,19 @@ public class MultiChannelGroupByHash
         }
 
         @Override
-        public GroupByIdBlock getResult()
+        public int[] getResult()
         {
             checkState(!finished, "result has produced");
             finished = true;
-            return new GroupByIdBlock(nextGroupId, new LongArrayBlock(groupIds.length, Optional.empty(), groupIds));
+            return groupIds;
         }
     }
 
     @VisibleForTesting
     class GetDictionaryGroupIdsWork
-            implements Work<GroupByIdBlock>
+            implements Work<int[]>
     {
-        private final long[] groupIds;
+        private final int[] groupIds;
         private final Page page;
         private final Page dictionaryPage;
         private final DictionaryBlock dictionaryBlock;
@@ -888,10 +840,10 @@ public class MultiChannelGroupByHash
             this.page = requireNonNull(page, "page is null");
             verify(canProcessDictionary(page), "invalid call to processDictionary");
 
-            this.dictionaryBlock = (DictionaryBlock) page.getBlock(channels[0]);
+            this.dictionaryBlock = (DictionaryBlock) page.getBlock(0);
             updateDictionaryLookBack(dictionaryBlock.getDictionary());
             this.dictionaryPage = createPageWithExtractedDictionary(page);
-            groupIds = new long[page.getPositionCount()];
+            groupIds = new int[page.getPositionCount()];
         }
 
         @Override
@@ -918,18 +870,18 @@ public class MultiChannelGroupByHash
         }
 
         @Override
-        public GroupByIdBlock getResult()
+        public int[] getResult()
         {
             checkState(lastPosition == page.getPositionCount(), "process has not yet finished");
             checkState(!finished, "result has produced");
             finished = true;
-            return new GroupByIdBlock(nextGroupId, new LongArrayBlock(groupIds.length, Optional.empty(), groupIds));
+            return groupIds;
         }
     }
 
     @VisibleForTesting
     class GetRunLengthEncodedGroupIdsWork
-            implements Work<GroupByIdBlock>
+            implements Work<int[]>
     {
         private final Page page;
 
@@ -964,17 +916,15 @@ public class MultiChannelGroupByHash
         }
 
         @Override
-        public GroupByIdBlock getResult()
+        public int[] getResult()
         {
             checkState(processFinished);
             checkState(!resultProduced);
             resultProduced = true;
 
-            return new GroupByIdBlock(
-                    nextGroupId,
-                    RunLengthEncodedBlock.create(
-                            BIGINT.createFixedSizeBlockBuilder(1).writeLong(groupId).build(),
-                            page.getPositionCount()));
+            int[] groupIds = new int[page.getPositionCount()];
+            Arrays.fill(groupIds, groupId);
+            return groupIds;
         }
     }
 
@@ -1006,7 +956,7 @@ public class MultiChannelGroupByHash
 
         int maxCardinality = 1;
         for (int channel = 0; channel < channels.length; channel++) {
-            Block block = page.getBlock(channels[channel]);
+            Block block = page.getBlock(channel);
             verify(block instanceof DictionaryBlock, "Only dictionary blocks are supported");
             DictionaryBlock dictionaryBlock = (DictionaryBlock) block;
             int dictionarySize = dictionaryBlock.getDictionary().getPositionCount();
@@ -1018,10 +968,10 @@ public class MultiChannelGroupByHash
             }
             else {
                 for (int position = 0; position < positionToCombinationIds.length; position++) {
-                    short combinationId = positionToCombinationIds[position];
+                    int combinationId = positionToCombinationIds[position];
                     combinationId *= dictionarySize;
                     combinationId += dictionaryBlock.getId(position);
-                    positionToCombinationIds[position] = combinationId;
+                    positionToCombinationIds[position] = Shorts.checkedCast(combinationId);
                 }
             }
         }

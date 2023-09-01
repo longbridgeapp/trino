@@ -42,9 +42,9 @@ import static io.trino.SystemSessionProperties.ENABLE_LARGE_DYNAMIC_FILTERS;
 import static io.trino.plugin.memory.MemoryQueryRunner.createMemoryQueryRunner;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
-import static io.trino.testing.assertions.Assert.assertEquals;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 
@@ -63,10 +63,12 @@ public class TestMemoryConnectorTest
         return createMemoryQueryRunner(
                 // Adjust DF limits to test edge cases
                 ImmutableMap.<String, String>builder()
-                        .put("dynamic-filtering.small-broadcast.max-distinct-values-per-driver", "100")
-                        .put("dynamic-filtering.small-broadcast.range-row-limit-per-driver", "100")
-                        .put("dynamic-filtering.large-broadcast.max-distinct-values-per-driver", "100")
-                        .put("dynamic-filtering.large-broadcast.range-row-limit-per-driver", "100000")
+                        .put("dynamic-filtering.small.max-distinct-values-per-driver", "100")
+                        .put("dynamic-filtering.small.range-row-limit-per-driver", "100")
+                        .put("dynamic-filtering.large.max-distinct-values-per-driver", "100")
+                        .put("dynamic-filtering.large.range-row-limit-per-driver", "100000")
+                        .put("dynamic-filtering.small-partitioned.max-distinct-values-per-driver", "100")
+                        .put("dynamic-filtering.small-partitioned.range-row-limit-per-driver", "200")
                         .put("dynamic-filtering.large-partitioned.max-distinct-values-per-driver", "100")
                         .put("dynamic-filtering.large-partitioned.range-row-limit-per-driver", "100000")
                         // disable semi join to inner join rewrite to test semi join operators explicitly
@@ -82,30 +84,23 @@ public class TestMemoryConnectorTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_PREDICATE_PUSHDOWN:
-            case SUPPORTS_LIMIT_PUSHDOWN:
-            case SUPPORTS_TOPN_PUSHDOWN:
-            case SUPPORTS_AGGREGATION_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_ADD_COLUMN:
-            case SUPPORTS_RENAME_COLUMN:
-                return false;
-
-            case SUPPORTS_RENAME_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_VIEW:
-            case SUPPORTS_COMMENT_ON_VIEW:
-                return true;
-
-            case SUPPORTS_NOT_NULL_CONSTRAINT:
-                return false;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_ADD_COLUMN,
+                    SUPPORTS_AGGREGATION_PUSHDOWN,
+                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                    SUPPORTS_DELETE,
+                    SUPPORTS_DEREFERENCE_PUSHDOWN,
+                    SUPPORTS_LIMIT_PUSHDOWN,
+                    SUPPORTS_MERGE,
+                    SUPPORTS_NOT_NULL_CONSTRAINT,
+                    SUPPORTS_PREDICATE_PUSHDOWN,
+                    SUPPORTS_RENAME_COLUMN,
+                    SUPPORTS_RENAME_SCHEMA,
+                    SUPPORTS_SET_COLUMN_TYPE,
+                    SUPPORTS_TOPN_PUSHDOWN,
+                    SUPPORTS_UPDATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override
@@ -201,7 +196,7 @@ public class TestMemoryConnectorTest
         assertEquals(result.getResult().getRowCount(), 615);
 
         OperatorStats probeStats = getScanOperatorStats(getDistributedQueryRunner(), result.getQueryId()).stream()
-                .findFirst().orElseThrow();
+                .findFirst().orElseThrow(); // there should be two: one for lineitem and one for supplier
         assertEquals(probeStats.getInputPositions(), 615);
         assertEquals(probeStats.getPhysicalInputPositions(), LINEITEM_COUNT);
     }

@@ -18,7 +18,6 @@ import com.google.common.io.Closer;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 import io.trino.memory.context.LocalMemoryContext;
-import io.trino.operator.HashCollisionsCounter;
 import io.trino.operator.MergeHashSort;
 import io.trino.operator.OperatorContext;
 import io.trino.operator.Work;
@@ -26,11 +25,11 @@ import io.trino.operator.WorkProcessor;
 import io.trino.operator.aggregation.AggregatorFactory;
 import io.trino.spi.Page;
 import io.trino.spi.type.Type;
+import io.trino.spi.type.TypeOperators;
 import io.trino.spiller.Spiller;
 import io.trino.spiller.SpillerFactory;
 import io.trino.sql.gen.JoinCompiler;
 import io.trino.sql.planner.plan.AggregationNode;
-import io.trino.type.BlockTypeOperators;
 
 import java.io.IOException;
 import java.util.List;
@@ -65,13 +64,11 @@ public class SpillableHashAggregationBuilder
     private Optional<MergeHashSort> mergeHashSort = Optional.empty();
     private ListenableFuture<Void> spillInProgress = immediateVoidFuture();
     private final JoinCompiler joinCompiler;
-    private final BlockTypeOperators blockTypeOperators;
+    private final TypeOperators typeOperators;
 
     // todo get rid of that and only use revocable memory
     private long emptyHashAggregationBuilderSize;
 
-    private long hashCollisions;
-    private double expectedHashCollisions;
     private boolean producingOutput;
 
     public SpillableHashAggregationBuilder(
@@ -86,7 +83,7 @@ public class SpillableHashAggregationBuilder
             DataSize memoryLimitForMergeWithMemory,
             SpillerFactory spillerFactory,
             JoinCompiler joinCompiler,
-            BlockTypeOperators blockTypeOperators)
+            TypeOperators typeOperators)
     {
         this.aggregatorFactories = aggregatorFactories;
         this.step = step;
@@ -101,7 +98,7 @@ public class SpillableHashAggregationBuilder
         this.memoryLimitForMergeWithMemory = memoryLimitForMergeWithMemory.toBytes();
         this.spillerFactory = spillerFactory;
         this.joinCompiler = joinCompiler;
-        this.blockTypeOperators = blockTypeOperators;
+        this.typeOperators = typeOperators;
 
         rebuildHashAggregationBuilder();
     }
@@ -129,14 +126,6 @@ public class SpillableHashAggregationBuilder
             localUserMemoryContext.setBytes(emptyHashAggregationBuilderSize);
             localRevocableMemoryContext.setBytes(hashAggregationBuilder.getSizeInMemory() - emptyHashAggregationBuilderSize);
         }
-    }
-
-    @Override
-    public void recordHashCollisions(HashCollisionsCounter hashCollisionsCounter)
-    {
-        hashCollisionsCounter.recordHashCollision(hashCollisions, expectedHashCollisions);
-        hashCollisions = 0;
-        expectedHashCollisions = 0;
     }
 
     @Override
@@ -266,7 +255,7 @@ public class SpillableHashAggregationBuilder
         checkState(spiller.isPresent());
 
         hashAggregationBuilder.setSpillOutput();
-        mergeHashSort = Optional.of(new MergeHashSort(operatorContext.newAggregateUserMemoryContext(), blockTypeOperators));
+        mergeHashSort = Optional.of(new MergeHashSort(operatorContext.newAggregateUserMemoryContext(), typeOperators));
 
         WorkProcessor<Page> mergedSpilledPages = mergeHashSort.get().merge(
                 groupByTypes,
@@ -286,7 +275,7 @@ public class SpillableHashAggregationBuilder
     {
         checkState(spiller.isPresent());
 
-        mergeHashSort = Optional.of(new MergeHashSort(operatorContext.newAggregateUserMemoryContext(), blockTypeOperators));
+        mergeHashSort = Optional.of(new MergeHashSort(operatorContext.newAggregateUserMemoryContext(), typeOperators));
 
         WorkProcessor<Page> mergedSpilledPages = mergeHashSort.get().merge(
                 groupByTypes,
@@ -313,7 +302,7 @@ public class SpillableHashAggregationBuilder
                 memoryLimitForMerge,
                 hashAggregationBuilder.getKeyChannels(),
                 joinCompiler,
-                blockTypeOperators));
+                typeOperators));
 
         return merger.get().buildResult();
     }
@@ -321,8 +310,6 @@ public class SpillableHashAggregationBuilder
     private void rebuildHashAggregationBuilder()
     {
         if (hashAggregationBuilder != null) {
-            hashCollisions += hashAggregationBuilder.getHashCollisions();
-            expectedHashCollisions += hashAggregationBuilder.getExpectedHashCollisions();
             hashAggregationBuilder.close();
         }
 
@@ -336,7 +323,7 @@ public class SpillableHashAggregationBuilder
                 operatorContext,
                 Optional.of(DataSize.succinctBytes(0)),
                 joinCompiler,
-                blockTypeOperators,
+                typeOperators,
                 () -> {
                     updateMemory();
                     // TODO: Support GroupByHash yielding in spillable hash aggregation (https://github.com/trinodb/trino/issues/460)

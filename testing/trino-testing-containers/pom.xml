@@ -5,23 +5,17 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>398-SNAPSHOT</version>
+        <version>426-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-testing-containers</artifactId>
-    <name>trino-testing-containers</name>
 
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
     </properties>
 
     <dependencies>
-        <dependency>
-            <groupId>io.airlift</groupId>
-            <artifactId>log</artifactId>
-        </dependency>
-
         <dependency>
             <groupId>com.github.docker-java</groupId>
             <artifactId>docker-java-api</artifactId>
@@ -30,6 +24,21 @@
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>dev.failsafe</groupId>
+            <artifactId>failsafe</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>log</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.airlift</groupId>
+            <artifactId>units</artifactId>
         </dependency>
 
         <dependency>
@@ -48,8 +57,8 @@
         </dependency>
 
         <dependency>
-            <groupId>net.jodah</groupId>
-            <artifactId>failsafe</artifactId>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-testing-services</artifactId>
         </dependency>
 
         <dependency>

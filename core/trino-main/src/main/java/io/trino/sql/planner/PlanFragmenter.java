@@ -16,6 +16,7 @@ package io.trino.sql.planner;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
+import com.google.inject.Inject;
 import io.trino.Session;
 import io.trino.connector.CatalogProperties;
 import io.trino.cost.StatsAndCosts;
@@ -34,7 +35,6 @@ import io.trino.spi.connector.ConnectorPartitioningHandle;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.plan.ExchangeNode;
 import io.trino.sql.planner.plan.ExplainAnalyzeNode;
-import io.trino.sql.planner.plan.MergeProcessorNode;
 import io.trino.sql.planner.plan.MergeWriterNode;
 import io.trino.sql.planner.plan.OutputNode;
 import io.trino.sql.planner.plan.PlanFragmentId;
@@ -46,13 +46,14 @@ import io.trino.sql.planner.plan.SimplePlanRewriter;
 import io.trino.sql.planner.plan.SimpleTableExecuteNode;
 import io.trino.sql.planner.plan.StatisticsWriterNode;
 import io.trino.sql.planner.plan.TableDeleteNode;
+import io.trino.sql.planner.plan.TableExecuteNode;
 import io.trino.sql.planner.plan.TableFinishNode;
+import io.trino.sql.planner.plan.TableFunctionNode;
+import io.trino.sql.planner.plan.TableFunctionProcessorNode;
 import io.trino.sql.planner.plan.TableScanNode;
 import io.trino.sql.planner.plan.TableWriterNode;
 import io.trino.sql.planner.plan.ValuesNode;
 import io.trino.transaction.TransactionManager;
-
-import javax.inject.Inject;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -72,6 +73,8 @@ import static io.trino.spi.StandardErrorCode.QUERY_HAS_TOO_MANY_STAGES;
 import static io.trino.spi.connector.StandardWarningCode.TOO_MANY_STAGES;
 import static io.trino.sql.planner.SchedulingOrderVisitor.scheduleOrder;
 import static io.trino.sql.planner.SystemPartitioningHandle.COORDINATOR_DISTRIBUTION;
+import static io.trino.sql.planner.SystemPartitioningHandle.FIXED_HASH_DISTRIBUTION;
+import static io.trino.sql.planner.SystemPartitioningHandle.SCALED_WRITER_HASH_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SINGLE_DISTRIBUTION;
 import static io.trino.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.REMOTE;
@@ -85,15 +88,14 @@ import static java.util.Objects.requireNonNull;
 public class PlanFragmenter
 {
     private static final String TOO_MANY_STAGES_MESSAGE = "" +
-            "If the query contains multiple aggregates with DISTINCT over different columns, please set the 'use_mark_distinct' session property to false. " +
+            "If the query contains multiple aggregates with DISTINCT over different columns, please set the 'mark_distinct_strategy' session property to 'none'. " +
             "If the query contains WITH clauses that are referenced more than once, please create temporary table(s) for the queries in those clauses.";
 
     private final Metadata metadata;
     private final FunctionManager functionManager;
     private final TransactionManager transactionManager;
     private final CatalogManager catalogManager;
-    @Deprecated // TODO do not keep mutable config instance on a field
-    private final QueryManagerConfig config;
+    private final int stageCountWarningThreshold;
 
     @Inject
     public PlanFragmenter(
@@ -107,7 +109,7 @@ public class PlanFragmenter
         this.functionManager = requireNonNull(functionManager, "functionManager is null");
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.catalogManager = requireNonNull(catalogManager, "catalogManager is null");
-        this.config = requireNonNull(queryManagerConfig, "queryManagerConfig is null");
+        this.stageCountWarningThreshold = requireNonNull(queryManagerConfig, "queryManagerConfig is null").getStageCountWarningThreshold();
     }
 
     public SubPlan createSubPlans(Session session, Plan plan, boolean forceSingleNode, WarningCollector warningCollector)
@@ -130,7 +132,7 @@ public class PlanFragmenter
         checkState(!isForceSingleNodeOutput(session) || subPlan.getFragment().getPartitioning().isSingleNode(), "Root of PlanFragment is not single node");
 
         // TODO: Remove query_max_stage_count session property and use queryManagerConfig.getMaxStageCount() here
-        sanityCheckFragmentedPlan(subPlan, warningCollector, getQueryMaxStageCount(session), config.getStageCountWarningThreshold());
+        sanityCheckFragmentedPlan(subPlan, warningCollector, getQueryMaxStageCount(session), stageCountWarningThreshold);
 
         return subPlan;
     }
@@ -170,7 +172,7 @@ public class PlanFragmenter
             PartitioningHandleReassigner partitioningHandleReassigner = new PartitioningHandleReassigner(fragment.getPartitioning(), metadata, session);
             newRoot = SimplePlanRewriter.rewriteWith(partitioningHandleReassigner, newRoot);
         }
-        PartitioningScheme outputPartitioningScheme = fragment.getPartitioningScheme();
+        PartitioningScheme outputPartitioningScheme = fragment.getOutputPartitioningScheme();
         Partitioning newOutputPartitioning = outputPartitioningScheme.getPartitioning();
         if (outputPartitioningScheme.getPartitioning().getHandle().getCatalogHandle().isPresent()) {
             // Do not replace the handle if the source's output handle is a system one, e.g. broadcast.
@@ -181,13 +183,15 @@ public class PlanFragmenter
                 newRoot,
                 fragment.getSymbols(),
                 fragment.getPartitioning(),
+                fragment.getPartitionCount(),
                 fragment.getPartitionedSources(),
                 new PartitioningScheme(
                         newOutputPartitioning,
                         outputPartitioningScheme.getOutputLayout(),
                         outputPartitioningScheme.getHashColumn(),
                         outputPartitioningScheme.isReplicateNullsAndAny(),
-                        outputPartitioningScheme.getBucketToPartition()),
+                        outputPartitioningScheme.getBucketToPartition(),
+                        outputPartitioningScheme.getPartitionCount()),
                 fragment.getStatsAndCosts(),
                 fragment.getActiveCatalogs(),
                 fragment.getJsonRepresentation());
@@ -210,7 +214,7 @@ public class PlanFragmenter
         private final TypeProvider types;
         private final StatsAndCosts statsAndCosts;
         private final List<CatalogProperties> activeCatalogs;
-        private int nextFragmentId = ROOT_FRAGMENT_ID + 1;
+        private final PlanFragmentIdAllocator idAllocator = new PlanFragmentIdAllocator(ROOT_FRAGMENT_ID + 1);
 
         public Fragmenter(Session session, Metadata metadata, FunctionManager functionManager, TypeProvider types, StatsAndCosts statsAndCosts, List<CatalogProperties> activeCatalogs)
         {
@@ -225,11 +229,6 @@ public class PlanFragmenter
         public SubPlan buildRootFragment(PlanNode root, FragmentProperties properties)
         {
             return buildFragment(root, properties, new PlanFragmentId(String.valueOf(ROOT_FRAGMENT_ID)));
-        }
-
-        private PlanFragmentId nextFragmentId()
-        {
-            return new PlanFragmentId(String.valueOf(nextFragmentId++));
         }
 
         private SubPlan buildFragment(PlanNode root, FragmentProperties properties, PlanFragmentId fragmentId)
@@ -247,6 +246,7 @@ public class PlanFragmenter
                     root,
                     symbols,
                     properties.getPartitioningHandle(),
+                    properties.getPartitionCount(),
                     schedulingOrder,
                     properties.getPartitioningScheme(),
                     statsAndCosts.getForSubplan(root),
@@ -324,31 +324,60 @@ public class PlanFragmenter
         @Override
         public PlanNode visitTableWriter(TableWriterNode node, RewriteContext<FragmentProperties> context)
         {
-            if (node.getPartitioningScheme().isPresent()) {
-                context.get().setDistribution(node.getPartitioningScheme().get().getPartitioning().getHandle(), metadata, session);
-            }
+            node.getPartitioningScheme().ifPresent(scheme -> context.get().setDistribution(
+                    scheme.getPartitioning().getHandle(),
+                    scheme.getPartitionCount(),
+                    metadata,
+                    session));
+            return context.defaultRewrite(node, context.get());
+        }
+
+        @Override
+        public PlanNode visitTableExecute(TableExecuteNode node, RewriteContext<FragmentProperties> context)
+        {
+            node.getPartitioningScheme().ifPresent(scheme -> context.get().setDistribution(
+                    scheme.getPartitioning().getHandle(),
+                    scheme.getPartitionCount(),
+                    metadata,
+                    session));
             return context.defaultRewrite(node, context.get());
         }
 
         @Override
         public PlanNode visitMergeWriter(MergeWriterNode node, RewriteContext<FragmentProperties> context)
         {
-            if (node.getPartitioningScheme().isPresent()) {
-                context.get().setDistribution(node.getPartitioningScheme().get().getPartitioning().getHandle(), metadata, session);
-            }
-            return context.defaultRewrite(node, context.get());
-        }
-
-        @Override
-        public PlanNode visitMergeProcessor(MergeProcessorNode node, RewriteContext<FragmentProperties> context)
-        {
+            node.getPartitioningScheme().ifPresent(scheme -> context.get().setDistribution(
+                    scheme.getPartitioning().getHandle(),
+                    scheme.getPartitionCount(),
+                    metadata,
+                    session));
             return context.defaultRewrite(node, context.get());
         }
 
         @Override
         public PlanNode visitValues(ValuesNode node, RewriteContext<FragmentProperties> context)
         {
-            context.get().setSingleNodeDistribution();
+            // An empty values node is compatible with any distribution, so
+            // don't attempt to overwrite one's already been chosen
+            if (node.getRowCount() != 0 || !context.get().hasDistribution()) {
+                context.get().setSingleNodeDistribution();
+            }
+            return context.defaultRewrite(node, context.get());
+        }
+
+        @Override
+        public PlanNode visitTableFunction(TableFunctionNode node, RewriteContext<FragmentProperties> context)
+        {
+            throw new IllegalStateException(format("Unexpected node: TableFunctionNode (%s)", node.getName()));
+        }
+
+        @Override
+        public PlanNode visitTableFunctionProcessor(TableFunctionProcessorNode node, RewriteContext<FragmentProperties> context)
+        {
+            if (node.getSource().isEmpty()) {
+                // context is mutable. The leaf node should set the PartitioningHandle.
+                context.get().addSourceDistribution(node.getId(), SOURCE_DISTRIBUTION, metadata, session);
+            }
             return context.defaultRewrite(node, context.get());
         }
 
@@ -365,7 +394,11 @@ public class PlanFragmenter
                 context.get().setSingleNodeDistribution();
             }
             else if (exchange.getType() == ExchangeNode.Type.REPARTITION) {
-                context.get().setDistribution(partitioningScheme.getPartitioning().getHandle(), metadata, session);
+                context.get().setDistribution(
+                        partitioningScheme.getPartitioning().getHandle(),
+                        partitioningScheme.getPartitionCount(),
+                        metadata,
+                        session);
             }
 
             ImmutableList.Builder<FragmentProperties> childrenProperties = ImmutableList.builder();
@@ -395,7 +428,7 @@ public class PlanFragmenter
 
         private SubPlan buildSubPlan(PlanNode node, FragmentProperties properties, RewriteContext<FragmentProperties> context)
         {
-            PlanFragmentId planFragmentId = nextFragmentId();
+            PlanFragmentId planFragmentId = idAllocator.getNextId();
             PlanNode child = context.rewrite(node, properties);
             return buildFragment(child, properties, planFragmentId);
         }
@@ -424,6 +457,7 @@ public class PlanFragmenter
         private final PartitioningScheme partitioningScheme;
 
         private Optional<PartitioningHandle> partitioningHandle = Optional.empty();
+        private Optional<Integer> partitionCount = Optional.empty();
         private final Set<PlanNodeId> partitionedSources = new HashSet<>();
 
         public FragmentProperties(PartitioningScheme partitioningScheme)
@@ -434,6 +468,11 @@ public class PlanFragmenter
         public List<SubPlan> getChildren()
         {
             return children;
+        }
+
+        public boolean hasDistribution()
+        {
+            return partitioningHandle.isPresent();
         }
 
         public FragmentProperties setSingleNodeDistribution()
@@ -453,21 +492,21 @@ public class PlanFragmenter
             return this;
         }
 
-        public FragmentProperties setDistribution(PartitioningHandle distribution, Metadata metadata, Session session)
+        public FragmentProperties setDistribution(
+                PartitioningHandle distribution,
+                Optional<Integer> partitionCount,
+                Metadata metadata,
+                Session session)
         {
             if (partitioningHandle.isEmpty()) {
                 partitioningHandle = Optional.of(distribution);
+                this.partitionCount = partitionCount;
                 return this;
             }
 
             PartitioningHandle currentPartitioning = this.partitioningHandle.get();
 
-            if (isCompatibleSystemPartitioning(distribution)) {
-                return this;
-            }
-
-            if (currentPartitioning.equals(SOURCE_DISTRIBUTION)) {
-                this.partitioningHandle = Optional.of(distribution);
+            if (currentPartitioning.equals(distribution)) {
                 return this;
             }
 
@@ -476,7 +515,18 @@ public class PlanFragmenter
                 return this;
             }
 
-            if (currentPartitioning.equals(distribution)) {
+            if (isCompatibleSystemPartitioning(distribution)) {
+                return this;
+            }
+
+            if (isCompatibleScaledWriterPartitioning(currentPartitioning, distribution)) {
+                this.partitioningHandle = Optional.of(distribution);
+                this.partitionCount = partitionCount;
+                return this;
+            }
+
+            if (currentPartitioning.equals(SOURCE_DISTRIBUTION)) {
+                this.partitioningHandle = Optional.of(distribution);
                 return this;
             }
 
@@ -502,6 +552,19 @@ public class PlanFragmenter
                         ((SystemPartitioningHandle) distributionHandle).getPartitioning();
             }
             return false;
+        }
+
+        private static boolean isCompatibleScaledWriterPartitioning(PartitioningHandle current, PartitioningHandle suggested)
+        {
+            if (current.equals(FIXED_HASH_DISTRIBUTION) && suggested.equals(SCALED_WRITER_HASH_DISTRIBUTION)) {
+                return true;
+            }
+            PartitioningHandle currentWithScaledWritersEnabled = new PartitioningHandle(
+                    current.getCatalogHandle(),
+                    current.getTransactionHandle(),
+                    current.getConnectorHandle(),
+                    true);
+            return currentWithScaledWritersEnabled.equals(suggested);
         }
 
         public FragmentProperties setCoordinatorOnlyDistribution()
@@ -569,6 +632,11 @@ public class PlanFragmenter
         public PartitioningHandle getPartitioningHandle()
         {
             return partitioningHandle.get();
+        }
+
+        public Optional<Integer> getPartitionCount()
+        {
+            return partitionCount;
         }
 
         public Set<PlanNodeId> getPartitionedSources()

@@ -16,34 +16,36 @@ package io.trino.type;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.type.SqlTimeWithTimeZone;
+import org.junit.jupiter.api.Test;
 
 import static io.trino.spi.type.DateTimeEncoding.packTimeWithTimeZone;
 import static io.trino.spi.type.DateTimeEncoding.unpackOffsetMinutes;
 import static io.trino.spi.type.DateTimeEncoding.unpackTimeNanos;
-import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimeWithTimeZoneType.TIME_TZ_MILLIS;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestTimeWithTimeZoneType
         extends AbstractTestType
 {
     public TestTimeWithTimeZoneType()
     {
-        super(TIME_WITH_TIME_ZONE, SqlTimeWithTimeZone.class, createTestBlock());
+        super(TIME_TZ_MILLIS, SqlTimeWithTimeZone.class, createTestBlock());
     }
 
     public static Block createTestBlock()
     {
-        BlockBuilder blockBuilder = TIME_WITH_TIME_ZONE.createBlockBuilder(null, 15);
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(1_111_000_000L, 0));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(1_111_000_000L, 1));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(1_111_000_000L, 2));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 3));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 4));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 5));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 6));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 7));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(3_333_000_000L, 8));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(3_333_000_000L, 9));
-        TIME_WITH_TIME_ZONE.writeLong(blockBuilder, packTimeWithTimeZone(4_444_000_000L, 10));
+        BlockBuilder blockBuilder = TIME_TZ_MILLIS.createBlockBuilder(null, 15);
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(1_111_000_000L, 0));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(1_111_000_000L, 1));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(1_111_000_000L, 2));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 3));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 4));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 5));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 6));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(2_222_000_000L, 7));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(3_333_000_000L, 8));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(3_333_000_000L, 9));
+        TIME_TZ_MILLIS.writeLong(blockBuilder, packTimeWithTimeZone(4_444_000_000L, 10));
         return blockBuilder.build();
     }
 
@@ -51,5 +53,26 @@ public class TestTimeWithTimeZoneType
     protected Object getGreaterValue(Object value)
     {
         return packTimeWithTimeZone(unpackTimeNanos((Long) value) + 10, unpackOffsetMinutes((Long) value));
+    }
+
+    @Test
+    public void testRange()
+    {
+        assertThat(type.getRange())
+                .isEmpty();
+    }
+
+    @Test
+    public void testPreviousValue()
+    {
+        assertThat(type.getPreviousValue(getSampleValue()))
+                .isEmpty();
+    }
+
+    @Test
+    public void testNextValue()
+    {
+        assertThat(type.getNextValue(getSampleValue()))
+                .isEmpty();
     }
 }

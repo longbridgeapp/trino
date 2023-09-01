@@ -14,12 +14,13 @@
 package io.trino.array;
 
 import io.airlift.slice.Slice;
-import org.openjdk.jol.info.ClassLayout;
+
+import static io.airlift.slice.SizeOf.instanceSize;
 
 public final class SliceBigArray
 {
-    private static final int INSTANCE_SIZE = ClassLayout.parseClass(SliceBigArray.class).instanceSize();
-    private static final int SLICE_INSTANCE_SIZE = ClassLayout.parseClass(Slice.class).instanceSize();
+    private static final int INSTANCE_SIZE = instanceSize(SliceBigArray.class);
+    private static final int SLICE_INSTANCE_SIZE = instanceSize(Slice.class);
     private final ObjectBigArray<Slice> array;
     private final ReferenceCountMap trackedSlices = new ReferenceCountMap();
     private long sizeOfSlices;
@@ -77,7 +78,7 @@ public final class SliceBigArray
     {
         Slice currentValue = array.get(index);
         if (currentValue != null) {
-            int baseReferenceCount = trackedSlices.decrementAndGet(currentValue.getBase());
+            int baseReferenceCount = trackedSlices.decrementAndGet(currentValue.byteArray());
             int sliceReferenceCount = trackedSlices.decrementAndGet(currentValue);
             if (baseReferenceCount == 0) {
                 // it is the last referenced base
@@ -89,7 +90,7 @@ public final class SliceBigArray
             }
         }
         if (value != null) {
-            int baseReferenceCount = trackedSlices.incrementAndGet(value.getBase());
+            int baseReferenceCount = trackedSlices.incrementAndGet(value.byteArray());
             int sliceReferenceCount = trackedSlices.incrementAndGet(value);
             if (baseReferenceCount == 1) {
                 // it is the first referenced base

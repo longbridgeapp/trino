@@ -14,6 +14,8 @@
 package io.trino.connector.system;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
+import com.google.inject.Provider;
 import io.trino.FullConnectorSession;
 import io.trino.annotation.UsedByGeneratedCode;
 import io.trino.dispatcher.DispatchManager;
@@ -25,14 +27,13 @@ import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.procedure.Procedure;
 import io.trino.spi.procedure.Procedure.Argument;
 
-import javax.inject.Inject;
-
 import java.lang.invoke.MethodHandle;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Strings.isNullOrEmpty;
+import static io.trino.plugin.base.util.Procedures.checkProcedureArgument;
 import static io.trino.security.AccessControlUtil.checkCanKillQueryOwnedBy;
 import static io.trino.spi.StandardErrorCode.ADMINISTRATIVELY_KILLED;
 import static io.trino.spi.StandardErrorCode.ADMINISTRATIVELY_PREEMPTED;
@@ -44,6 +45,7 @@ import static io.trino.util.Reflection.methodHandle;
 import static java.util.Objects.requireNonNull;
 
 public class KillQueryProcedure
+        implements Provider<Procedure>
 {
     private static final MethodHandle KILL_QUERY = methodHandle(KillQueryProcedure.class, "killQuery", String.class, String.class, ConnectorSession.class);
 
@@ -60,6 +62,8 @@ public class KillQueryProcedure
     @UsedByGeneratedCode
     public void killQuery(String queryId, String message, ConnectorSession session)
     {
+        checkProcedureArgument(queryId != null, "query_id cannot be null");
+
         QueryId query = parseQueryId(queryId);
 
         try {
@@ -86,14 +90,15 @@ public class KillQueryProcedure
         }
     }
 
-    public Procedure getProcedure()
+    @Override
+    public Procedure get()
     {
         return new Procedure(
                 "runtime",
                 "kill_query",
                 ImmutableList.<Argument>builder()
                         .add(new Argument("QUERY_ID", VARCHAR))
-                        .add(new Argument("MESSAGE", VARCHAR))
+                        .add(new Argument("MESSAGE", VARCHAR, false, null))
                         .build(),
                 KILL_QUERY.bindTo(this));
     }

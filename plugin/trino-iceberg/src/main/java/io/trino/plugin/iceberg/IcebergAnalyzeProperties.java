@@ -14,11 +14,10 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.spi.TrinoException;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.ArrayType;
-
-import javax.inject.Inject;
 
 import java.util.Collection;
 import java.util.List;
@@ -40,17 +39,15 @@ public class IcebergAnalyzeProperties
     @Inject
     public IcebergAnalyzeProperties()
     {
-        analyzeProperties = ImmutableList.<PropertyMetadata<?>>builder()
-                .add(new PropertyMetadata<>(
-                        COLUMNS_PROPERTY,
-                        "Columns to be analyzed",
-                        new ArrayType(VARCHAR),
-                        Set.class,
-                        null,
-                        false,
-                        IcebergAnalyzeProperties::decodeColumnNames,
-                        value -> value))
-                .build();
+        analyzeProperties = ImmutableList.of(new PropertyMetadata<>(
+                COLUMNS_PROPERTY,
+                "Columns to be analyzed",
+                new ArrayType(VARCHAR),
+                Set.class,
+                null,
+                false,
+                IcebergAnalyzeProperties::decodeColumnNames,
+                value -> value));
     }
 
     public List<PropertyMetadata<?>> getAnalyzeProperties()

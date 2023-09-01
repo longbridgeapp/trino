@@ -47,7 +47,6 @@ import io.trino.spi.connector.ConnectorSplit;
 import io.trino.sql.planner.plan.PlanNodeId;
 import io.trino.testing.TestingSession;
 import io.trino.util.FinalizerService;
-import org.openjdk.jol.info.ClassLayout;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.DataProvider;
@@ -76,6 +75,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.testing.Assertions.assertLessThanOrEqual;
 import static io.trino.spi.StandardErrorCode.NO_NODES_AVAILABLE;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
@@ -113,8 +113,9 @@ public class TestNodeScheduler
 
         nodeSchedulerConfig = new NodeSchedulerConfig()
                 .setMaxSplitsPerNode(20)
-                .setIncludeCoordinator(false)
-                .setMaxPendingSplitsPerTask(10);
+                .setMinPendingSplitsPerTask(10)
+                .setMaxAdjustedPendingSplitsWeightPerTask(100)
+                .setIncludeCoordinator(false);
 
         nodeScheduler = new NodeScheduler(new UniformNodeSelectorFactory(nodeManager, nodeSchedulerConfig, nodeTaskMap));
         // contents of taskMap indicate the node-task map for the current stage
@@ -186,7 +187,7 @@ public class TestNodeScheduler
         NodeSchedulerConfig nodeSchedulerConfig = new NodeSchedulerConfig()
                 .setMaxSplitsPerNode(25)
                 .setIncludeCoordinator(false)
-                .setMaxPendingSplitsPerTask(20);
+                .setMinPendingSplitsPerTask(20);
 
         TestNetworkTopology topology = new TestNetworkTopology();
         NodeSelectorFactory nodeSelectorFactory = new TopologyAwareNodeSelectorFactory(topology, nodeManager, nodeSchedulerConfig, nodeTaskMap, getNetworkTopologyConfig());
@@ -784,7 +785,7 @@ public class TestNodeScheduler
             TaskId taskId = new TaskId(new StageId("test", 1), task, 0);
             task++;
             MockRemoteTaskFactory.MockRemoteTask remoteTask = remoteTaskFactory.createTableScanTask(taskId, node, ImmutableList.copyOf(assignments1.get(node)), nodeTaskMap.createPartitionedSplitCountTracker(node, taskId));
-            remoteTask.startSplits(20);
+            remoteTask.startSplits(15); // 15 running, 5 queued, no maxSplitWeightPerTask adjustment
             nodeTaskMap.addTask(node, remoteTask);
             taskMap.put(node, remoteTask);
         }
@@ -799,7 +800,7 @@ public class TestNodeScheduler
                     .build());
         }
         unassignedSplits = Sets.difference(unassignedSplits, new HashSet<>(assignments2.values()));
-        assertEquals(unassignedSplits.size(), 10);
+        assertEquals(unassignedSplits.size(), 20); // 30 (unassignedSplits) - (10 (maxPendingSplitsPerTask) - 5(queued)) * 2 (nodes))
 
         Multimap<InternalNode, Split> assignments3 = nodeSelector.computeAssignments(unassignedSplits, ImmutableList.copyOf(taskMap.values())).getAssignments();
         assertTrue(assignments3.isEmpty());
@@ -874,7 +875,7 @@ public class TestNodeScheduler
     private static class TestSplitLocal
             implements ConnectorSplit
     {
-        private static final int INSTANCE_SIZE = ClassLayout.parseClass(TestSplitLocal.class).instanceSize();
+        private static final int INSTANCE_SIZE = instanceSize(TestSplitLocal.class);
 
         private final HostAddress address;
         private final SplitWeight splitWeight;
@@ -967,7 +968,7 @@ public class TestNodeScheduler
     private static class TestSplitRemote
             implements ConnectorSplit
     {
-        private static final int INSTANCE_SIZE = ClassLayout.parseClass(TestSplitRemote.class).instanceSize();
+        private static final int INSTANCE_SIZE = instanceSize(TestSplitRemote.class);
 
         private final List<HostAddress> hosts;
         private final SplitWeight splitWeight;

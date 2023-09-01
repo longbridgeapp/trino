@@ -35,32 +35,20 @@ public abstract class BaseCassandraConnectorSmokeTest
     @Override
     protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
     {
-        switch (connectorBehavior) {
-            case SUPPORTS_CREATE_SCHEMA:
-                return false;
-
-            case SUPPORTS_CREATE_VIEW:
-                return false;
-
-            case SUPPORTS_RENAME_TABLE:
-                return false;
-
-            case SUPPORTS_ARRAY:
-                return false;
-
-            case SUPPORTS_COMMENT_ON_TABLE:
-            case SUPPORTS_COMMENT_ON_COLUMN:
-                return false;
-
-            case SUPPORTS_TOPN_PUSHDOWN:
-                return false;
-
-            case SUPPORTS_DELETE:
-                return true;
-
-            default:
-                return super.hasBehavior(connectorBehavior);
-        }
+        return switch (connectorBehavior) {
+            case SUPPORTS_DELETE -> true;
+            case SUPPORTS_ARRAY,
+                    SUPPORTS_COMMENT_ON_COLUMN,
+                    SUPPORTS_COMMENT_ON_TABLE,
+                    SUPPORTS_CREATE_MATERIALIZED_VIEW,
+                    SUPPORTS_CREATE_SCHEMA,
+                    SUPPORTS_CREATE_VIEW,
+                    SUPPORTS_MERGE,
+                    SUPPORTS_RENAME_TABLE,
+                    SUPPORTS_TOPN_PUSHDOWN,
+                    SUPPORTS_UPDATE -> false;
+            default -> super.hasBehavior(connectorBehavior);
+        };
     }
 
     @Override

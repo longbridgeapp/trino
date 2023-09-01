@@ -16,6 +16,7 @@ package io.trino.sql.gen;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.airlift.bytecode.BytecodeBlock;
 import io.airlift.bytecode.BytecodeNode;
 import io.airlift.bytecode.ClassDefinition;
@@ -32,8 +33,10 @@ import io.airlift.bytecode.expression.BytecodeExpression;
 import io.airlift.bytecode.expression.BytecodeExpressions;
 import io.airlift.bytecode.instruction.LabelNode;
 import io.airlift.jmx.CacheStatsMBean;
+import io.airlift.slice.SizeOf;
 import io.trino.Session;
-import io.trino.collect.cache.NonEvictableLoadingCache;
+import io.trino.cache.NonEvictableLoadingCache;
+import io.trino.operator.FlatHashStrategy;
 import io.trino.operator.HashArraySizeSupplier;
 import io.trino.operator.PagesHashStrategy;
 import io.trino.operator.join.BigintPagesHash;
@@ -51,12 +54,10 @@ import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import io.trino.sql.gen.JoinFilterFunctionCompiler.JoinFilterFunctionFactory;
 import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.assertj.core.util.VisibleForTesting;
-import org.openjdk.jol.info.ClassLayout;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
-
-import javax.inject.Inject;
 
 import java.lang.invoke.MethodHandle;
 import java.lang.reflect.Constructor;
@@ -68,7 +69,6 @@ import java.util.OptionalInt;
 import java.util.stream.IntStream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.bytecode.Access.FINAL;
 import static io.airlift.bytecode.Access.PRIVATE;
 import static io.airlift.bytecode.Access.PUBLIC;
@@ -76,6 +76,7 @@ import static io.airlift.bytecode.Access.STATIC;
 import static io.airlift.bytecode.Access.a;
 import static io.airlift.bytecode.Parameter.arg;
 import static io.airlift.bytecode.ParameterizedType.type;
+import static io.airlift.bytecode.expression.BytecodeExpressions.constantClass;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantFalse;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantInt;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantLong;
@@ -83,12 +84,16 @@ import static io.airlift.bytecode.expression.BytecodeExpressions.constantNull;
 import static io.airlift.bytecode.expression.BytecodeExpressions.constantTrue;
 import static io.airlift.bytecode.expression.BytecodeExpressions.getStatic;
 import static io.airlift.bytecode.expression.BytecodeExpressions.invokeDynamic;
+import static io.airlift.bytecode.expression.BytecodeExpressions.invokeStatic;
 import static io.airlift.bytecode.expression.BytecodeExpressions.newInstance;
 import static io.airlift.bytecode.expression.BytecodeExpressions.notEqual;
-import static io.trino.collect.cache.SafeCaches.buildNonEvictableCache;
+import static io.airlift.bytecode.expression.BytecodeExpressions.setStatic;
+import static io.trino.cache.SafeCaches.buildNonEvictableCache;
+import static io.trino.operator.join.JoinUtils.getSingleBigintJoinChannel;
 import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BLOCK_POSITION;
+import static io.trino.spi.function.InvocationConvention.InvocationArgumentConvention.BLOCK_POSITION_NOT_NULL;
+import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.DEFAULT_ON_NULL;
 import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
-import static io.trino.spi.function.InvocationConvention.InvocationReturnConvention.NULLABLE_RETURN;
 import static io.trino.spi.function.InvocationConvention.simpleConvention;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.sql.gen.Bootstrap.BOOTSTRAP_METHOD;
@@ -116,6 +121,8 @@ public class JoinCompiler
             CacheLoader.from(key ->
                     internalCompileHashStrategy(key.getTypes(), key.getOutputChannels(), key.getJoinChannels(), key.getSortChannel())));
 
+    private final NonEvictableLoadingCache<List<Type>, FlatHashStrategy> flatHashStrategies;
+
     @Inject
     public JoinCompiler(TypeOperators typeOperators)
     {
@@ -127,6 +134,11 @@ public class JoinCompiler
     {
         this.typeOperators = requireNonNull(typeOperators, "typeOperators is null");
         this.enableSingleChannelBigintLookupSource = enableSingleChannelBigintLookupSource;
+        this.flatHashStrategies = buildNonEvictableCache(
+                    CacheBuilder.newBuilder()
+                            .recordStats()
+                            .maximumSize(1000),
+                    CacheLoader.from(key -> new FlatHashStrategy(key, typeOperators)));
     }
 
     @Managed
@@ -143,11 +155,17 @@ public class JoinCompiler
         return new CacheStatsMBean(hashStrategies);
     }
 
+    // This should be in a separate cache, but it is convenient during the transition to keep this in the join compiler
+    public FlatHashStrategy getFlatHashStrategy(List<Type> types)
+    {
+        return flatHashStrategies.getUnchecked(types);
+    }
+
     public LookupSourceSupplierFactory compileLookupSourceFactory(List<? extends Type> types, List<Integer> joinChannels, Optional<Integer> sortChannel, Optional<List<Integer>> outputChannels)
     {
         return lookupSourceFactories.getUnchecked(new CacheKey(
                 types,
-                outputChannels.orElse(rangeList(types.size())),
+                outputChannels.orElseGet(() -> rangeList(types.size())),
                 joinChannels,
                 sortChannel));
     }
@@ -165,7 +183,7 @@ public class JoinCompiler
 
         return new PagesHashStrategyFactory(hashStrategies.getUnchecked(new CacheKey(
                 types,
-                outputChannels.orElse(rangeList(types.size())),
+                outputChannels.orElseGet(() -> rangeList(types.size())),
                 joinChannels,
                 Optional.empty())));
     }
@@ -182,10 +200,8 @@ public class JoinCompiler
         Class<? extends PagesHashStrategy> pagesHashStrategyClass = internalCompileHashStrategy(types, outputChannels, joinChannels, sortChannel);
 
         OptionalInt singleBigintJoinChannel = OptionalInt.empty();
-        if (enableSingleChannelBigintLookupSource
-                && joinChannels.size() == 1
-                && types.get(getOnlyElement(joinChannels)) == BIGINT) {
-            singleBigintJoinChannel = OptionalInt.of(getOnlyElement(joinChannels));
+        if (enableSingleChannelBigintLookupSource) {
+            singleBigintJoinChannel = getSingleBigintJoinChannel(joinChannels, types);
         }
 
         Class<? extends LookupSourceSupplier> joinHashSupplierClass = IsolatedClass.isolateClass(
@@ -206,12 +222,7 @@ public class JoinCompiler
         FieldDefinition instanceSize = definition.declareField(a(PRIVATE, STATIC, FINAL), "INSTANCE_SIZE", long.class);
         definition.getClassInitializer()
                 .getBody()
-                .comment("INSTANCE_SIZE = ClassLayout.parseClass(%s.class).instanceSize()", definition.getName())
-                .push(definition.getType())
-                .invokeStatic(ClassLayout.class, "parseClass", ClassLayout.class, Class.class)
-                .invokeVirtual(ClassLayout.class, "instanceSize", int.class)
-                .intToLong()
-                .putStaticField(instanceSize);
+                .append(setStatic(instanceSize, invokeStatic(SizeOf.class, "instanceSize", int.class, constantClass(definition.getType())).cast(long.class)));
         return instanceSize;
     }
 
@@ -292,7 +303,7 @@ public class JoinCompiler
 
         for (int index = 0; index < channelFields.size(); index++) {
             BytecodeExpression channel = channels.invoke("get", Object.class, constantInt(index))
-                    .cast(type(List.class, Block.class));
+                    .cast(type(ObjectArrayList.class, Block.class));
 
             constructor.append(thisVariable.setField(channelFields.get(index), channel));
 
@@ -315,6 +326,13 @@ public class JoinCompiler
                             channel.invoke("get", Object.class, blockIndex)
                                     .cast(type(Block.class))
                                     .invoke("getRetainedSizeInBytes", long.class))
+                    .longAdd()
+                    .putField(sizeField);
+
+            constructor.append(thisVariable)
+                    .append(thisVariable)
+                    .getField(sizeField)
+                    .append(invokeStatic(SizeOf.class, "sizeOf", long.class, channel.invoke("elements", Object[].class)))
                     .longAdd()
                     .putField(sizeField);
         }
@@ -517,7 +535,7 @@ public class JoinCompiler
 
     private BytecodeNode typeHashCode(CallSiteBinder callSiteBinder, Type type, BytecodeExpression blockRef, BytecodeExpression blockPosition)
     {
-        MethodHandle hashCodeOperator = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION));
+        MethodHandle hashCodeOperator = typeOperators.getHashCodeOperator(type, simpleConvention(FAIL_ON_NULL, BLOCK_POSITION_NOT_NULL));
         return new IfStatement()
                 .condition(blockRef.invoke("isNull", boolean.class, blockPosition))
                 .ifTrue(constantLong(0L))
@@ -1027,14 +1045,13 @@ public class JoinCompiler
             BytecodeExpression rightBlock,
             BytecodeExpression rightBlockPosition)
     {
-        MethodHandle equalOperator = typeOperators.getEqualOperator(type, simpleConvention(NULLABLE_RETURN, BLOCK_POSITION, BLOCK_POSITION));
-        BytecodeExpression equalInvocation = invokeDynamic(
+        MethodHandle equalOperator = typeOperators.getEqualOperator(type, simpleConvention(DEFAULT_ON_NULL, BLOCK_POSITION, BLOCK_POSITION));
+        return invokeDynamic(
                 BOOTSTRAP_METHOD,
                 ImmutableList.of(callSiteBinder.bind(equalOperator).getBindingId()),
                 "equal",
                 equalOperator.type(),
                 leftBlock, leftBlockPosition, rightBlock, rightBlockPosition);
-        return BytecodeExpressions.equal(equalInvocation, getStatic(Boolean.class, "TRUE"));
     }
 
     public static class LookupSourceSupplierFactory
@@ -1058,7 +1075,7 @@ public class JoinCompiler
         public LookupSourceSupplier createLookupSourceSupplier(
                 Session session,
                 LongArrayList addresses,
-                List<List<Block>> channels,
+                List<ObjectArrayList<Block>> channels,
                 OptionalInt hashChannel,
                 Optional<JoinFilterFunctionFactory> filterFunctionFactory,
                 Optional<Integer> sortChannel,
@@ -1089,7 +1106,7 @@ public class JoinCompiler
             }
         }
 
-        public PagesHashStrategy createPagesHashStrategy(List<? extends List<Block>> channels, OptionalInt hashChannel)
+        public PagesHashStrategy createPagesHashStrategy(List<ObjectArrayList<Block>> channels, OptionalInt hashChannel)
         {
             try {
                 return constructor.newInstance(channels, hashChannel);

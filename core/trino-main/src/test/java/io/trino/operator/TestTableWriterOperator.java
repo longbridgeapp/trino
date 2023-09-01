@@ -30,10 +30,12 @@ import io.trino.spi.Page;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.connector.ConnectorOutputTableHandle;
 import io.trino.spi.connector.ConnectorPageSink;
+import io.trino.spi.connector.ConnectorPageSinkId;
 import io.trino.spi.connector.ConnectorPageSinkProvider;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.spi.type.Type;
 import io.trino.split.PageSinkManager;
 import io.trino.sql.planner.plan.PlanNodeId;
@@ -296,7 +298,9 @@ public class TestTableWriterOperator
                                 new ConnectorTransactionHandle() {},
                                 new ConnectorOutputTableHandle() {}),
                         schemaTableName,
-                        false),
+                        false,
+                        OptionalInt.empty(),
+                        WriterScalingOptions.DISABLED),
                 ImmutableList.of(0),
                 session,
                 statisticsAggregation,
@@ -315,13 +319,13 @@ public class TestTableWriterOperator
         }
 
         @Override
-        public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle)
+        public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle, ConnectorPageSinkId pageSinkId)
         {
             return pageSink;
         }
 
         @Override
-        public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle)
+        public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle, ConnectorPageSinkId pageSinkId)
         {
             return pageSink;
         }

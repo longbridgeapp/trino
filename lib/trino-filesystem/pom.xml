@@ -5,31 +5,21 @@
     <parent>
         <groupId>io.trino</groupId>
         <artifactId>trino-root</artifactId>
-        <version>398-SNAPSHOT</version>
+        <version>426-SNAPSHOT</version>
         <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <artifactId>trino-filesystem</artifactId>
-    <name>trino-filesystem</name>
 
     <properties>
         <air.main.basedir>${project.parent.basedir}</air.main.basedir>
+        <air.compiler.fail-warnings>true</air.compiler.fail-warnings>
     </properties>
 
     <dependencies>
         <dependency>
-            <groupId>io.trino</groupId>
-            <artifactId>trino-hdfs</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>io.trino</groupId>
-            <artifactId>trino-spi</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>io.trino.hadoop</groupId>
-            <artifactId>hadoop-apache</artifactId>
+            <groupId>com.google.guava</groupId>
+            <artifactId>guava</artifactId>
         </dependency>
 
         <dependency>
@@ -38,29 +28,46 @@
         </dependency>
 
         <dependency>
-            <groupId>com.google.guava</groupId>
-            <artifactId>guava</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
         </dependency>
 
         <dependency>
-            <groupId>com.google.inject</groupId>
-            <artifactId>guice</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-context</artifactId>
         </dependency>
 
         <dependency>
-            <groupId>javax.inject</groupId>
-            <artifactId>javax.inject</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-semconv</artifactId>
         </dependency>
 
-        <dependency>
-            <groupId>org.apache.iceberg</groupId>
-            <artifactId>iceberg-api</artifactId>
-        </dependency>
-
-        <!-- for testing -->
         <dependency>
             <groupId>io.trino</groupId>
-            <artifactId>trino-testing-services</artifactId>
+            <artifactId>trino-memory-context</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-spi</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jetbrains</groupId>
+            <artifactId>annotations</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.errorprone</groupId>
+            <artifactId>error_prone_annotations</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>io.trino</groupId>
+            <artifactId>trino-spi</artifactId>
+            <type>test-jar</type>
             <scope>test</scope>
         </dependency>
 
@@ -71,8 +78,14 @@
         </dependency>
 
         <dependency>
-            <groupId>org.testng</groupId>
-            <artifactId>testng</artifactId>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-params</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

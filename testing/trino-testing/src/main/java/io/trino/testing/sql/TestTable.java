@@ -15,25 +15,20 @@ package io.trino.testing.sql;
 
 import com.google.common.collect.ImmutableList;
 
-import java.security.SecureRandom;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
-import static java.lang.Character.MAX_RADIX;
-import static java.lang.Math.abs;
-import static java.lang.Math.min;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 import static java.lang.String.format;
 import static java.lang.String.join;
+import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class TestTable
         implements TemporaryRelation
 {
-    private static final SecureRandom random = new SecureRandom();
-    // The suffix needs to be long enough to "prevent" collisions in practice. The length of 5 was proven not to be long enough
-    private static final int RANDOM_SUFFIX_LENGTH = 10;
-
     protected final SqlExecutor sqlExecutor;
     protected final String tableDefinition;
     protected final String name;
@@ -45,19 +40,27 @@ public class TestTable
 
     public TestTable(SqlExecutor sqlExecutor, String namePrefix, String tableDefinition, List<String> rowsToInsert)
     {
-        this.sqlExecutor = sqlExecutor;
-        this.name = namePrefix + randomTableSuffix();
-        this.tableDefinition = tableDefinition;
+        this.sqlExecutor = requireNonNull(sqlExecutor, "sqlExecutor is null");
+        this.name = requireNonNull(namePrefix, "namePrefix is null") + randomNameSuffix();
+        this.tableDefinition = requireNonNull(tableDefinition, "tableDefinition is null");
         createAndInsert(rowsToInsert);
     }
 
-    public void createAndInsert(List<String> rowsToInsert)
+    protected void createAndInsert(List<String> rowsToInsert)
     {
         sqlExecutor.execute(format("CREATE TABLE %s %s", name, tableDefinition));
         try {
-            for (String row : rowsToInsert) {
-                // some databases do not support multi value insert statement
-                sqlExecutor.execute(format("INSERT INTO %s VALUES (%s)", name, row));
+            if (!rowsToInsert.isEmpty()) {
+                if (sqlExecutor.supportsMultiRowInsert()) {
+                    sqlExecutor.execute(format("INSERT INTO %s VALUES %s", name, rowsToInsert.stream()
+                            .map("(%s)"::formatted)
+                            .collect(joining(", "))));
+                }
+                else {
+                    for (String row : rowsToInsert) {
+                        sqlExecutor.execute(format("INSERT INTO %s VALUES (%s)", name, row));
+                    }
+                }
             }
         }
         catch (Exception e) {
@@ -128,11 +131,5 @@ public class TestTable
     public void close()
     {
         sqlExecutor.execute("DROP TABLE " + name);
-    }
-
-    public static String randomTableSuffix()
-    {
-        String randomSuffix = Long.toString(abs(random.nextLong()), MAX_RADIX);
-        return randomSuffix.substring(0, min(RANDOM_SUFFIX_LENGTH, randomSuffix.length()));
     }
 }

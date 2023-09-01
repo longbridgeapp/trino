@@ -14,14 +14,13 @@
 package io.trino.connector;
 
 import io.airlift.configuration.Config;
-
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.NotNull;
 
 public class CatalogStoreConfig
 {
     public enum CatalogStoreKind
     {
-        NONE, FILE
+        MEMORY, FILE
     }
 
     private CatalogStoreKind catalogStoreKind = CatalogStoreKind.FILE;

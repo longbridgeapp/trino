@@ -14,6 +14,7 @@
 package io.trino.plugin.exchange.filesystem;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
 import io.trino.spi.TrinoException;
 import io.trino.spi.exchange.Exchange;
 import io.trino.spi.exchange.ExchangeContext;
@@ -22,20 +23,12 @@ import io.trino.spi.exchange.ExchangeSink;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSource;
 
-import javax.crypto.KeyGenerator;
-import javax.crypto.SecretKey;
-import javax.crypto.spec.SecretKeySpec;
-import javax.inject.Inject;
-
 import java.net.URI;
-import java.security.NoSuchAlgorithmException;
 import java.util.List;
-import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.trino.plugin.exchange.filesystem.FileSystemExchangeErrorCode.MAX_OUTPUT_PARTITION_COUNT_EXCEEDED;
-import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -46,17 +39,15 @@ public class FileSystemExchangeManager
 {
     public static final String PATH_SEPARATOR = "/";
 
-    private static final int KEY_BITS = 256;
-
     private final FileSystemExchangeStorage exchangeStorage;
     private final FileSystemExchangeStats stats;
     private final List<URI> baseDirectories;
-    private final boolean exchangeEncryptionEnabled;
     private final int maxPageStorageSizeInBytes;
     private final int exchangeSinkBufferPoolMinSize;
     private final int exchangeSinkBuffersPerPartition;
     private final long exchangeSinkMaxFileSizeInBytes;
     private final int exchangeSourceConcurrentReaders;
+    private final int exchangeSourceMaxFilesPerReader;
     private final int maxOutputPartitionCount;
     private final int exchangeFileListingParallelism;
     private final long exchangeSourceHandleTargetDataSizeInBytes;
@@ -71,12 +62,12 @@ public class FileSystemExchangeManager
         this.exchangeStorage = requireNonNull(exchangeStorage, "exchangeStorage is null");
         this.stats = requireNonNull(stats, "stats is null");
         this.baseDirectories = ImmutableList.copyOf(requireNonNull(fileSystemExchangeConfig.getBaseDirectories(), "baseDirectories is null"));
-        this.exchangeEncryptionEnabled = fileSystemExchangeConfig.isExchangeEncryptionEnabled();
         this.maxPageStorageSizeInBytes = toIntExact(fileSystemExchangeConfig.getMaxPageStorageSize().toBytes());
         this.exchangeSinkBufferPoolMinSize = fileSystemExchangeConfig.getExchangeSinkBufferPoolMinSize();
         this.exchangeSinkBuffersPerPartition = fileSystemExchangeConfig.getExchangeSinkBuffersPerPartition();
         this.exchangeSinkMaxFileSizeInBytes = fileSystemExchangeConfig.getExchangeSinkMaxFileSize().toBytes();
         this.exchangeSourceConcurrentReaders = fileSystemExchangeConfig.getExchangeSourceConcurrentReaders();
+        this.exchangeSourceMaxFilesPerReader = fileSystemExchangeConfig.getExchangeSourceMaxFilesPerReader();
         this.maxOutputPartitionCount = fileSystemExchangeConfig.getMaxOutputPartitionCount();
         this.exchangeFileListingParallelism = fileSystemExchangeConfig.getExchangeFileListingParallelism();
         this.exchangeSourceHandleTargetDataSizeInBytes = fileSystemExchangeConfig.getExchangeSourceHandleTargetDataSize().toBytes();
@@ -92,17 +83,6 @@ public class FileSystemExchangeManager
                     format("Max number of output partitions exceeded for exchange '%s'. Allowed: %s. Requested: %s.", context.getExchangeId(), maxOutputPartitionCount, outputPartitionCount));
         }
 
-        Optional<SecretKey> secretKey = Optional.empty();
-        if (exchangeEncryptionEnabled) {
-            try {
-                KeyGenerator keyGenerator = KeyGenerator.getInstance("AES");
-                keyGenerator.init(KEY_BITS);
-                secretKey = Optional.of(keyGenerator.generateKey());
-            }
-            catch (NoSuchAlgorithmException e) {
-                throw new TrinoException(GENERIC_INTERNAL_ERROR, "Failed to generate new secret key: " + e.getMessage(), e);
-            }
-        }
         return new FileSystemExchange(
                 baseDirectories,
                 exchangeStorage,
@@ -111,7 +91,6 @@ public class FileSystemExchangeManager
                 outputPartitionCount,
                 preserveOrderWithinPartition,
                 exchangeFileListingParallelism,
-                secretKey,
                 exchangeSourceHandleTargetDataSizeInBytes,
                 executor);
     }
@@ -125,7 +104,6 @@ public class FileSystemExchangeManager
                 stats,
                 instanceHandle.getOutputDirectory(),
                 instanceHandle.getOutputPartitionCount(),
-                instanceHandle.getSinkHandle().getSecretKey().map(key -> new SecretKeySpec(key, 0, key.length, "AES")),
                 instanceHandle.isPreserveOrderWithinPartition(),
                 maxPageStorageSizeInBytes,
                 exchangeSinkBufferPoolMinSize,
@@ -140,6 +118,13 @@ public class FileSystemExchangeManager
                 exchangeStorage,
                 stats,
                 maxPageStorageSizeInBytes,
-                exchangeSourceConcurrentReaders);
+                exchangeSourceConcurrentReaders,
+                exchangeSourceMaxFilesPerReader);
+    }
+
+    @Override
+    public boolean supportsConcurrentReadAndWrite()
+    {
+        return false;
     }
 }

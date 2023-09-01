@@ -18,10 +18,12 @@ import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
 import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.auth.STSAssumeRoleSessionCredentialsProvider;
+import com.amazonaws.client.builder.AwsClientBuilder;
+import com.amazonaws.services.securitytoken.AWSSecurityTokenServiceClientBuilder;
+import com.google.inject.Inject;
+import com.google.inject.Provider;
 
-import javax.inject.Inject;
-import javax.inject.Provider;
-
+import static io.trino.hdfs.s3.AwsCurrentRegionHolder.getCurrentRegionFromEC2Metadata;
 import static java.lang.String.format;
 
 public class GlueCredentialsProvider
@@ -45,10 +47,24 @@ public class GlueCredentialsProvider
                 provider = DefaultAWSCredentialsProviderChain.getInstance();
             }
             if (config.getIamRole().isPresent()) {
+                AWSSecurityTokenServiceClientBuilder stsClientBuilder = AWSSecurityTokenServiceClientBuilder
+                        .standard()
+                        .withCredentials(provider);
+
+                if (config.getGlueStsEndpointUrl().isPresent() && config.getGlueStsRegion().isPresent()) {
+                    stsClientBuilder.setEndpointConfiguration(new AwsClientBuilder.EndpointConfiguration(config.getGlueStsEndpointUrl().get(), config.getGlueStsRegion().get()));
+                }
+                else if (config.getGlueStsRegion().isPresent()) {
+                    stsClientBuilder.setRegion(config.getGlueStsRegion().get());
+                }
+                else if (config.getPinGlueClientToCurrentRegion()) {
+                    stsClientBuilder.setRegion(getCurrentRegionFromEC2Metadata().getName());
+                }
+
                 provider = new STSAssumeRoleSessionCredentialsProvider
                         .Builder(config.getIamRole().get(), "trino-session")
                         .withExternalId(config.getExternalId().orElse(null))
-                        .withLongLivedCredentialsProvider(provider)
+                        .withStsClient(stsClientBuilder.build())
                         .build();
             }
             this.credentialsProvider = provider;

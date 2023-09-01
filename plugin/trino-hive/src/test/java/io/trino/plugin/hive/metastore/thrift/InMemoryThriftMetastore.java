@@ -16,6 +16,13 @@ package io.trino.plugin.hive.metastore.thrift;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import io.trino.hive.thrift.metastore.Database;
+import io.trino.hive.thrift.metastore.FieldSchema;
+import io.trino.hive.thrift.metastore.Partition;
+import io.trino.hive.thrift.metastore.PrincipalPrivilegeSet;
+import io.trino.hive.thrift.metastore.PrincipalType;
+import io.trino.hive.thrift.metastore.Table;
 import io.trino.plugin.hive.HiveColumnStatisticType;
 import io.trino.plugin.hive.PartitionStatistics;
 import io.trino.plugin.hive.SchemaAlreadyExistsException;
@@ -34,14 +41,6 @@ import io.trino.spi.security.RoleGrant;
 import io.trino.spi.type.Type;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.metastore.TableType;
-import org.apache.hadoop.hive.metastore.api.Database;
-import org.apache.hadoop.hive.metastore.api.FieldSchema;
-import org.apache.hadoop.hive.metastore.api.Partition;
-import org.apache.hadoop.hive.metastore.api.PrincipalPrivilegeSet;
-import org.apache.hadoop.hive.metastore.api.PrincipalType;
-import org.apache.hadoop.hive.metastore.api.Table;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -58,7 +57,6 @@ import java.util.function.Function;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.collect.ImmutableList.builder;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.io.MoreFiles.deleteRecursively;
@@ -186,7 +184,7 @@ public class InMemoryThriftMetastore
         }
         else {
             File directory = new File(new Path(table.getSd().getLocation()).toUri());
-            checkArgument(directory.exists(), "Table directory does not exist");
+            checkArgument(directory.exists(), "Table directory [%s] does not exist", directory);
             if (tableType == MANAGED_TABLE) {
                 checkArgument(isParentDir(directory, baseDirectory), "Table directory must be inside of the metastore base directory");
             }
@@ -204,7 +202,7 @@ public class InMemoryThriftMetastore
         }
 
         PrincipalPrivilegeSet privileges = table.getPrivileges();
-        if (privileges != null) {
+        if (privileges != null && (!privileges.getUserPrivileges().isEmpty() || !privileges.getGroupPrivileges().isEmpty() || !privileges.getRolePrivileges().isEmpty())) {
             throw new UnsupportedOperationException();
         }
     }
@@ -236,7 +234,7 @@ public class InMemoryThriftMetastore
 
     private static List<String> listAllDataPaths(ThriftMetastore metastore, String schemaName, String tableName)
     {
-        ImmutableList.Builder<String> locations = builder();
+        ImmutableList.Builder<String> locations = ImmutableList.builder();
         Table table = metastore.getTable(schemaName, tableName).get();
         if (table.getSd().getLocation() != null) {
             // For unpartitioned table, there should be nothing directly under this directory.
@@ -328,6 +326,18 @@ public class InMemoryThriftMetastore
     }
 
     @Override
+    public synchronized Optional<List<SchemaTableName>> getAllTables()
+    {
+        return Optional.of(ImmutableList.copyOf(relations.keySet()));
+    }
+
+    @Override
+    public synchronized Optional<List<SchemaTableName>> getAllViews()
+    {
+        return Optional.of(ImmutableList.copyOf(views.keySet()));
+    }
+
+    @Override
     public synchronized Optional<Database> getDatabase(String databaseName)
     {
         return Optional.ofNullable(databases.get(databaseName));
@@ -413,7 +423,7 @@ public class InMemoryThriftMetastore
     @Override
     public synchronized List<Partition> getPartitionsByNames(String databaseName, String tableName, List<String> partitionNames)
     {
-        ImmutableList.Builder<Partition> builder = builder();
+        ImmutableList.Builder<Partition> builder = ImmutableList.builder();
         for (String name : partitionNames) {
             PartitionName partitionName = PartitionName.partition(databaseName, tableName, name);
             Partition partition = partitions.get(partitionName);

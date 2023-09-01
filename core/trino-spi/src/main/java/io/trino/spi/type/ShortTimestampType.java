@@ -20,14 +20,24 @@ import io.trino.spi.block.BlockBuilderStatus;
 import io.trino.spi.block.LongArrayBlockBuilder;
 import io.trino.spi.block.PageBuilderStatus;
 import io.trino.spi.connector.ConnectorSession;
+import io.trino.spi.function.FlatFixed;
+import io.trino.spi.function.FlatFixedOffset;
+import io.trino.spi.function.FlatVariableWidth;
 import io.trino.spi.function.ScalarOperator;
+
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+import java.nio.ByteOrder;
+import java.util.Optional;
 
 import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_LAST;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
+import static io.trino.spi.function.OperatorType.READ_VALUE;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
+import static io.trino.spi.type.Timestamps.rescale;
 import static io.trino.spi.type.TypeOperatorDeclaration.extractOperatorDeclaration;
 import static java.lang.String.format;
 import static java.lang.invoke.MethodHandles.lookup;
@@ -42,6 +52,8 @@ class ShortTimestampType
         extends TimestampType
 {
     private static final TypeOperatorDeclaration TYPE_OPERATOR_DECLARATION = extractOperatorDeclaration(ShortTimestampType.class, lookup(), long.class);
+    private static final VarHandle LONG_HANDLE = MethodHandles.byteArrayViewVarHandle(long[].class, ByteOrder.LITTLE_ENDIAN);
+    private final Range range;
 
     public ShortTimestampType(int precision)
     {
@@ -49,6 +61,15 @@ class ShortTimestampType
 
         if (precision < 0 || precision > MAX_SHORT_PRECISION) {
             throw new IllegalArgumentException(format("Precision must be in the range [0, %s]", MAX_SHORT_PRECISION));
+        }
+
+        // ShortTimestampType instances are created eagerly and shared so it's OK to precompute some things.
+        if (getPrecision() == MAX_SHORT_PRECISION) {
+            range = new Range(Long.MIN_VALUE, Long.MAX_VALUE);
+        }
+        else {
+            long max = rescale(rescale(Long.MAX_VALUE, MAX_SHORT_PRECISION, getPrecision()), getPrecision(), MAX_SHORT_PRECISION);
+            range = new Range(-max, max);
         }
     }
 
@@ -73,7 +94,7 @@ class ShortTimestampType
     @Override
     public final void writeLong(BlockBuilder blockBuilder, long value)
     {
-        blockBuilder.writeLong(value).closeEntry();
+        ((LongArrayBlockBuilder) blockBuilder).writeLong(value);
     }
 
     @Override
@@ -83,7 +104,7 @@ class ShortTimestampType
             blockBuilder.appendNull();
         }
         else {
-            blockBuilder.writeLong(getLong(block, position)).closeEntry();
+            writeLong(blockBuilder, getLong(block, position));
         }
     }
 
@@ -123,6 +144,56 @@ class ShortTimestampType
 
         long epochMicros = getLong(block, position);
         return SqlTimestamp.newInstance(getPrecision(), epochMicros, 0);
+    }
+
+    @Override
+    public int getFlatFixedSize()
+    {
+        return Long.BYTES;
+    }
+
+    @Override
+    public Optional<Range> getRange()
+    {
+        return Optional.of(range);
+    }
+
+    @Override
+    public Optional<Object> getPreviousValue(Object value)
+    {
+        if ((long) range.getMin() == (long) value) {
+            return Optional.empty();
+        }
+        return Optional.of((long) value - rescale(1_000_000, getPrecision(), 0));
+    }
+
+    @Override
+    public Optional<Object> getNextValue(Object value)
+    {
+        if ((long) range.getMax() == (long) value) {
+            return Optional.empty();
+        }
+        return Optional.of((long) value + rescale(1_000_000, getPrecision(), 0));
+    }
+
+    @ScalarOperator(READ_VALUE)
+    private static long readFlat(
+            @FlatFixed byte[] fixedSizeSlice,
+            @FlatFixedOffset int fixedSizeOffset,
+            @FlatVariableWidth byte[] unusedVariableSizeSlice)
+    {
+        return (long) LONG_HANDLE.get(fixedSizeSlice, fixedSizeOffset);
+    }
+
+    @ScalarOperator(READ_VALUE)
+    private static void writeFlat(
+            long value,
+            byte[] fixedSizeSlice,
+            int fixedSizeOffset,
+            byte[] unusedVariableSizeSlice,
+            int unusedVariableSizeOffset)
+    {
+        LONG_HANDLE.set(fixedSizeSlice, fixedSizeOffset, value);
     }
 
     @ScalarOperator(EQUAL)

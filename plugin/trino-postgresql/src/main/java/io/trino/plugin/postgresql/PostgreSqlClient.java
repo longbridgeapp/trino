@@ -17,11 +17,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.math.LongMath;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.trino.plugin.base.aggregation.AggregateFunctionRewriter;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.base.expression.ConnectorExpressionRewriter;
+import io.trino.plugin.base.mapping.IdentifierMapping;
 import io.trino.plugin.jdbc.BaseJdbcClient;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.BooleanReadFunction;
@@ -65,9 +67,10 @@ import io.trino.plugin.jdbc.aggregation.ImplementSum;
 import io.trino.plugin.jdbc.aggregation.ImplementVariancePop;
 import io.trino.plugin.jdbc.aggregation.ImplementVarianceSamp;
 import io.trino.plugin.jdbc.expression.JdbcConnectorExpressionRewriterBuilder;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.plugin.jdbc.expression.RewriteComparison;
 import io.trino.plugin.jdbc.expression.RewriteIn;
-import io.trino.plugin.jdbc.mapping.IdentifierMapping;
+import io.trino.plugin.jdbc.logging.RemoteQueryModifier;
 import io.trino.plugin.postgresql.PostgreSqlConfig.ArrayMapping;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
@@ -106,8 +109,6 @@ import org.jdbi.v3.core.Handle;
 import org.jdbi.v3.core.Jdbi;
 import org.postgresql.core.TypeInfo;
 import org.postgresql.jdbc.PgConnection;
-
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.sql.Array;
@@ -227,6 +228,7 @@ import static java.lang.Math.floorMod;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
 import static java.lang.String.format;
+import static java.lang.String.join;
 import static java.math.RoundingMode.UNNECESSARY;
 import static java.sql.DatabaseMetaData.columnNoNulls;
 import static java.util.Objects.requireNonNull;
@@ -271,8 +273,8 @@ public class PostgreSqlClient
     private final MapType varcharMapType;
     private final List<String> tableTypes;
     private final boolean statisticsEnabled;
-    private final ConnectorExpressionRewriter<String> connectorExpressionRewriter;
-    private final AggregateFunctionRewriter<JdbcExpression, String> aggregateFunctionRewriter;
+    private final ConnectorExpressionRewriter<ParameterizedExpression> connectorExpressionRewriter;
+    private final AggregateFunctionRewriter<JdbcExpression, ?> aggregateFunctionRewriter;
 
     @Inject
     public PostgreSqlClient(
@@ -282,9 +284,10 @@ public class PostgreSqlClient
             ConnectionFactory connectionFactory,
             QueryBuilder queryBuilder,
             TypeManager typeManager,
-            IdentifierMapping identifierMapping)
+            IdentifierMapping identifierMapping,
+            RemoteQueryModifier queryModifier)
     {
-        super(config, "\"", connectionFactory, queryBuilder, identifierMapping);
+        super("\"", connectionFactory, queryBuilder, config.getJdbcTypesMappedToVarchar(), identifierMapping, queryModifier, true);
         this.jsonType = typeManager.getType(new TypeSignature(JSON));
         this.uuidType = typeManager.getType(new TypeSignature(StandardTypes.UUID));
         this.varcharMapType = (MapType) typeManager.getType(mapType(VARCHAR.getTypeSignature(), VARCHAR.getTypeSignature()));
@@ -321,7 +324,7 @@ public class PostgreSqlClient
         JdbcTypeHandle bigintTypeHandle = new JdbcTypeHandle(Types.BIGINT, Optional.of("bigint"), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
         this.aggregateFunctionRewriter = new AggregateFunctionRewriter<>(
                 this.connectorExpressionRewriter,
-                ImmutableSet.<AggregateFunctionRule<JdbcExpression, String>>builder()
+                ImmutableSet.<AggregateFunctionRule<JdbcExpression, ParameterizedExpression>>builder()
                         .add(new ImplementCountAll(bigintTypeHandle))
                         .add(new ImplementMinMax(false))
                         .add(new ImplementCount(bigintTypeHandle))
@@ -355,39 +358,58 @@ public class PostgreSqlClient
     }
 
     @Override
-    public Optional<String> getTableComment(ResultSet resultSet)
+    protected List<String> createTableSqls(RemoteTableName remoteTableName, List<String> columns, ConnectorTableMetadata tableMetadata)
     {
-        // Don't return a comment until the connector supports creating tables with comment
-        return Optional.empty();
+        checkArgument(tableMetadata.getProperties().isEmpty(), "Unsupported table properties: %s", tableMetadata.getProperties());
+        ImmutableList.Builder<String> createTableSqlsBuilder = ImmutableList.builder();
+        createTableSqlsBuilder.add(format("CREATE TABLE %s (%s)", quoted(remoteTableName), join(", ", columns)));
+        Optional<String> tableComment = tableMetadata.getComment();
+        if (tableComment.isPresent()) {
+            createTableSqlsBuilder.add(buildTableCommentSql(remoteTableName, tableComment));
+        }
+        return createTableSqlsBuilder.build();
     }
 
     @Override
-    protected void renameTable(ConnectorSession session, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
+    public void setTableComment(ConnectorSession session, JdbcTableHandle handle, Optional<String> comment)
     {
-        if (!schemaName.equals(newTable.getSchemaName())) {
+        execute(session, buildTableCommentSql(handle.asPlainTable().getRemoteTableName(), comment));
+    }
+
+    private String buildTableCommentSql(RemoteTableName remoteTableName, Optional<String> comment)
+    {
+        return format(
+                "COMMENT ON TABLE %s IS %s",
+                quoted(remoteTableName),
+                comment.map(BaseJdbcClient::varcharLiteral).orElse("NULL"));
+    }
+
+    @Override
+    protected void renameTable(ConnectorSession session, Connection connection, String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
+            throws SQLException
+    {
+        if (!remoteSchemaName.equals(newRemoteSchemaName)) {
             throw new TrinoException(NOT_SUPPORTED, "This connector does not support renaming tables across schemas");
         }
 
-        super.renameTable(session, catalogName, schemaName, tableName, newTable);
-    }
-
-    @Override
-    protected String renameTableSql(String catalogName, String remoteSchemaName, String remoteTableName, String newRemoteSchemaName, String newRemoteTableName)
-    {
-        return format(
+        execute(session, connection, format(
                 "ALTER TABLE %s RENAME TO %s",
                 quoted(catalogName, remoteSchemaName, remoteTableName),
-                quoted(newRemoteTableName));
+                quoted(newRemoteTableName)));
     }
 
     @Override
-    public PreparedStatement getPreparedStatement(Connection connection, String sql)
+    public PreparedStatement getPreparedStatement(Connection connection, String sql, Optional<Integer> columnCount)
             throws SQLException
     {
         // fetch-size is ignored when connection is in auto-commit
         connection.setAutoCommit(false);
         PreparedStatement statement = connection.prepareStatement(sql);
-        statement.setFetchSize(1000);
+        // This is a heuristic, not exact science. A better formula can perhaps be found with measurements.
+        // Column count is not known for non-SELECT queries. Not setting fetch size for these.
+        if (columnCount.isPresent()) {
+            statement.setFetchSize(max(100_000 / columnCount.get(), 1_000));
+        }
         return statement;
     }
 
@@ -758,7 +780,7 @@ public class PostgreSqlClient
     }
 
     @Override
-    public Optional<String> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
+    public Optional<ParameterizedExpression> convertPredicate(ConnectorSession session, ConnectorExpression expression, Map<String, ColumnHandle> assignments)
     {
         return connectorExpressionRewriter.rewrite(session, expression, assignments);
     }
@@ -852,7 +874,7 @@ public class PostgreSqlClient
                     handle.getRequiredNamedRelation(),
                     handle.getConstraint(),
                     getAdditionalPredicate(handle.getConstraintExpressions(), Optional.empty()));
-            try (PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery)) {
+            try (PreparedStatement preparedStatement = queryBuilder.prepareStatement(this, session, connection, preparedQuery, Optional.empty())) {
                 int affectedRowsCount = preparedStatement.executeUpdate();
                 // In getPreparedStatement we set autocommit to false so here we need an explicit commit
                 connection.commit();
@@ -897,7 +919,10 @@ public class PostgreSqlClient
                 return TableStatistics.empty();
             }
             long rowCount = optionalRowCount.get();
-
+            if (rowCount == -1) {
+                // Table has never yet been vacuumed or analyzed
+                return TableStatistics.empty();
+            }
             TableStatistics.Builder tableStatistics = TableStatistics.builder();
             tableStatistics.setRowCount(Estimate.of(rowCount));
 
@@ -981,6 +1006,10 @@ public class PostgreSqlClient
             Map<JdbcColumnHandle, String> leftAssignments,
             JoinStatistics statistics)
     {
+        if (joinType == JoinType.FULL_OUTER) {
+            // FULL JOIN is only supported with merge-joinable or hash-joinable join conditions
+            return Optional.empty();
+        }
         return implementJoinCostAware(
                 session,
                 joinType,

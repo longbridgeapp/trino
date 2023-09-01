@@ -27,20 +27,24 @@ import io.airlift.units.Duration;
 import io.trino.FeaturesConfig.DataIntegrityVerification;
 import io.trino.execution.StageId;
 import io.trino.execution.TaskId;
-import io.trino.execution.buffer.PagesSerde;
+import io.trino.execution.buffer.PageDeserializer;
+import io.trino.execution.buffer.PagesSerdeFactory;
+import io.trino.execution.buffer.TestingPagesSerdeFactory;
 import io.trino.operator.HttpPageBufferClient.ClientCallback;
 import io.trino.spi.HostAddress;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.RunLengthEncodedBlock;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
@@ -59,7 +63,6 @@ import static io.airlift.testing.Assertions.assertContains;
 import static io.airlift.testing.Assertions.assertInstanceOf;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.TrinoMediaTypes.TRINO_PAGES;
-import static io.trino.execution.buffer.TestingPagesSerdeFactory.testingPagesSerde;
 import static io.trino.spi.StandardErrorCode.EXCEEDED_LOCAL_MEMORY_LIMIT;
 import static io.trino.spi.StandardErrorCode.PAGE_TOO_LARGE;
 import static io.trino.spi.StandardErrorCode.PAGE_TRANSPORT_ERROR;
@@ -67,25 +70,26 @@ import static io.trino.spi.StandardErrorCode.PAGE_TRANSPORT_TIMEOUT;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.util.Failures.WORKER_NODE_ERROR;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
+@TestInstance(PER_CLASS)
 public class TestHttpPageBufferClient
 {
     private ScheduledExecutorService scheduler;
     private ExecutorService pageBufferClientCallbackExecutor;
 
-    private static final PagesSerde PAGES_SERDE = testingPagesSerde();
     private static final TaskId TASK_ID = new TaskId(new StageId("query", 0), 0, 0);
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         scheduler = newScheduledThreadPool(4, daemonThreadsNamed(getClass().getSimpleName() + "-%s"));
         pageBufferClientCallbackExecutor = Executors.newSingleThreadExecutor();
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void tearDown()
     {
         if (scheduler != null) {
@@ -438,6 +442,33 @@ public class TestHttpPageBufferClient
     }
 
     @Test
+    public void testAverageSizeOfRequest()
+    {
+        HttpPageBufferClient client = new HttpPageBufferClient(
+                "localhost",
+                new TestingHttpClient(new MockExchangeRequestProcessor(DataSize.of(10, MEGABYTE)), scheduler),
+                DataIntegrityVerification.ABORT,
+                DataSize.of(10, MEGABYTE),
+                new Duration(30, TimeUnit.SECONDS),
+                true,
+                TASK_ID,
+                URI.create("http://localhost:8080"),
+                new TestingClientCallback(new CyclicBarrier(1)),
+                scheduler,
+                new TestingTicker(),
+                pageBufferClientCallbackExecutor);
+
+        assertEquals(client.getAverageRequestSizeInBytes(), 0);
+
+        client.requestSucceeded(0);
+        assertEquals(client.getAverageRequestSizeInBytes(), 0);
+
+        client.requestSucceeded(1000);
+        client.requestSucceeded(800);
+        assertEquals(client.getAverageRequestSizeInBytes(), 600);
+    }
+
+    @Test
     public void testMemoryExceededInAddPages()
             throws Exception
     {
@@ -516,6 +547,8 @@ public class TestHttpPageBufferClient
     private static class TestingClientCallback
             implements ClientCallback
     {
+        private final PagesSerdeFactory serdeFactory = new TestingPagesSerdeFactory();
+
         private final CyclicBarrier done;
         private final List<Slice> pages = Collections.synchronizedList(new ArrayList<>());
         private final AtomicInteger completedRequests = new AtomicInteger();
@@ -530,8 +563,9 @@ public class TestHttpPageBufferClient
 
         public List<Page> getPages()
         {
+            PageDeserializer deserializer = serdeFactory.createDeserializer(Optional.empty());
             return pages.stream()
-                    .map(PAGES_SERDE::deserialize)
+                    .map(deserializer::deserialize)
                     .collect(Collectors.toList());
         }
 

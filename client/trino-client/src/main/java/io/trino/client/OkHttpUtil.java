@@ -16,15 +16,17 @@ package io.trino.client;
 import com.google.common.base.CharMatcher;
 import com.google.common.base.StandardSystemProperty;
 import com.google.common.net.HostAndPort;
-import io.trino.client.auth.kerberos.ContextBasedSubjectProvider;
-import io.trino.client.auth.kerberos.LoginBasedSubjectProvider;
+import io.trino.client.auth.kerberos.DelegatedConstrainedContextProvider;
+import io.trino.client.auth.kerberos.DelegatedUnconstrainedContextProvider;
+import io.trino.client.auth.kerberos.GSSContextProvider;
+import io.trino.client.auth.kerberos.LoginBasedUnconstrainedContextProvider;
 import io.trino.client.auth.kerberos.SpnegoHandler;
-import io.trino.client.auth.kerberos.SubjectProvider;
 import okhttp3.Credentials;
 import okhttp3.Interceptor;
 import okhttp3.JavaNetCookieJar;
 import okhttp3.OkHttpClient;
 import okhttp3.internal.tls.LegacyHostnameVerifier;
+import org.ietf.jgss.GSSCredential;
 
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.KeyManagerFactory;
@@ -195,7 +197,7 @@ public final class OkHttpUtil
                 catch (IOException | GeneralSecurityException ignored) {
                     keyManagerPassword = keyStorePassword.map(String::toCharArray).orElse(null);
 
-                    keyStore = KeyStore.getInstance(keyStoreType.orElse(KeyStore.getDefaultType()));
+                    keyStore = KeyStore.getInstance(keyStoreType.orElseGet(KeyStore::getDefaultType));
                     try (InputStream in = new FileInputStream(keyStorePath.get())) {
                         keyStore.load(in, keyManagerPassword);
                     }
@@ -265,7 +267,7 @@ public final class OkHttpUtil
     private static KeyStore loadTrustStore(File trustStorePath, Optional<String> trustStorePassword, Optional<String> trustStoreType)
             throws IOException, GeneralSecurityException
     {
-        KeyStore trustStore = KeyStore.getInstance(trustStoreType.orElse(KeyStore.getDefaultType()));
+        KeyStore trustStore = KeyStore.getInstance(trustStoreType.orElseGet(KeyStore::getDefaultType));
         try {
             // attempt to read the trust store as a PEM file
             List<X509Certificate> certificateChain = PemReader.readCertificateChain(trustStorePath);
@@ -301,7 +303,7 @@ public final class OkHttpUtil
             }
         }
 
-        KeyStore trustStore = KeyStore.getInstance(systemTrustStoreType.orElse(KeyStore.getDefaultType()));
+        KeyStore trustStore = KeyStore.getInstance(systemTrustStoreType.orElseGet(KeyStore::getDefaultType));
         trustStore.load(null, null);
         return trustStore;
     }
@@ -315,17 +317,30 @@ public final class OkHttpUtil
             Optional<File> kerberosConfig,
             Optional<File> keytab,
             Optional<File> credentialCache,
-            boolean delegatedKerberos)
+            boolean delegatedKerberos,
+            Optional<GSSCredential> gssCredential)
     {
-        SubjectProvider subjectProvider;
+        GSSContextProvider contextProvider;
         if (delegatedKerberos) {
-            subjectProvider = new ContextBasedSubjectProvider();
+            contextProvider = getDelegatedGSSContextProvider(gssCredential);
         }
         else {
-            subjectProvider = new LoginBasedSubjectProvider(principal, kerberosConfig, keytab, credentialCache);
+            contextProvider = new LoginBasedUnconstrainedContextProvider(principal, kerberosConfig, keytab, credentialCache);
         }
-        SpnegoHandler handler = new SpnegoHandler(servicePrincipalPattern, remoteServiceName, useCanonicalHostname, subjectProvider);
+        SpnegoHandler handler = new SpnegoHandler(servicePrincipalPattern, remoteServiceName, useCanonicalHostname, contextProvider);
         clientBuilder.addInterceptor(handler);
         clientBuilder.authenticator(handler);
+    }
+
+    public static void setupAlternateHostnameVerification(OkHttpClient.Builder clientBuilder, String alternativeHostname)
+    {
+        clientBuilder.hostnameVerifier((hostname, session) -> LegacyHostnameVerifier.INSTANCE.verify(alternativeHostname, session));
+    }
+
+    private static GSSContextProvider getDelegatedGSSContextProvider(Optional<GSSCredential> gssCredential)
+    {
+        return gssCredential.map(DelegatedConstrainedContextProvider::new)
+                .map(gssCred -> (GSSContextProvider) gssCred)
+                .orElse(new DelegatedUnconstrainedContextProvider());
     }
 }

@@ -32,6 +32,7 @@ import io.trino.parquet.writer.valuewriter.TimestampMillisValueWriter;
 import io.trino.parquet.writer.valuewriter.TimestampNanosValueWriter;
 import io.trino.parquet.writer.valuewriter.TimestampTzMicrosValueWriter;
 import io.trino.parquet.writer.valuewriter.TimestampTzMillisValueWriter;
+import io.trino.parquet.writer.valuewriter.TrinoValuesWriterFactory;
 import io.trino.parquet.writer.valuewriter.UuidValueWriter;
 import io.trino.spi.TrinoException;
 import io.trino.spi.type.CharType;
@@ -44,7 +45,7 @@ import io.trino.spi.type.VarcharType;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.column.ParquetProperties;
 import org.apache.parquet.column.values.ValuesWriter;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.format.CompressionCodec;
 import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.LogicalTypeAnnotation.TimeLogicalTypeAnnotation;
@@ -88,10 +89,11 @@ final class ParquetWriters
             MessageType messageType,
             Map<List<String>, Type> trinoTypes,
             ParquetProperties parquetProperties,
-            CompressionCodecName compressionCodecName,
+            CompressionCodec compressionCodec,
             Optional<DateTimeZone> parquetTimeZone)
     {
-        WriteBuilder writeBuilder = new WriteBuilder(messageType, trinoTypes, parquetProperties, compressionCodecName, parquetTimeZone);
+        TrinoValuesWriterFactory valuesWriterFactory = new TrinoValuesWriterFactory(parquetProperties);
+        WriteBuilder writeBuilder = new WriteBuilder(messageType, trinoTypes, parquetProperties, valuesWriterFactory, compressionCodec, parquetTimeZone);
         ParquetTypeVisitor.visit(messageType, writeBuilder);
         return writeBuilder.build();
     }
@@ -102,7 +104,8 @@ final class ParquetWriters
         private final MessageType type;
         private final Map<List<String>, Type> trinoTypes;
         private final ParquetProperties parquetProperties;
-        private final CompressionCodecName compressionCodecName;
+        private final TrinoValuesWriterFactory valuesWriterFactory;
+        private final CompressionCodec compressionCodec;
         private final Optional<DateTimeZone> parquetTimeZone;
         private final ImmutableList.Builder<ColumnWriter> builder = ImmutableList.builder();
 
@@ -110,13 +113,15 @@ final class ParquetWriters
                 MessageType messageType,
                 Map<List<String>, Type> trinoTypes,
                 ParquetProperties parquetProperties,
-                CompressionCodecName compressionCodecName,
+                TrinoValuesWriterFactory valuesWriterFactory,
+                CompressionCodec compressionCodec,
                 Optional<DateTimeZone> parquetTimeZone)
         {
             this.type = requireNonNull(messageType, "messageType is null");
             this.trinoTypes = requireNonNull(trinoTypes, "trinoTypes is null");
             this.parquetProperties = requireNonNull(parquetProperties, "parquetProperties is null");
-            this.compressionCodecName = requireNonNull(compressionCodecName, "compressionCodecName is null");
+            this.valuesWriterFactory = requireNonNull(valuesWriterFactory, "valuesWriterFactory is null");
+            this.compressionCodec = requireNonNull(compressionCodec, "compressionCodec is null");
             this.parquetTimeZone = requireNonNull(parquetTimeZone, "parquetTimeZone is null");
         }
 
@@ -168,10 +173,10 @@ final class ParquetWriters
             Type trinoType = requireNonNull(trinoTypes.get(ImmutableList.copyOf(path)), "Trino type is null");
             return new PrimitiveColumnWriter(
                     columnDescriptor,
-                    getValueWriter(parquetProperties.newValuesWriter(columnDescriptor), trinoType, columnDescriptor.getPrimitiveType(), parquetTimeZone),
+                    getValueWriter(valuesWriterFactory.newValuesWriter(columnDescriptor), trinoType, columnDescriptor.getPrimitiveType(), parquetTimeZone),
                     parquetProperties.newDefinitionLevelWriter(columnDescriptor),
                     parquetProperties.newRepetitionLevelWriter(columnDescriptor),
-                    compressionCodecName,
+                    compressionCodec,
                     parquetProperties.getPageSizeThreshold());
         }
 

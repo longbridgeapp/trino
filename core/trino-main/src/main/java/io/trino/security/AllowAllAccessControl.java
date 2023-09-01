@@ -73,13 +73,23 @@ public class AllowAllAccessControl
     }
 
     @Override
+    public void checkCanCreateCatalog(SecurityContext context, String catalog)
+    {
+    }
+
+    @Override
+    public void checkCanDropCatalog(SecurityContext context, String catalog)
+    {
+    }
+
+    @Override
     public Set<String> filterCatalogs(SecurityContext context, Set<String> catalogs)
     {
         return catalogs;
     }
 
     @Override
-    public void checkCanCreateSchema(SecurityContext context, CatalogSchemaName schemaName)
+    public void checkCanCreateSchema(SecurityContext context, CatalogSchemaName schemaName, Map<String, Object> properties)
     {
     }
 
@@ -178,6 +188,11 @@ public class AllowAllAccessControl
 
     @Override
     public void checkCanAddColumns(SecurityContext context, QualifiedObjectName tableName)
+    {
+    }
+
+    @Override
+    public void checkCanAlterColumn(SecurityContext context, QualifiedObjectName tableName)
     {
     }
 
@@ -343,11 +358,6 @@ public class AllowAllAccessControl
 
     @Override
     public void checkCanSetCatalogRole(SecurityContext context, String role, String catalogName)
-    {
-    }
-
-    @Override
-    public void checkCanShowRoleAuthorizationDescriptors(SecurityContext context, Optional<String> catalogName)
     {
     }
 

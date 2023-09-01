@@ -16,12 +16,12 @@ package io.trino.plugin.exchange.filesystem;
 import com.google.common.collect.ImmutableList;
 import io.airlift.configuration.Config;
 import io.airlift.configuration.ConfigDescription;
+import io.airlift.configuration.DefunctConfig;
 import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
-
-import javax.validation.constraints.Min;
-import javax.validation.constraints.NotEmpty;
-import javax.validation.constraints.NotNull;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotEmpty;
+import jakarta.validation.constraints.NotNull;
 
 import java.net.URI;
 import java.util.List;
@@ -30,10 +30,10 @@ import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static io.trino.plugin.exchange.filesystem.FileSystemExchangeManager.PATH_SEPARATOR;
 
+@DefunctConfig("exchange.encryption-enabled")
 public class FileSystemExchangeConfig
 {
     private List<URI> baseDirectories = ImmutableList.of();
-    private boolean exchangeEncryptionEnabled = true;
     // For S3, we make read requests aligned with part boundaries. Incomplete slice at the end of the buffer is
     // possible and will be copied to the beginning of the new buffer, and we need to make room for that.
     // Therefore, it's recommended to set `maxPageStorageSize` to be slightly larger than a multiple of part size.
@@ -42,6 +42,7 @@ public class FileSystemExchangeConfig
     private int exchangeSinkBuffersPerPartition = 2;
     private DataSize exchangeSinkMaxFileSize = DataSize.of(1, GIGABYTE);
     private int exchangeSourceConcurrentReaders = 4;
+    private int exchangeSourceMaxFilesPerReader = 25;
     private int maxOutputPartitionCount = 50;
     private int exchangeFileListingParallelism = 50;
     private DataSize exchangeSourceHandleTargetDataSize = DataSize.of(256, MEGABYTE);
@@ -69,18 +70,6 @@ public class FileSystemExchangeConfig
             }
             this.baseDirectories = builder.build();
         }
-        return this;
-    }
-
-    public boolean isExchangeEncryptionEnabled()
-    {
-        return exchangeEncryptionEnabled;
-    }
-
-    @Config("exchange.encryption-enabled")
-    public FileSystemExchangeConfig setExchangeEncryptionEnabled(boolean exchangeEncryptionEnabled)
-    {
-        this.exchangeEncryptionEnabled = exchangeEncryptionEnabled;
         return this;
     }
 
@@ -148,6 +137,19 @@ public class FileSystemExchangeConfig
     public FileSystemExchangeConfig setExchangeSourceConcurrentReaders(int exchangeSourceConcurrentReaders)
     {
         this.exchangeSourceConcurrentReaders = exchangeSourceConcurrentReaders;
+        return this;
+    }
+
+    @Min(1)
+    public int getExchangeSourceMaxFilesPerReader()
+    {
+        return exchangeSourceMaxFilesPerReader;
+    }
+
+    @Config("exchange.source-max-files-per-reader")
+    public FileSystemExchangeConfig setExchangeSourceMaxFilesPerReader(int exchangeSourceMaxFilesPerReader)
+    {
+        this.exchangeSourceMaxFilesPerReader = exchangeSourceMaxFilesPerReader;
         return this;
     }
 

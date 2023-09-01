@@ -13,17 +13,22 @@
  */
 package io.trino.spi.exchange;
 
+import com.google.errorprone.annotations.ThreadSafe;
 import io.trino.spi.Experimental;
 
-import javax.annotation.concurrent.ThreadSafe;
-
 import java.io.Closeable;
+import java.util.concurrent.CompletableFuture;
 
 @ThreadSafe
-@Experimental(eta = "2023-01-01")
+@Experimental(eta = "2023-09-01")
 public interface Exchange
         extends Closeable
 {
+    /**
+     * Get id of this exchange
+     */
+    ExchangeId getId();
+
     /**
      * Registers a new sink
      *
@@ -56,7 +61,7 @@ public interface Exchange
      * @return ExchangeSinkInstanceHandle to be sent to a worker that is needed to create an {@link ExchangeSink} instance using
      * {@link ExchangeManager#createSink(ExchangeSinkInstanceHandle)}
      */
-    ExchangeSinkInstanceHandle instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId);
+    CompletableFuture<ExchangeSinkInstanceHandle> instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId);
 
     /**
      * Update {@link ExchangeSinkInstanceHandle}. Update is requested by {@link ExchangeSink}.
@@ -66,7 +71,7 @@ public interface Exchange
      * @param taskAttemptId - attempt id
      * @return updated handle
      */
-    ExchangeSinkInstanceHandle updateSinkInstanceHandle(ExchangeSinkHandle sinkHandle, int taskAttemptId);
+    CompletableFuture<ExchangeSinkInstanceHandle> updateSinkInstanceHandle(ExchangeSinkHandle sinkHandle, int taskAttemptId);
 
     /**
      * Called by the engine when an attempt finishes successfully.
@@ -74,6 +79,12 @@ public interface Exchange
      * This method is expected to be lightweight. An implementation shouldn't perform any long running blocking operations within this method.
      */
     void sinkFinished(ExchangeSinkHandle sinkHandle, int taskAttemptId);
+
+    /**
+     * Called by the engine when all required sinks finished successfully.
+     * While some source tasks may still be running and writing to their sinks the data written to these sinks could be safely ignored after this method is invoked.
+     */
+    void allRequiredSinksFinished();
 
     /**
      * Returns an {@link ExchangeSourceHandleSource} instance to be used to enumerate {@link ExchangeSourceHandle}s.

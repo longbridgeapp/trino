@@ -26,6 +26,7 @@ import javax.net.ssl.TrustManagerFactory;
 import java.io.InputStream;
 import java.security.KeyStore;
 import java.security.SecureRandom;
+import java.util.Optional;
 
 import static com.google.common.io.Resources.getResource;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
@@ -34,6 +35,7 @@ import static io.trino.cli.TerminalUtils.getTerminal;
 import static io.trino.cli.TestQueryRunner.createClientSession;
 import static io.trino.cli.TestQueryRunner.createQueryRunner;
 import static io.trino.cli.TestQueryRunner.createResults;
+import static io.trino.cli.TestQueryRunner.createTrinoUri;
 import static io.trino.cli.TestQueryRunner.nullPrintStream;
 import static org.testng.Assert.assertEquals;
 
@@ -57,6 +59,7 @@ public class TestInsecureQueryRunner
             throws Exception
     {
         server.close();
+        server = null;
     }
 
     @Test
@@ -70,10 +73,10 @@ public class TestInsecureQueryRunner
                 .addHeader(CONTENT_TYPE, "application/json")
                 .setBody(createResults(server)));
 
-        QueryRunner queryRunner = createQueryRunner(createClientSession(server), true);
+        QueryRunner queryRunner = createQueryRunner(createTrinoUri(server, true), createClientSession(server));
 
         try (Query query = queryRunner.startQuery("query with insecure mode")) {
-            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, false, false);
+            query.renderOutput(getTerminal(), nullPrintStream(), nullPrintStream(), CSV, Optional.of(""), false);
         }
 
         assertEquals(server.takeRequest().getPath(), "/v1/statement");

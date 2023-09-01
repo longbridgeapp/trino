@@ -164,8 +164,7 @@ public final class TypeHelper
         if (type instanceof VarbinaryType) {
             return ((Slice) nativeValue).toByteBuffer();
         }
-        if (type instanceof DecimalType) {
-            DecimalType decimalType = (DecimalType) type;
+        if (type instanceof DecimalType decimalType) {
             if (decimalType.isShort()) {
                 return new BigDecimal(BigInteger.valueOf((long) nativeValue), decimalType.getScale());
             }
@@ -207,7 +206,7 @@ public final class TypeHelper
             return row.getBoolean(field);
         }
         if (type instanceof VarbinaryType) {
-            return Slices.wrappedBuffer(row.getBinary(field));
+            return Slices.wrappedHeapBuffer(row.getBinary(field));
         }
         if (type instanceof DecimalType) {
             return Decimals.encodeScaledValue(row.getDecimal(field), ((DecimalType) type).getScale());
@@ -235,9 +234,8 @@ public final class TypeHelper
         if (type == RealType.REAL) {
             return floatToRawIntBits(row.getFloat(field));
         }
-        if (type instanceof DecimalType) {
-            DecimalType dtype = (DecimalType) type;
-            if (dtype.isShort()) {
+        if (type instanceof DecimalType decimalType) {
+            if (decimalType.isShort()) {
                 return row.getDecimal(field).unscaledValue().longValue();
             }
             throw new IllegalStateException("getLong not supported for long decimal: " + type);
@@ -267,7 +265,7 @@ public final class TypeHelper
             return Slices.utf8Slice(row.getString(field));
         }
         if (type instanceof VarbinaryType) {
-            return Slices.wrappedBuffer(row.getBinary(field));
+            return Slices.wrappedHeapBuffer(row.getBinary(field));
         }
         throw new IllegalStateException("getSlice not implemented for " + type);
     }

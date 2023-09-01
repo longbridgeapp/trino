@@ -21,8 +21,8 @@ import java.util.Map;
 import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
 import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
-import static io.trino.plugin.deltalake.DeltaLakeSecurityConfig.DeltaLakeSecurity.ALLOW_ALL;
-import static io.trino.plugin.deltalake.DeltaLakeSecurityConfig.DeltaLakeSecurity.READ_ONLY;
+import static io.trino.plugin.deltalake.DeltaLakeSecurityModule.ALLOW_ALL;
+import static io.trino.plugin.deltalake.DeltaLakeSecurityModule.READ_ONLY;
 
 public class TestDeltaLakeSecurityConfig
 {
@@ -36,9 +36,7 @@ public class TestDeltaLakeSecurityConfig
     @Test
     public void testExplicitPropertyMappings()
     {
-        Map<String, String> properties = ImmutableMap.<String, String>builder()
-                .put("delta.security", "read-only")
-                .buildOrThrow();
+        Map<String, String> properties = ImmutableMap.of("delta.security", "read_only");
 
         DeltaLakeSecurityConfig expected = new DeltaLakeSecurityConfig()
                 .setSecuritySystem(READ_ONLY);

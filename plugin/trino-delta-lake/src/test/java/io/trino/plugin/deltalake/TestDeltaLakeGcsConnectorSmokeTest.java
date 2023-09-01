@@ -20,29 +20,23 @@ import com.google.common.io.ByteStreams;
 import com.google.common.io.Resources;
 import com.google.common.reflect.ClassPath;
 import io.airlift.log.Logger;
+import io.trino.filesystem.FileIterator;
+import io.trino.filesystem.Location;
+import io.trino.filesystem.TrinoFileSystem;
+import io.trino.filesystem.TrinoOutputFile;
 import io.trino.hadoop.ConfigurationInstantiator;
+import io.trino.hdfs.gcs.GoogleGcsConfigurationInitializer;
+import io.trino.hdfs.gcs.HiveGcsConfig;
 import io.trino.plugin.hive.containers.HiveMinioDataLake;
-import io.trino.plugin.hive.gcs.GoogleGcsConfigurationInitializer;
-import io.trino.plugin.hive.gcs.HiveGcsConfig;
 import io.trino.testing.QueryRunner;
-import io.trino.testing.TestingConnectorBehavior;
-import io.trino.testing.sql.TestTable;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.LocatedFileStatus;
-import org.apache.hadoop.fs.RemoteIterator;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Parameters;
-import org.testng.annotations.Test;
 
-import java.io.ByteArrayInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.FileAttribute;
@@ -53,10 +47,8 @@ import java.util.Map;
 import java.util.regex.Pattern;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.DELTA_CATALOG;
-import static io.trino.plugin.deltalake.DeltaLakeQueryRunner.createDockerizedDeltaLakeQueryRunner;
+import static io.trino.plugin.hive.HiveTestUtils.HDFS_FILE_SYSTEM_FACTORY;
 import static io.trino.plugin.hive.containers.HiveHadoop.HIVE3_IMAGE;
-import static io.trino.testing.sql.TestTable.randomTableSuffix;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
@@ -75,32 +67,34 @@ public class TestDeltaLakeGcsConnectorSmokeTest
     private static final FileAttribute<?> READ_ONLY_PERMISSIONS = PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-r--r--"));
 
     private final String gcpStorageBucket;
-    private final Path gcpCredentialsFile;
-    private final FileSystem fileSystem;
+    private final String gcpCredentialKey;
+
+    private Path gcpCredentialsFile;
+    private String gcpCredentials;
+    private TrinoFileSystem fileSystem;
 
     @Parameters({"testing.gcp-storage-bucket", "testing.gcp-credentials-key"})
     public TestDeltaLakeGcsConnectorSmokeTest(String gcpStorageBucket, String gcpCredentialKey)
     {
         this.gcpStorageBucket = requireNonNull(gcpStorageBucket, "gcpStorageBucket is null");
+        this.gcpCredentialKey = requireNonNull(gcpCredentialKey, "gcpCredentialKey is null");
+    }
 
-        requireNonNull(gcpCredentialKey, "gcpCredentialKey is null");
-        InputStream jsonKey = new ByteArrayInputStream(Base64.getDecoder().decode(gcpCredentialKey));
+    @Override
+    protected void environmentSetup()
+    {
+        byte[] jsonKeyBytes = Base64.getDecoder().decode(gcpCredentialKey);
+        gcpCredentials = new String(jsonKeyBytes, UTF_8);
         try {
             this.gcpCredentialsFile = Files.createTempFile("gcp-credentials", ".json", READ_ONLY_PERMISSIONS);
             gcpCredentialsFile.toFile().deleteOnExit();
-            Files.write(gcpCredentialsFile, jsonKey.readAllBytes());
-
-            HiveGcsConfig gcsConfig = new HiveGcsConfig().setJsonKeyFilePath(gcpCredentialsFile.toAbsolutePath().toString());
+            Files.write(gcpCredentialsFile, jsonKeyBytes);
+            HiveGcsConfig gcsConfig = new HiveGcsConfig().setJsonKey(gcpCredentials);
             Configuration configuration = ConfigurationInstantiator.newEmptyConfiguration();
             new GoogleGcsConfigurationInitializer(gcsConfig).initializeConfiguration(configuration);
-
-            this.fileSystem = FileSystem.newInstance(new URI(bucketUrl()), configuration);
         }
         catch (IOException e) {
             throw new UncheckedIOException(e);
-        }
-        catch (URISyntaxException e) {
-            throw new RuntimeException(e);
         }
     }
 
@@ -109,26 +103,13 @@ public class TestDeltaLakeGcsConnectorSmokeTest
     {
         if (fileSystem != null) {
             try {
-                fileSystem.delete(new org.apache.hadoop.fs.Path(bucketUrl()), true);
+                fileSystem.deleteDirectory(Location.of(bucketUrl()));
             }
             catch (IOException e) {
                 // The GCS bucket should be configured to expire objects automatically. Clean up issues do not need to fail the test.
                 LOG.warn(e, "Failed to clean up GCS test directory: %s", bucketUrl());
             }
-        }
-    }
-
-    @Override
-    protected boolean hasBehavior(TestingConnectorBehavior connectorBehavior)
-    {
-        switch (connectorBehavior) {
-            case SUPPORTS_INSERT:
-            case SUPPORTS_DELETE:
-            case SUPPORTS_UPDATE:
-            case SUPPORTS_MERGE:
-                return false;
-            default:
-                return super.hasBehavior(connectorBehavior);
+            fileSystem = null;
         }
     }
 
@@ -150,31 +131,33 @@ public class TestDeltaLakeGcsConnectorSmokeTest
                         "/etc/hadoop/conf/gcp-credentials.json", gcpCredentialsFile.toAbsolutePath().toString()),
                 HIVE3_IMAGE);
         dataLake.start();
-        return dataLake;
+        return dataLake; // closed by superclass
     }
 
     @Override
-    protected QueryRunner createDeltaLakeQueryRunner(Map<String, String> connectorProperties)
-            throws Exception
+    protected Map<String, String> hiveStorageConfiguration()
     {
-        return createDockerizedDeltaLakeQueryRunner(
-                DELTA_CATALOG,
-                SCHEMA,
-                ImmutableMap.of(),
-                ImmutableMap.of(),
-                ImmutableMap.<String, String>builder()
-                        .putAll(connectorProperties)
-                        .put("hive.gcs.json-key-file-path", gcpCredentialsFile.toAbsolutePath().toString())
-                        .put("delta.unique-table-location", "false")
-                        .buildOrThrow(),
-                hiveMinioDataLake.getHiveHadoop(),
-                queryRunner -> {});
+        return ImmutableMap.<String, String>builder()
+                .put("hive.gcs.json-key", gcpCredentials)
+                .buildOrThrow();
     }
 
     @Override
-    protected void createTableFromResources(String table, String resourcePath, QueryRunner queryRunner)
+    protected Map<String, String> deltaStorageConfiguration()
     {
-        String targetDirectory = bucketName + "/" + table;
+        return ImmutableMap.<String, String>builder()
+                .putAll(hiveStorageConfiguration())
+                // TODO why not unique table locations? (This is here since 52bf6680c1b25516f6e8e64f82ada089abc0c9d3.)
+                .put("delta.unique-table-location", "false")
+                .buildOrThrow();
+    }
+
+    @Override
+    protected void registerTableFromResources(String table, String resourcePath, QueryRunner queryRunner)
+    {
+        this.fileSystem = HDFS_FILE_SYSTEM_FACTORY.create(queryRunner.getDefaultSession().toConnectorSession());
+
+        String targetDirectory = bucketUrl() + table;
 
         try {
             List<ClassPath.ResourceInfo> resources = ClassPath.from(TestDeltaLakeAdlsConnectorSmokeTest.class.getClassLoader())
@@ -185,7 +168,8 @@ public class TestDeltaLakeGcsConnectorSmokeTest
             for (ClassPath.ResourceInfo resourceInfo : resources) {
                 String fileName = resourceInfo.getResourceName().replaceFirst("^" + Pattern.quote(resourcePath), quoteReplacement(targetDirectory));
                 ByteSource byteSource = resourceInfo.asByteSource();
-                try (FSDataOutputStream fileStream = fileSystem.create(new org.apache.hadoop.fs.Path(fileName), true)) {
+                TrinoOutputFile trinoOutputFile = fileSystem.newOutputFile(Location.of(fileName));
+                try (OutputStream fileStream = trinoOutputFile.createOrOverwrite()) {
                     ByteStreams.copy(byteSource.openBufferedStream(), fileStream);
                 }
             }
@@ -194,7 +178,7 @@ public class TestDeltaLakeGcsConnectorSmokeTest
             throw new UncheckedIOException(e);
         }
 
-        queryRunner.execute(format("CREATE TABLE %s (dummy int) WITH (location = '%s')", table, getLocationForTable(bucketName, table)));
+        queryRunner.execute(format("CALL system.register_table('%s', '%s', '%s')", SCHEMA, table, getLocationForTable(bucketName, table)));
     }
 
     @Override
@@ -219,18 +203,13 @@ public class TestDeltaLakeGcsConnectorSmokeTest
 
     private List<String> listAllFilesRecursive(String directory)
     {
-        String path = bucketUrl() + directory;
-        ImmutableList.Builder<String> paths = ImmutableList.builder();
-
+        ImmutableList.Builder<String> locations = ImmutableList.builder();
         try {
-            RemoteIterator<LocatedFileStatus> files = fileSystem.listFiles(new org.apache.hadoop.fs.Path(path), true);
+            FileIterator files = fileSystem.listFiles(Location.of(bucketUrl()).appendPath(directory));
             while (files.hasNext()) {
-                LocatedFileStatus file = files.next();
-                if (!file.isDirectory()) {
-                    paths.add(file.getPath().toString());
-                }
+                locations.add(files.next().location().toString());
             }
-            return paths.build();
+            return locations.build();
         }
         catch (FileNotFoundException e) {
             return ImmutableList.of();
@@ -244,60 +223,5 @@ public class TestDeltaLakeGcsConnectorSmokeTest
     protected String bucketUrl()
     {
         return format("gs://%s/%s/", gcpStorageBucket, bucketName);
-    }
-
-    // These overrides are required because the error message does not match the standard format
-    @Override
-    @Test
-    public void testInsert()
-    {
-        assertQueryFails("INSERT INTO region (regionkey) VALUES (42)", "Inserts are not supported on the gs filesystem");
-    }
-
-    @Override
-    @Test
-    public void testUpdate()
-    {
-        assertQueryFails("UPDATE nation SET nationkey = nationkey + regionkey WHERE regionkey < 1", "Updates are not supported on the gs filesystem");
-    }
-
-    @Override
-    @Test
-    public void testMerge()
-    {
-        assertQueryFails("MERGE INTO nation n USING nation s ON (n.nationkey = s.nationkey) " +
-                        "WHEN MATCHED AND n.regionkey < 1 THEN UPDATE SET nationkey = 5",
-                "Updates are not supported on the gs filesystem");
-    }
-
-    @Override
-    @Test
-    public void verifySupportsDeleteDeclaration()
-    {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_supports_delete", "AS SELECT * FROM region")) {
-            assertQueryFails("DELETE FROM " + table.getName(), "Deletes are not supported on the gs filesystem");
-        }
-    }
-
-    @Override
-    @Test
-    public void verifySupportsRowLevelDeleteDeclaration()
-    {
-        try (TestTable table = new TestTable(getQueryRunner()::execute, "test_supports_row_level_delete", "AS SELECT * FROM region")) {
-            assertQueryFails("DELETE FROM " + table.getName() + " WHERE regionkey = 2", "Deletes are not supported on the gs filesystem");
-        }
-    }
-
-    // Override required because inserts on GCS are not supported, however CTAS is
-    @Override
-    @Test
-    public void testCreatePartitionedTable()
-    {
-        String tableName = "test_create_partitioned_table_" + randomTableSuffix();
-        assertUpdate("CREATE TABLE " + tableName + " (a, b, c) " +
-                "WITH (location = '" + getLocationForTable(bucketName, tableName) + "', partitioned_by = ARRAY['b']) " +
-                "AS VALUES (1, 'a', TIMESTAMP '2020-01-01 01:22:34.000 UTC'), (2, 'b', TIMESTAMP '2021-01-01 01:22:34.000 UTC')", 2);
-        assertQuery("SELECT a, b, CAST(c AS VARCHAR) FROM " + tableName, "VALUES (1, 'a', '2020-01-01 01:22:34.000 UTC'), (2, 'b', '2021-01-01 01:22:34.000 UTC')");
-        assertUpdate("DROP TABLE " + tableName);
     }
 }

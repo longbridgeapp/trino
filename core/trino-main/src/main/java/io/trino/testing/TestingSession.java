@@ -15,11 +15,15 @@ package io.trino.testing;
 
 import io.trino.Session;
 import io.trino.Session.SessionBuilder;
+import io.trino.client.ClientCapabilities;
 import io.trino.execution.QueryIdGenerator;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.spi.security.Identity;
 import io.trino.spi.type.TimeZoneKey;
 
+import java.util.Arrays;
+
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Locale.ENGLISH;
 
 public final class TestingSession
@@ -49,11 +53,14 @@ public final class TestingSession
         return Session.builder(sessionPropertyManager)
                 .setQueryId(queryIdGenerator.createNextQueryId())
                 .setIdentity(Identity.ofUser("user"))
+                .setOriginalIdentity(Identity.ofUser("user"))
                 .setSource("test")
                 .setCatalog("catalog")
                 .setSchema("schema")
                 .setTimeZoneKey(DEFAULT_TIME_ZONE_KEY)
                 .setLocale(ENGLISH)
+                .setClientCapabilities(Arrays.stream(ClientCapabilities.values()).map(Enum::name)
+                        .collect(toImmutableSet()))
                 .setRemoteUserAddress("address")
                 .setUserAgent("agent");
     }

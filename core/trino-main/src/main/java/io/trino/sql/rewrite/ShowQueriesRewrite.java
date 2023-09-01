@@ -20,8 +20,9 @@ import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
 import com.google.common.primitives.Primitives;
+import com.google.inject.Inject;
 import io.trino.Session;
-import io.trino.connector.CatalogHandle;
+import io.trino.execution.querystats.PlanOptimizersStatsCollector;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.ColumnPropertyManager;
@@ -40,6 +41,7 @@ import io.trino.metadata.ViewDefinition;
 import io.trino.security.AccessControl;
 import io.trino.spi.StandardErrorCode;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.SchemaTableName;
@@ -52,7 +54,7 @@ import io.trino.sql.analyzer.AnalyzerFactory;
 import io.trino.sql.parser.ParsingException;
 import io.trino.sql.parser.SqlParser;
 import io.trino.sql.tree.AllColumns;
-import io.trino.sql.tree.ArrayConstructor;
+import io.trino.sql.tree.Array;
 import io.trino.sql.tree.AstVisitor;
 import io.trino.sql.tree.BooleanLiteral;
 import io.trino.sql.tree.ColumnDefinition;
@@ -90,8 +92,6 @@ import io.trino.sql.tree.Statement;
 import io.trino.sql.tree.StringLiteral;
 import io.trino.sql.tree.TableElement;
 import io.trino.sql.tree.Values;
-
-import javax.inject.Inject;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -149,6 +149,7 @@ import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.tree.CreateView.Security.DEFINER;
 import static io.trino.sql.tree.CreateView.Security.INVOKER;
 import static io.trino.sql.tree.LogicalExpression.and;
+import static io.trino.sql.tree.SaveMode.FAIL;
 import static io.trino.sql.tree.ShowCreate.Type.MATERIALIZED_VIEW;
 import static io.trino.sql.tree.ShowCreate.Type.SCHEMA;
 import static io.trino.sql.tree.ShowCreate.Type.TABLE;
@@ -198,7 +199,7 @@ public final class ShowQueriesRewrite
             Statement node,
             List<Expression> parameters,
             Map<NodeRef<Parameter>, Expression> parameterLookup,
-            WarningCollector warningCollector)
+            WarningCollector warningCollector, PlanOptimizersStatsCollector planOptimizersStatsCollector)
     {
         Visitor visitor = new Visitor(
                 metadata,
@@ -306,11 +307,11 @@ public final class ShowQueriesRewrite
                 QualifiedObjectName qualifiedTableName = createQualifiedObjectName(session, showGrants, tableName.get());
                 if (!metadata.isView(session, qualifiedTableName)) {
                     RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, qualifiedTableName);
-                    if (redirection.getTableHandle().isEmpty()) {
+                    if (redirection.tableHandle().isEmpty()) {
                         throw semanticException(TABLE_NOT_FOUND, showGrants, "Table '%s' does not exist", tableName);
                     }
-                    if (redirection.getRedirectedTableName().isPresent()) {
-                        throw semanticException(NOT_SUPPORTED, showGrants, "Table %s is redirected to %s and SHOW GRANTS is not supported with table redirections", tableName.get(), redirection.getRedirectedTableName().get());
+                    if (redirection.redirectedTableName().isPresent()) {
+                        throw semanticException(NOT_SUPPORTED, showGrants, "Table %s is redirected to %s and SHOW GRANTS is not supported with table redirections", tableName.get(), redirection.redirectedTableName().get());
                     }
                 }
 
@@ -482,11 +483,11 @@ public final class ShowQueriesRewrite
                 // Check for table if view is not present
                 if (!isView) {
                     RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, tableName);
-                    tableHandle = redirection.getTableHandle();
+                    tableHandle = redirection.tableHandle();
                     if (tableHandle.isEmpty()) {
                         throw semanticException(TABLE_NOT_FOUND, showColumns, "Table '%s' does not exist", tableName);
                     }
-                    targetTableName = redirection.getRedirectedTableName().orElse(tableName);
+                    targetTableName = redirection.redirectedTableName().orElse(tableName);
                 }
             }
 
@@ -557,9 +558,8 @@ public final class ShowQueriesRewrite
                 return new DoubleLiteral(value.toString());
             }
 
-            if (value instanceof List) {
-                List<?> list = (List<?>) value;
-                return new ArrayConstructor(list.stream()
+            if (value instanceof List<?> list) {
+                return new Array(list.stream()
                         .map(Visitor::toExpression)
                         .collect(toList()));
             }
@@ -599,8 +599,15 @@ public final class ShowQueriesRewrite
                 Collection<PropertyMetadata<?>> allMaterializedViewProperties = materializedViewPropertyManager.getAllProperties(catalogHandle);
                 List<Property> propertyNodes = buildProperties(objectName, Optional.empty(), INVALID_MATERIALIZED_VIEW_PROPERTY, properties, allMaterializedViewProperties);
 
-                String sql = formatSql(new CreateMaterializedView(Optional.empty(), QualifiedName.of(ImmutableList.of(catalogName, schemaName, tableName)),
-                        query, false, false, propertyNodes, viewDefinition.get().getComment())).trim();
+                String sql = formatSql(new CreateMaterializedView(
+                        Optional.empty(),
+                        QualifiedName.of(ImmutableList.of(catalogName, schemaName, tableName)),
+                        query,
+                        false,
+                        false,
+                        Optional.empty(), // TODO support GRACE PERIOD
+                        propertyNodes,
+                        viewDefinition.get().getComment())).trim();
                 return singleValueQuery("Create Materialized View", sql);
             }
 
@@ -651,10 +658,10 @@ public final class ShowQueriesRewrite
                 }
 
                 RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, objectName);
-                TableHandle tableHandle = redirection.getTableHandle()
+                TableHandle tableHandle = redirection.tableHandle()
                         .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", objectName));
 
-                QualifiedObjectName targetTableName = redirection.getRedirectedTableName().orElse(objectName);
+                QualifiedObjectName targetTableName = redirection.redirectedTableName().orElse(objectName);
                 accessControl.checkCanShowCreateTable(session.toSecurityContext(), targetTableName);
                 ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(session, tableHandle).getMetadata();
 
@@ -665,7 +672,7 @@ public final class ShowQueriesRewrite
                         .map(column -> {
                             List<Property> propertyNodes = buildProperties(targetTableName, Optional.of(column.getName()), INVALID_COLUMN_PROPERTY, column.getProperties(), allColumnProperties);
                             return new ColumnDefinition(
-                                    new Identifier(column.getName()),
+                                    QualifiedName.of(column.getName()),
                                     toSqlType(column.getType()),
                                     column.isNullable(),
                                     propertyNodes,
@@ -680,7 +687,7 @@ public final class ShowQueriesRewrite
                 CreateTable createTable = new CreateTable(
                         QualifiedName.of(targetTableName.getCatalogName(), targetTableName.getSchemaName(), targetTableName.getObjectName()),
                         columns,
-                        false,
+                        FAIL,
                         propertyNodes,
                         connectorTableMetadata.getComment());
                 return singleValueQuery("Create Table", formatSql(createTable).trim());

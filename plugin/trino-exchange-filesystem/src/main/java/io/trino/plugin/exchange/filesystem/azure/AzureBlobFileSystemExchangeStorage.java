@@ -23,7 +23,6 @@ import com.azure.storage.blob.batch.BlobBatchAsyncClient;
 import com.azure.storage.blob.batch.BlobBatchClientBuilder;
 import com.azure.storage.blob.models.BlobItem;
 import com.azure.storage.blob.models.BlobRange;
-import com.azure.storage.blob.models.CustomerProvidedKey;
 import com.azure.storage.blob.models.DeleteSnapshotsOptionType;
 import com.azure.storage.blob.models.ListBlobsOptions;
 import com.azure.storage.blob.specialized.BlockBlobAsyncClient;
@@ -37,24 +36,21 @@ import com.google.common.util.concurrent.FluentFuture;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import com.google.inject.Inject;
 import io.airlift.slice.SizeOf;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceInput;
 import io.airlift.slice.Slices;
+import io.trino.annotation.NotThreadSafe;
 import io.trino.plugin.exchange.filesystem.ExchangeSourceFile;
 import io.trino.plugin.exchange.filesystem.ExchangeStorageReader;
 import io.trino.plugin.exchange.filesystem.ExchangeStorageWriter;
 import io.trino.plugin.exchange.filesystem.FileStatus;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangeStorage;
-import org.openjdk.jol.info.ClassLayout;
+import jakarta.annotation.PreDestroy;
 import reactor.core.publisher.Flux;
-
-import javax.annotation.PreDestroy;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.NotThreadSafe;
-import javax.annotation.concurrent.ThreadSafe;
-import javax.crypto.SecretKey;
-import javax.inject.Inject;
 
 import java.io.IOException;
 import java.net.URI;
@@ -80,6 +76,7 @@ import static io.airlift.concurrent.MoreFutures.asVoid;
 import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static io.airlift.concurrent.MoreFutures.toListenableFuture;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.plugin.exchange.filesystem.FileSystemExchangeFutures.translateFailures;
 import static io.trino.plugin.exchange.filesystem.FileSystemExchangeManager.PATH_SEPARATOR;
 import static java.lang.Math.min;
@@ -125,7 +122,7 @@ public class AzureBlobFileSystemExchangeStorage
     }
 
     @Override
-    public ExchangeStorageWriter createExchangeStorageWriter(URI file, Optional<SecretKey> secretKey)
+    public ExchangeStorageWriter createExchangeStorageWriter(URI file)
     {
         String containerName = getContainerName(file);
         String blobName = getPath(file);
@@ -133,9 +130,6 @@ public class AzureBlobFileSystemExchangeStorage
                 .getBlobContainerAsyncClient(containerName)
                 .getBlobAsyncClient(blobName)
                 .getBlockBlobAsyncClient();
-        if (secretKey.isPresent()) {
-            blockBlobAsyncClient = blockBlobAsyncClient.getCustomerProvidedKeyAsyncClient(new CustomerProvidedKey(secretKey.get().getEncoded()));
-        }
         return new AzureExchangeStorageWriter(blockBlobAsyncClient, blockSize);
     }
 
@@ -270,7 +264,7 @@ public class AzureBlobFileSystemExchangeStorage
     private static class AzureExchangeStorageReader
             implements ExchangeStorageReader
     {
-        private static final int INSTANCE_SIZE = ClassLayout.parseClass(AzureExchangeStorageReader.class).instanceSize();
+        private static final int INSTANCE_SIZE = instanceSize(AzureExchangeStorageReader.class);
 
         private final BlobServiceAsyncClient blobServiceAsyncClient;
         @GuardedBy("this")
@@ -412,10 +406,6 @@ public class AzureBlobFileSystemExchangeStorage
                         .getBlobContainerAsyncClient(getContainerName(currentFile.getFileUri()))
                         .getBlobAsyncClient(getPath(currentFile.getFileUri()))
                         .getBlockBlobAsyncClient();
-                Optional<SecretKey> secretKey = currentFile.getSecretKey();
-                if (secretKey.isPresent()) {
-                    blockBlobAsyncClient = blockBlobAsyncClient.getCustomerProvidedKeyAsyncClient(new CustomerProvidedKey(secretKey.get().getEncoded()));
-                }
                 for (int i = 0; i < readableBlocks && fileOffset < fileSize; ++i) {
                     int length = (int) min(blockSize, fileSize - fileOffset);
 
@@ -460,7 +450,7 @@ public class AzureBlobFileSystemExchangeStorage
     private static class AzureExchangeStorageWriter
             implements ExchangeStorageWriter
     {
-        private static final int INSTANCE_SIZE = ClassLayout.parseClass(AzureExchangeStorageWriter.class).instanceSize();
+        private static final int INSTANCE_SIZE = instanceSize(AzureExchangeStorageWriter.class);
 
         private final BlockBlobAsyncClient blockBlobAsyncClient;
         private final int blockSize;

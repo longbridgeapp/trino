@@ -19,6 +19,7 @@ import io.trino.execution.AddColumnTask;
 import io.trino.execution.CallTask;
 import io.trino.execution.CommentTask;
 import io.trino.execution.CommitTask;
+import io.trino.execution.CreateCatalogTask;
 import io.trino.execution.CreateMaterializedViewTask;
 import io.trino.execution.CreateRoleTask;
 import io.trino.execution.CreateSchemaTask;
@@ -27,6 +28,7 @@ import io.trino.execution.CreateViewTask;
 import io.trino.execution.DataDefinitionTask;
 import io.trino.execution.DeallocateTask;
 import io.trino.execution.DenyTask;
+import io.trino.execution.DropCatalogTask;
 import io.trino.execution.DropColumnTask;
 import io.trino.execution.DropMaterializedViewTask;
 import io.trino.execution.DropRoleTask;
@@ -41,14 +43,17 @@ import io.trino.execution.RenameMaterializedViewTask;
 import io.trino.execution.RenameSchemaTask;
 import io.trino.execution.RenameTableTask;
 import io.trino.execution.RenameViewTask;
+import io.trino.execution.ResetSessionAuthorizationTask;
 import io.trino.execution.ResetSessionTask;
 import io.trino.execution.RevokeRolesTask;
 import io.trino.execution.RevokeTask;
 import io.trino.execution.RollbackTask;
+import io.trino.execution.SetColumnTypeTask;
 import io.trino.execution.SetPathTask;
 import io.trino.execution.SetPropertiesTask;
 import io.trino.execution.SetRoleTask;
 import io.trino.execution.SetSchemaAuthorizationTask;
+import io.trino.execution.SetSessionAuthorizationTask;
 import io.trino.execution.SetSessionTask;
 import io.trino.execution.SetTableAuthorizationTask;
 import io.trino.execution.SetTimeZoneTask;
@@ -62,6 +67,7 @@ import io.trino.sql.tree.Analyze;
 import io.trino.sql.tree.Call;
 import io.trino.sql.tree.Comment;
 import io.trino.sql.tree.Commit;
+import io.trino.sql.tree.CreateCatalog;
 import io.trino.sql.tree.CreateMaterializedView;
 import io.trino.sql.tree.CreateRole;
 import io.trino.sql.tree.CreateSchema;
@@ -73,6 +79,7 @@ import io.trino.sql.tree.Delete;
 import io.trino.sql.tree.Deny;
 import io.trino.sql.tree.DescribeInput;
 import io.trino.sql.tree.DescribeOutput;
+import io.trino.sql.tree.DropCatalog;
 import io.trino.sql.tree.DropColumn;
 import io.trino.sql.tree.DropMaterializedView;
 import io.trino.sql.tree.DropRole;
@@ -94,14 +101,17 @@ import io.trino.sql.tree.RenameSchema;
 import io.trino.sql.tree.RenameTable;
 import io.trino.sql.tree.RenameView;
 import io.trino.sql.tree.ResetSession;
+import io.trino.sql.tree.ResetSessionAuthorization;
 import io.trino.sql.tree.Revoke;
 import io.trino.sql.tree.RevokeRoles;
 import io.trino.sql.tree.Rollback;
+import io.trino.sql.tree.SetColumnType;
 import io.trino.sql.tree.SetPath;
 import io.trino.sql.tree.SetProperties;
 import io.trino.sql.tree.SetRole;
 import io.trino.sql.tree.SetSchemaAuthorization;
 import io.trino.sql.tree.SetSession;
+import io.trino.sql.tree.SetSessionAuthorization;
 import io.trino.sql.tree.SetTableAuthorization;
 import io.trino.sql.tree.SetTimeZone;
 import io.trino.sql.tree.SetViewAuthorization;
@@ -186,12 +196,14 @@ public final class StatementUtils
             .add(dataDefinitionStatement(Comment.class, CommentTask.class))
             .add(dataDefinitionStatement(Commit.class, CommitTask.class))
             .add(dataDefinitionStatement(CreateMaterializedView.class, CreateMaterializedViewTask.class))
+            .add(dataDefinitionStatement(CreateCatalog.class, CreateCatalogTask.class))
             .add(dataDefinitionStatement(CreateRole.class, CreateRoleTask.class))
             .add(dataDefinitionStatement(CreateSchema.class, CreateSchemaTask.class))
             .add(dataDefinitionStatement(CreateTable.class, CreateTableTask.class))
             .add(dataDefinitionStatement(CreateView.class, CreateViewTask.class))
             .add(dataDefinitionStatement(Deallocate.class, DeallocateTask.class))
             .add(dataDefinitionStatement(Deny.class, DenyTask.class))
+            .add(dataDefinitionStatement(DropCatalog.class, DropCatalogTask.class))
             .add(dataDefinitionStatement(DropColumn.class, DropColumnTask.class))
             .add(dataDefinitionStatement(DropMaterializedView.class, DropMaterializedViewTask.class))
             .add(dataDefinitionStatement(DropRole.class, DropRoleTask.class))
@@ -208,13 +220,16 @@ public final class StatementUtils
             .add(dataDefinitionStatement(RenameTable.class, RenameTableTask.class))
             .add(dataDefinitionStatement(RenameView.class, RenameViewTask.class))
             .add(dataDefinitionStatement(ResetSession.class, ResetSessionTask.class))
+            .add(dataDefinitionStatement(ResetSessionAuthorization.class, ResetSessionAuthorizationTask.class))
             .add(dataDefinitionStatement(Revoke.class, RevokeTask.class))
             .add(dataDefinitionStatement(RevokeRoles.class, RevokeRolesTask.class))
             .add(dataDefinitionStatement(Rollback.class, RollbackTask.class))
+            .add(dataDefinitionStatement(SetColumnType.class, SetColumnTypeTask.class))
             .add(dataDefinitionStatement(SetPath.class, SetPathTask.class))
             .add(dataDefinitionStatement(SetRole.class, SetRoleTask.class))
             .add(dataDefinitionStatement(SetSchemaAuthorization.class, SetSchemaAuthorizationTask.class))
             .add(dataDefinitionStatement(SetSession.class, SetSessionTask.class))
+            .add(dataDefinitionStatement(SetSessionAuthorization.class, SetSessionAuthorizationTask.class))
             .add(dataDefinitionStatement(SetProperties.class, SetPropertiesTask.class))
             .add(dataDefinitionStatement(SetTableAuthorization.class, SetTableAuthorizationTask.class))
             .add(dataDefinitionStatement(SetTimeZone.class, SetTimeZoneTask.class))
@@ -271,11 +286,10 @@ public final class StatementUtils
     private static <T extends Statement> void verifyTaskInterfaceType(Class<T> statementType, Class<?> taskType, Class<?> expectedInterfaceType)
     {
         for (Type genericInterface : taskType.getGenericInterfaces()) {
-            if (genericInterface instanceof ParameterizedType) {
-                ParameterizedType parameterizedInterface = (ParameterizedType) genericInterface;
+            if (genericInterface instanceof ParameterizedType parameterizedInterface) {
                 if (parameterizedInterface.getRawType().equals(expectedInterfaceType)) {
                     Type actualStatementType = parameterizedInterface.getActualTypeArguments()[0];
-                    checkArgument(actualStatementType.equals(statementType), format("Expected %s statement type to be %s", statementType.getSimpleName(), taskType.getSimpleName()));
+                    checkArgument(actualStatementType.equals(statementType), "Expected %s statement type to be %s", statementType.getSimpleName(), taskType.getSimpleName());
                     return;
                 }
             }

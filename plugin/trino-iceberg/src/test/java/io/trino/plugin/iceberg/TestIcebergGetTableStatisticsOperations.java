@@ -14,9 +14,12 @@
 package io.trino.plugin.iceberg;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMultiset;
+import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
+import io.opentelemetry.sdk.trace.SdkTracerProvider;
+import io.opentelemetry.sdk.trace.data.SpanData;
+import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.trino.execution.warnings.WarningCollector;
-import io.trino.metadata.CountingAccessMetadata;
+import io.trino.metadata.InternalFunctionBundle;
 import io.trino.metadata.MetadataManager;
 import io.trino.plugin.hive.metastore.Database;
 import io.trino.plugin.hive.metastore.HiveMetastore;
@@ -26,6 +29,7 @@ import io.trino.spi.security.PrincipalType;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.LocalQueryRunner;
 import io.trino.testing.QueryRunner;
+import io.trino.tracing.TracingMetadata;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeMethod;
@@ -39,7 +43,8 @@ import java.util.Optional;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static com.google.inject.util.Modules.EMPTY_MODULE;
-import static io.trino.plugin.hive.metastore.file.FileHiveMetastore.createTestingFileHiveMetastore;
+import static io.trino.execution.querystats.PlanOptimizersStatsCollector.createPlanOptimizersStatsCollector;
+import static io.trino.plugin.hive.metastore.file.TestingFileHiveMetastore.createTestingFileHiveMetastore;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static io.trino.transaction.TransactionBuilder.transaction;
@@ -52,20 +57,29 @@ public class TestIcebergGetTableStatisticsOperations
         extends AbstractTestQueryFramework
 {
     private LocalQueryRunner localQueryRunner;
-    private CountingAccessMetadata metadata;
+    private InMemorySpanExporter spanExporter;
     private File metastoreDir;
 
     @Override
     protected QueryRunner createQueryRunner()
             throws Exception
     {
+        spanExporter = closeAfterClass(InMemorySpanExporter.create());
+
+        SdkTracerProvider tracerProvider = SdkTracerProvider.builder()
+                .addSpanProcessor(SimpleSpanProcessor.create(spanExporter))
+                .build();
+
         localQueryRunner = LocalQueryRunner.builder(testSessionBuilder().build())
                 .withMetadataProvider((systemSecurityMetadata, transactionManager, globalFunctionCatalog, typeManager)
-                        -> new CountingAccessMetadata(new MetadataManager(systemSecurityMetadata, transactionManager, globalFunctionCatalog, typeManager)))
+                        -> new TracingMetadata(tracerProvider.get("test"), new MetadataManager(systemSecurityMetadata, transactionManager, globalFunctionCatalog, typeManager)))
                 .build();
-        metadata = (CountingAccessMetadata) localQueryRunner.getMetadata();
         localQueryRunner.installPlugin(new TpchPlugin());
         localQueryRunner.createCatalog("tpch", "tpch", ImmutableMap.of());
+
+        InternalFunctionBundle.InternalFunctionBundleBuilder functions = InternalFunctionBundle.builder();
+        new IcebergPlugin().getFunctions().forEach(functions::functions);
+        localQueryRunner.addFunctions(functions.build());
 
         metastoreDir = Files.createTempDirectory("test_iceberg_get_table_statistics_operations").toFile();
         HiveMetastore metastore = createTestingFileHiveMetastore(metastoreDir);
@@ -92,12 +106,15 @@ public class TestIcebergGetTableStatisticsOperations
             throws IOException
     {
         deleteRecursively(metastoreDir.toPath(), ALLOW_INSECURE);
+        localQueryRunner.close();
+        localQueryRunner = null;
+        spanExporter = null;
     }
 
     @BeforeMethod
     public void resetCounters()
     {
-        metadata.resetCounters();
+        spanExporter.reset();
     }
 
     @Test
@@ -106,10 +123,7 @@ public class TestIcebergGetTableStatisticsOperations
         planDistributedQuery("SELECT * " +
                 "FROM iceberg.tiny.orders o, iceberg.tiny.lineitem l " +
                 "WHERE o.orderkey = l.orderkey");
-        assertThat(metadata.getMethodInvocations()).containsExactlyInAnyOrderElementsOf(
-                ImmutableMultiset.<CountingAccessMetadata.Methods>builder()
-                        .addCopies(CountingAccessMetadata.Methods.GET_TABLE_STATISTICS, 2)
-                        .build());
+        assertThat(getTableStatisticsMethodInvocations()).isEqualTo(2);
     }
 
     @Test
@@ -118,17 +132,22 @@ public class TestIcebergGetTableStatisticsOperations
         planDistributedQuery("SELECT * " +
                 "FROM iceberg.tiny.customer c, iceberg.tiny.orders o, iceberg.tiny.lineitem l " +
                 "WHERE o.orderkey = l.orderkey AND c.custkey = o.custkey");
-        assertThat(metadata.getMethodInvocations()).containsExactlyInAnyOrderElementsOf(
-                ImmutableMultiset.<CountingAccessMetadata.Methods>builder()
-                        .addCopies(CountingAccessMetadata.Methods.GET_TABLE_STATISTICS, 3)
-                        .build());
+        assertThat(getTableStatisticsMethodInvocations()).isEqualTo(3);
     }
 
     private void planDistributedQuery(@Language("SQL") String sql)
     {
         transaction(localQueryRunner.getTransactionManager(), localQueryRunner.getAccessControl())
                 .execute(localQueryRunner.getDefaultSession(), session -> {
-                    localQueryRunner.createPlan(session, sql, OPTIMIZED_AND_VALIDATED, false, WarningCollector.NOOP);
+                    localQueryRunner.createPlan(session, sql, OPTIMIZED_AND_VALIDATED, false, WarningCollector.NOOP, createPlanOptimizersStatsCollector());
                 });
+    }
+
+    private long getTableStatisticsMethodInvocations()
+    {
+        return spanExporter.getFinishedSpanItems().stream()
+                .map(SpanData::getName)
+                .filter(name -> name.equals("Metadata.getTableStatistics"))
+                .count();
     }
 }

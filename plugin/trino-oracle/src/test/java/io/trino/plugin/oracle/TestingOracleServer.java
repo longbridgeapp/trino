@@ -15,14 +15,15 @@ package io.trino.plugin.oracle;
 
 import com.google.common.base.Joiner;
 import com.google.common.io.Files;
+import dev.failsafe.Failsafe;
+import dev.failsafe.RetryPolicy;
 import io.airlift.log.Logger;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DriverConnectionFactory;
 import io.trino.plugin.jdbc.RetryingConnectionFactory;
 import io.trino.plugin.jdbc.credential.StaticCredentialProvider;
-import net.jodah.failsafe.Failsafe;
-import net.jodah.failsafe.RetryPolicy;
+import io.trino.testing.ResourcePresence;
 import oracle.jdbc.OracleDriver;
 import org.testcontainers.containers.OracleContainer;
 import org.testcontainers.utility.MountableFile;
@@ -39,20 +40,22 @@ import java.sql.Statement;
 import java.time.temporal.ChronoUnit;
 
 import static io.trino.testing.TestingConnectorSession.SESSION;
+import static io.trino.testing.containers.TestContainers.startOrReuse;
 import static java.lang.String.format;
 
 public class TestingOracleServer
-        implements Closeable
+        implements AutoCloseable
 {
     private static final Logger log = Logger.get(TestingOracleServer.class);
 
-    private static final RetryPolicy<Object> CONTAINER_RETRY_POLICY = new RetryPolicy<>()
+    private static final RetryPolicy<Object> CONTAINER_RETRY_POLICY = RetryPolicy.builder()
             .withBackoff(1, 5, ChronoUnit.SECONDS)
             .withMaxAttempts(5)
             .onRetry(event -> log.warn(
                     "Container initialization failed on attempt %s, will retry. Exception: %s",
                     event.getAttemptCount(),
-                    event.getLastFailure().getMessage()));
+                    event.getLastException().getMessage()))
+            .build();
 
     private static final String TEST_TABLESPACE = "trino_test";
 
@@ -61,6 +64,8 @@ public class TestingOracleServer
     public static final String TEST_PASS = "trino_test_password";
 
     private final OracleContainer container;
+
+    private Closeable cleanup = () -> {};
 
     public TestingOracleServer()
     {
@@ -74,7 +79,7 @@ public class TestingOracleServer
                 .withCopyFileToContainer(MountableFile.forClasspathResource("restart.sh"), "/container-entrypoint-initdb.d/02-restart.sh")
                 .withCopyFileToContainer(MountableFile.forHostPath(createConfigureScript()), "/container-entrypoint-initdb.d/03-create-users.sql")
                 .usingSid();
-        container.start();
+        cleanup = startOrReuse(container);
         return container;
     }
 
@@ -130,6 +135,17 @@ public class TestingOracleServer
     @Override
     public void close()
     {
-        container.stop();
+        try {
+            cleanup.close();
+        }
+        catch (IOException ioe) {
+            throw new UncheckedIOException(ioe);
+        }
+    }
+
+    @ResourcePresence
+    public boolean isRunning()
+    {
+        return container.getContainerId() != null;
     }
 }

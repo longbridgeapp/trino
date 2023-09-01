@@ -14,6 +14,7 @@
 
 package io.trino.tests.product.launcher.env.common;
 
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.docker.DockerFiles.ResourceProvider;
 import io.trino.tests.product.launcher.env.DockerContainer;
@@ -21,8 +22,6 @@ import io.trino.tests.product.launcher.env.Environment;
 import io.trino.tests.product.launcher.testcontainers.PortBinder;
 import org.testcontainers.containers.startupcheck.IsRunningStartupCheckStrategy;
 import org.testcontainers.utility.MountableFile;
-
-import javax.inject.Inject;
 
 import java.time.Duration;
 
@@ -36,7 +35,7 @@ import static org.testcontainers.utility.MountableFile.forHostPath;
 public class Kafka
         implements EnvironmentExtender
 {
-    private static final String CONFLUENT_VERSION = "5.5.2";
+    private static final String CONFLUENT_VERSION = "7.3.1";
     private static final int SCHEMA_REGISTRY_PORT = 8081;
     static final String KAFKA = "kafka";
     static final String SCHEMA_REGISTRY = "schema-registry";
@@ -61,11 +60,24 @@ public class Kafka
                 .containerDependsOn(KAFKA, ZOOKEEPER)
                 .containerDependsOn(SCHEMA_REGISTRY, KAFKA);
 
-        MountableFile logConfigFile = forHostPath(configDir.getPath("log.properties"));
         builder.configureContainers(container -> {
             if (isTrinoContainer(container.getLogicalName())) {
-                container.withCopyFileToContainer(logConfigFile, CONTAINER_TRINO_ETC + "/log.properties");
+                MountableFile logConfigFile = forHostPath(configDir.getPath("log.properties"));
+                container
+                        .withCopyFileToContainer(logConfigFile, CONTAINER_TRINO_ETC + "/log.properties");
             }
+        });
+
+        // Confluent Docker entry point script overwrites /etc/kafka/log4j.properties
+        // Modify the template directly instead
+        builder.configureContainer(KAFKA, container -> {
+            MountableFile logConfigFile = forHostPath(configDir.getPath("log4j-kafka.properties.template"));
+            container.withCopyFileToContainer(logConfigFile, "/etc/confluent/docker/log4j.properties.template");
+        });
+
+        builder.configureContainer(SCHEMA_REGISTRY, container -> {
+            MountableFile logConfigFile = forHostPath(configDir.getPath("log4j-schema-registry.properties.template"));
+            container.withCopyFileToContainer(logConfigFile, "/etc/confluent/docker/log4j.properties.template");
         });
     }
 

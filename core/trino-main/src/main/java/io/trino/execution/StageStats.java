@@ -17,6 +17,8 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import com.google.errorprone.annotations.Immutable;
+import io.airlift.stats.Distribution;
 import io.airlift.stats.Distribution.DistributionSnapshot;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -26,17 +28,17 @@ import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.eventlistener.StageGcStatistics;
 import org.joda.time.DateTime;
 
-import javax.annotation.concurrent.Immutable;
-
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.trino.execution.StageState.RUNNING;
 import static java.lang.Math.min;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.TimeUnit.SECONDS;
 
 @Immutable
 public class StageStats
@@ -631,6 +633,10 @@ public class StageStats
         if (isScheduled && totalDrivers != 0) {
             progressPercentage = OptionalDouble.of(min(100, (completedDrivers * 100.0) / totalDrivers));
         }
+        OptionalDouble runningPercentage = OptionalDouble.empty();
+        if (isScheduled && totalDrivers != 0) {
+            progressPercentage = OptionalDouble.of(min(100, (runningDrivers * 100.0) / totalDrivers));
+        }
 
         return new BasicStageStats(
                 isScheduled,
@@ -656,6 +662,78 @@ public class StageStats
                 failedScheduledTime,
                 fullyBlocked,
                 blockedReasons,
-                progressPercentage);
+                progressPercentage,
+                runningPercentage);
+    }
+
+    public static StageStats createInitial()
+    {
+        DataSize zeroBytes = DataSize.of(0, BYTE);
+        Duration zeroSeconds = new Duration(0, SECONDS);
+        return new StageStats(
+                null,
+                new Distribution().snapshot(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                zeroBytes,
+                zeroBytes,
+                zeroBytes,
+                zeroBytes,
+                zeroBytes,
+                zeroSeconds,
+                zeroSeconds,
+                zeroSeconds,
+                zeroSeconds,
+                zeroSeconds,
+                false,
+                ImmutableSet.of(),
+                zeroBytes,
+                zeroBytes,
+                0,
+                0,
+                zeroSeconds,
+                zeroSeconds,
+                zeroBytes,
+                zeroBytes,
+                0,
+                0,
+                zeroBytes,
+                zeroBytes,
+                0,
+                0,
+                zeroBytes,
+                zeroBytes,
+                0,
+                0,
+                zeroSeconds,
+                zeroSeconds,
+                zeroBytes,
+                Optional.empty(),
+                zeroBytes,
+                zeroBytes,
+                0,
+                0,
+                zeroSeconds,
+                zeroSeconds,
+                zeroBytes,
+                zeroBytes,
+                new StageGcStatistics(
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0),
+                ImmutableList.of());
     }
 }

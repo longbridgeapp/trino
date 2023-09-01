@@ -17,12 +17,10 @@ import io.trino.spi.Experimental;
 
 import java.util.Map;
 
-@Experimental(eta = "2023-01-01")
+@Experimental(eta = "2023-09-01")
 public interface ExchangeManagerFactory
 {
     String getName();
 
     ExchangeManager create(Map<String, String> config);
-
-    ExchangeManagerHandleResolver getHandleResolver();
 }

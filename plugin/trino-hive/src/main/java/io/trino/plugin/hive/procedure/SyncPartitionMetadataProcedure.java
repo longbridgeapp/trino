@@ -17,6 +17,9 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.google.inject.Inject;
+import com.google.inject.Provider;
+import io.trino.filesystem.Location;
 import io.trino.hdfs.HdfsContext;
 import io.trino.hdfs.HdfsEnvironment;
 import io.trino.plugin.hive.PartitionStatistics;
@@ -37,9 +40,6 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 
-import javax.inject.Inject;
-import javax.inject.Provider;
-
 import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.util.HashSet;
@@ -49,6 +49,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.plugin.base.util.Procedures.checkProcedureArgument;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static io.trino.plugin.hive.HiveMetadata.PRESTO_QUERY_ID_NAME;
 import static io.trino.plugin.hive.HivePartitionManager.extractPartitionValues;
@@ -116,6 +117,10 @@ public class SyncPartitionMetadataProcedure
 
     private void doSyncPartitionMetadata(ConnectorSession session, ConnectorAccessControl accessControl, String schemaName, String tableName, String mode, boolean caseSensitive)
     {
+        checkProcedureArgument(schemaName != null, "schema_name cannot be null");
+        checkProcedureArgument(tableName != null, "table_name cannot be null");
+        checkProcedureArgument(mode != null, "mode cannot be null");
+
         SyncMode syncMode = toSyncMode(mode);
         HdfsContext hdfsContext = new HdfsContext(session);
         SemiTransactionalHiveMetastore metastore = hiveMetadataFactory.create(session.getIdentity(), true).getMetastore();
@@ -236,7 +241,7 @@ public class SyncPartitionMetadataProcedure
                     table.getDatabaseName(),
                     table.getTableName(),
                     buildPartitionObject(session, table, name),
-                    new Path(table.getStorage().getLocation(), name),
+                    Location.of(table.getStorage().getLocation()).appendPath(name),
                     Optional.empty(), // no need for failed attempts cleanup
                     PartitionStatistics.empty(),
                     false);

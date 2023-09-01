@@ -22,7 +22,7 @@ import io.trino.spi.type.ArrayType;
 import io.trino.spi.type.StandardTypes;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeSignatureParameter;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.sql.Time;
 import java.sql.Timestamp;
@@ -37,7 +37,7 @@ import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
-import static io.trino.spi.type.TimeType.TIME;
+import static io.trino.spi.type.TimeType.TIME_MILLIS;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
@@ -45,14 +45,17 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.type.InternalTypeManager.TESTING_TYPE_MANAGER;
 import static java.lang.Float.floatToIntBits;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.testng.Assert.assertEquals;
 
 public class TestField
 {
-    @Test(expectedExceptions = NullPointerException.class, expectedExceptionsMessageRegExp = "type is null")
+    @Test
     public void testTypeIsNull()
     {
-        new Field(null, null);
+        assertThatThrownBy(() -> new Field(null, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessage("type is null");
     }
 
     @Test
@@ -187,7 +190,7 @@ public class TestField
     @Test
     public void testTime()
     {
-        Type type = TIME;
+        Type type = TIME_MILLIS;
         Time expected = new Time(new GregorianCalendar(1970, 0, 1, 12, 30, 0).getTime().getTime());
         Field f1 = new Field(70200000L, type);
         assertEquals(f1.getTime(), expected);

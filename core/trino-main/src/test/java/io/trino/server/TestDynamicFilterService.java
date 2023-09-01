@@ -49,7 +49,7 @@ import io.trino.sql.tree.Cast;
 import io.trino.sql.tree.Expression;
 import io.trino.testing.TestingMetadata;
 import io.trino.testing.TestingSession;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -1084,6 +1084,7 @@ public class TestDynamicFilterService
                         Optional.empty()),
                 ImmutableMap.of(symbol, VARCHAR),
                 stagePartitioning,
+                Optional.empty(),
                 ImmutableList.of(tableScanNodeId),
                 new PartitioningScheme(Partitioning.create(SINGLE_DISTRIBUTION, ImmutableList.of()), ImmutableList.of(symbol)),
                 StatsAndCosts.empty(),

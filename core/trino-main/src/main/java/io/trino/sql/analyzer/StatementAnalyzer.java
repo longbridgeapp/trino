@@ -22,12 +22,12 @@ import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
+import com.google.common.collect.Multimap;
 import com.google.common.collect.Streams;
 import com.google.common.math.IntMath;
 import io.airlift.slice.Slice;
 import io.trino.Session;
 import io.trino.SystemSessionProperties;
-import io.trino.connector.CatalogHandle;
 import io.trino.execution.Column;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.AnalyzePropertyManager;
@@ -54,10 +54,12 @@ import io.trino.metadata.ViewColumn;
 import io.trino.metadata.ViewDefinition;
 import io.trino.security.AccessControl;
 import io.trino.security.AllowAllAccessControl;
+import io.trino.security.InjectedConnectorAccessControl;
 import io.trino.security.SecurityContext;
 import io.trino.security.ViewAccessControl;
 import io.trino.spi.TrinoException;
 import io.trino.spi.TrinoWarning;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.CatalogSchemaName;
 import io.trino.spi.connector.CatalogSchemaTableName;
 import io.trino.spi.connector.ColumnHandle;
@@ -65,22 +67,25 @@ import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.connector.MaterializedViewFreshness;
 import io.trino.spi.connector.PointerType;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.TableProcedureMetadata;
 import io.trino.spi.function.FunctionKind;
 import io.trino.spi.function.OperatorType;
-import io.trino.spi.ptf.Argument;
-import io.trino.spi.ptf.ArgumentSpecification;
-import io.trino.spi.ptf.ConnectorTableFunction;
-import io.trino.spi.ptf.Descriptor;
-import io.trino.spi.ptf.DescriptorArgumentSpecification;
-import io.trino.spi.ptf.ReturnTypeSpecification;
-import io.trino.spi.ptf.ReturnTypeSpecification.DescribedTable;
-import io.trino.spi.ptf.ScalarArgument;
-import io.trino.spi.ptf.ScalarArgumentSpecification;
-import io.trino.spi.ptf.TableArgumentSpecification;
-import io.trino.spi.ptf.TableFunctionAnalysis;
+import io.trino.spi.function.table.Argument;
+import io.trino.spi.function.table.ArgumentSpecification;
+import io.trino.spi.function.table.ConnectorTableFunction;
+import io.trino.spi.function.table.Descriptor;
+import io.trino.spi.function.table.DescriptorArgument;
+import io.trino.spi.function.table.DescriptorArgumentSpecification;
+import io.trino.spi.function.table.ReturnTypeSpecification;
+import io.trino.spi.function.table.ReturnTypeSpecification.DescribedTable;
+import io.trino.spi.function.table.ScalarArgument;
+import io.trino.spi.function.table.ScalarArgumentSpecification;
+import io.trino.spi.function.table.TableArgument;
+import io.trino.spi.function.table.TableArgumentSpecification;
+import io.trino.spi.function.table.TableFunctionAnalysis;
 import io.trino.spi.security.AccessDeniedException;
 import io.trino.spi.security.GroupProvider;
 import io.trino.spi.security.Identity;
@@ -104,13 +109,13 @@ import io.trino.sql.analyzer.Analysis.MergeAnalysis;
 import io.trino.sql.analyzer.Analysis.ResolvedWindow;
 import io.trino.sql.analyzer.Analysis.SelectExpression;
 import io.trino.sql.analyzer.Analysis.SourceColumn;
+import io.trino.sql.analyzer.Analysis.TableArgumentAnalysis;
 import io.trino.sql.analyzer.Analysis.TableFunctionInvocationAnalysis;
 import io.trino.sql.analyzer.Analysis.UnnestAnalysis;
 import io.trino.sql.analyzer.PatternRecognitionAnalyzer.PatternRecognitionAnalysis;
 import io.trino.sql.analyzer.Scope.AsteriskedIdentifierChainBasis;
 import io.trino.sql.parser.ParsingException;
 import io.trino.sql.parser.SqlParser;
-import io.trino.sql.planner.DeterminismEvaluator;
 import io.trino.sql.planner.ExpressionInterpreter;
 import io.trino.sql.planner.PartitioningHandle;
 import io.trino.sql.planner.ScopeAware;
@@ -124,26 +129,29 @@ import io.trino.sql.tree.Analyze;
 import io.trino.sql.tree.AstVisitor;
 import io.trino.sql.tree.Call;
 import io.trino.sql.tree.CallArgument;
+import io.trino.sql.tree.ColumnDefinition;
 import io.trino.sql.tree.Comment;
 import io.trino.sql.tree.Commit;
+import io.trino.sql.tree.CreateCatalog;
 import io.trino.sql.tree.CreateMaterializedView;
 import io.trino.sql.tree.CreateSchema;
 import io.trino.sql.tree.CreateTable;
 import io.trino.sql.tree.CreateTableAsSelect;
 import io.trino.sql.tree.CreateView;
-import io.trino.sql.tree.Cube;
 import io.trino.sql.tree.Deallocate;
 import io.trino.sql.tree.Delete;
 import io.trino.sql.tree.Deny;
 import io.trino.sql.tree.DereferenceExpression;
-import io.trino.sql.tree.DescriptorArgument;
+import io.trino.sql.tree.DropCatalog;
 import io.trino.sql.tree.DropColumn;
 import io.trino.sql.tree.DropMaterializedView;
 import io.trino.sql.tree.DropSchema;
 import io.trino.sql.tree.DropTable;
 import io.trino.sql.tree.DropView;
+import io.trino.sql.tree.EmptyTableTreatment;
 import io.trino.sql.tree.Except;
 import io.trino.sql.tree.Execute;
+import io.trino.sql.tree.ExecuteImmediate;
 import io.trino.sql.tree.Explain;
 import io.trino.sql.tree.ExplainAnalyze;
 import io.trino.sql.tree.Expression;
@@ -165,6 +173,7 @@ import io.trino.sql.tree.Join;
 import io.trino.sql.tree.JoinCriteria;
 import io.trino.sql.tree.JoinOn;
 import io.trino.sql.tree.JoinUsing;
+import io.trino.sql.tree.JsonTable;
 import io.trino.sql.tree.Lateral;
 import io.trino.sql.tree.Limit;
 import io.trino.sql.tree.LongLiteral;
@@ -195,18 +204,20 @@ import io.trino.sql.tree.RenameSchema;
 import io.trino.sql.tree.RenameTable;
 import io.trino.sql.tree.RenameView;
 import io.trino.sql.tree.ResetSession;
+import io.trino.sql.tree.ResetSessionAuthorization;
 import io.trino.sql.tree.Revoke;
 import io.trino.sql.tree.Rollback;
-import io.trino.sql.tree.Rollup;
 import io.trino.sql.tree.Row;
 import io.trino.sql.tree.RowPattern;
 import io.trino.sql.tree.SampledRelation;
 import io.trino.sql.tree.Select;
 import io.trino.sql.tree.SelectItem;
+import io.trino.sql.tree.SetColumnType;
 import io.trino.sql.tree.SetOperation;
 import io.trino.sql.tree.SetProperties;
 import io.trino.sql.tree.SetSchemaAuthorization;
 import io.trino.sql.tree.SetSession;
+import io.trino.sql.tree.SetSessionAuthorization;
 import io.trino.sql.tree.SetTableAuthorization;
 import io.trino.sql.tree.SetTimeZone;
 import io.trino.sql.tree.SetViewAuthorization;
@@ -220,7 +231,9 @@ import io.trino.sql.tree.SubscriptExpression;
 import io.trino.sql.tree.Table;
 import io.trino.sql.tree.TableExecute;
 import io.trino.sql.tree.TableFunctionArgument;
+import io.trino.sql.tree.TableFunctionDescriptorArgument;
 import io.trino.sql.tree.TableFunctionInvocation;
+import io.trino.sql.tree.TableFunctionTableArgument;
 import io.trino.sql.tree.TableSubquery;
 import io.trino.sql.tree.TruncateTable;
 import io.trino.sql.tree.Union;
@@ -242,6 +255,7 @@ import io.trino.transaction.TransactionManager;
 import io.trino.type.TypeCoercion;
 
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
@@ -269,6 +283,7 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getLast;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.SystemSessionProperties.getMaxGroupingSets;
+import static io.trino.SystemSessionProperties.isLegacyMaterializedViewGracePeriod;
 import static io.trino.metadata.FunctionResolver.toPath;
 import static io.trino.metadata.MetadataManager.toQualifiedFunctionName;
 import static io.trino.metadata.MetadataUtil.createQualifiedObjectName;
@@ -280,19 +295,25 @@ import static io.trino.spi.StandardErrorCode.COLUMN_TYPE_UNKNOWN;
 import static io.trino.spi.StandardErrorCode.DUPLICATE_COLUMN_NAME;
 import static io.trino.spi.StandardErrorCode.DUPLICATE_NAMED_QUERY;
 import static io.trino.spi.StandardErrorCode.DUPLICATE_PROPERTY;
+import static io.trino.spi.StandardErrorCode.DUPLICATE_RANGE_VARIABLE;
 import static io.trino.spi.StandardErrorCode.DUPLICATE_WINDOW_NAME;
 import static io.trino.spi.StandardErrorCode.EXPRESSION_NOT_CONSTANT;
 import static io.trino.spi.StandardErrorCode.EXPRESSION_NOT_IN_DISTINCT;
+import static io.trino.spi.StandardErrorCode.FUNCTION_IMPLEMENTATION_ERROR;
 import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static io.trino.spi.StandardErrorCode.FUNCTION_NOT_WINDOW;
 import static io.trino.spi.StandardErrorCode.INVALID_ARGUMENTS;
+import static io.trino.spi.StandardErrorCode.INVALID_CATALOG_PROPERTY;
+import static io.trino.spi.StandardErrorCode.INVALID_CHECK_CONSTRAINT;
 import static io.trino.spi.StandardErrorCode.INVALID_COLUMN_REFERENCE;
+import static io.trino.spi.StandardErrorCode.INVALID_COPARTITIONING;
 import static io.trino.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static io.trino.spi.StandardErrorCode.INVALID_LIMIT_CLAUSE;
 import static io.trino.spi.StandardErrorCode.INVALID_ORDER_BY;
 import static io.trino.spi.StandardErrorCode.INVALID_PARTITION_BY;
 import static io.trino.spi.StandardErrorCode.INVALID_RECURSIVE_REFERENCE;
 import static io.trino.spi.StandardErrorCode.INVALID_ROW_FILTER;
+import static io.trino.spi.StandardErrorCode.INVALID_TABLE_FUNCTION_INVOCATION;
 import static io.trino.spi.StandardErrorCode.INVALID_VIEW;
 import static io.trino.spi.StandardErrorCode.INVALID_WINDOW_FRAME;
 import static io.trino.spi.StandardErrorCode.INVALID_WINDOW_REFERENCE;
@@ -317,16 +338,20 @@ import static io.trino.spi.StandardErrorCode.TOO_MANY_GROUPING_SETS;
 import static io.trino.spi.StandardErrorCode.TYPE_MISMATCH;
 import static io.trino.spi.StandardErrorCode.VIEW_IS_RECURSIVE;
 import static io.trino.spi.StandardErrorCode.VIEW_IS_STALE;
+import static io.trino.spi.connector.MaterializedViewFreshness.Freshness.FRESH;
 import static io.trino.spi.connector.StandardWarningCode.REDUNDANT_ORDER_BY;
 import static io.trino.spi.function.FunctionKind.AGGREGATE;
 import static io.trino.spi.function.FunctionKind.WINDOW;
-import static io.trino.spi.ptf.ReturnTypeSpecification.GenericTable.GENERIC_TABLE;
-import static io.trino.spi.ptf.ReturnTypeSpecification.OnlyPassThrough.ONLY_PASS_THROUGH;
+import static io.trino.spi.function.table.DescriptorArgument.NULL_DESCRIPTOR;
+import static io.trino.spi.function.table.ReturnTypeSpecification.GenericTable.GENERIC_TABLE;
+import static io.trino.spi.function.table.ReturnTypeSpecification.OnlyPassThrough.ONLY_PASS_THROUGH;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.DoubleType.DOUBLE;
+import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.spi.type.TimestampWithTimeZoneType.createTimestampWithTimeZoneType;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
+import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.trino.sql.NodeUtils.getSortItemsFromOrderBy;
@@ -347,6 +372,9 @@ import static io.trino.sql.analyzer.Scope.BasisType.TABLE;
 import static io.trino.sql.analyzer.ScopeReferenceExtractor.getReferencesToScope;
 import static io.trino.sql.analyzer.SemanticExceptions.semanticException;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static io.trino.sql.analyzer.TypeSignatureTranslator.toTypeSignature;
+import static io.trino.sql.planner.DeterminismEvaluator.containsCurrentTimeFunctions;
+import static io.trino.sql.planner.DeterminismEvaluator.isDeterministic;
 import static io.trino.sql.planner.ExpressionInterpreter.evaluateConstantExpression;
 import static io.trino.sql.tree.BooleanLiteral.TRUE_LITERAL;
 import static io.trino.sql.tree.DereferenceExpression.getQualifiedName;
@@ -354,6 +382,8 @@ import static io.trino.sql.tree.Join.Type.FULL;
 import static io.trino.sql.tree.Join.Type.INNER;
 import static io.trino.sql.tree.Join.Type.LEFT;
 import static io.trino.sql.tree.Join.Type.RIGHT;
+import static io.trino.sql.tree.SaveMode.IGNORE;
+import static io.trino.sql.tree.SaveMode.REPLACE;
 import static io.trino.sql.util.AstUtils.preOrder;
 import static io.trino.type.UnknownType.UNKNOWN;
 import static io.trino.util.MoreLists.mappedCopy;
@@ -374,6 +404,7 @@ class StatementAnalyzer
     private final TypeCoercion typeCoercion;
     private final Session session;
     private final SqlParser sqlParser;
+    private final SessionTimeProvider sessionTimeProvider;
     private final GroupProvider groupProvider;
     private final AccessControl accessControl;
     private final TransactionManager transactionManager;
@@ -392,6 +423,7 @@ class StatementAnalyzer
             Analysis analysis,
             PlannerContext plannerContext,
             SqlParser sqlParser,
+            SessionTimeProvider sessionTimeProvider,
             GroupProvider groupProvider,
             AccessControl accessControl,
             TransactionManager transactionManager,
@@ -411,6 +443,7 @@ class StatementAnalyzer
         this.metadata = plannerContext.getMetadata();
         this.typeCoercion = new TypeCoercion(plannerContext.getTypeManager()::getType);
         this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
+        this.sessionTimeProvider = requireNonNull(sessionTimeProvider, "sessionTimeProvider is null");
         this.groupProvider = requireNonNull(groupProvider, "groupProvider is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
@@ -425,20 +458,25 @@ class StatementAnalyzer
         this.correlationSupport = requireNonNull(correlationSupport, "correlationSupport is null");
     }
 
-    public Scope analyze(Node node, Scope outerQueryScope)
+    public Scope analyze(Node node)
     {
-        return analyze(node, Optional.of(outerQueryScope));
+        return analyze(node, Optional.empty(), true);
     }
 
-    public Scope analyze(Node node, Optional<Scope> outerQueryScope)
+    public Scope analyze(Node node, Scope outerQueryScope)
     {
-        return new Visitor(outerQueryScope, warningCollector, Optional.empty())
+        return analyze(node, Optional.of(outerQueryScope), false);
+    }
+
+    private Scope analyze(Node node, Optional<Scope> outerQueryScope, boolean isTopLevel)
+    {
+        return new Visitor(outerQueryScope, warningCollector, Optional.empty(), isTopLevel)
                 .process(node, Optional.empty());
     }
 
     public Scope analyzeForUpdate(Relation relation, Optional<Scope> outerQueryScope, UpdateKind updateKind)
     {
-        return new Visitor(outerQueryScope, warningCollector, Optional.of(updateKind))
+        return new Visitor(outerQueryScope, warningCollector, Optional.of(updateKind), true)
                 .process(relation, Optional.empty());
     }
 
@@ -457,15 +495,17 @@ class StatementAnalyzer
     private final class Visitor
             extends AstVisitor<Scope, Optional<Scope>>
     {
+        private final boolean isTopLevel;
         private final Optional<Scope> outerQueryScope;
         private final WarningCollector warningCollector;
         private final Optional<UpdateKind> updateKind;
 
-        private Visitor(Optional<Scope> outerQueryScope, WarningCollector warningCollector, Optional<UpdateKind> updateKind)
+        private Visitor(Optional<Scope> outerQueryScope, WarningCollector warningCollector, Optional<UpdateKind> updateKind, boolean isTopLevel)
         {
             this.outerQueryScope = requireNonNull(outerQueryScope, "outerQueryScope is null");
             this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
             this.updateKind = requireNonNull(updateKind, "updateKind is null");
+            this.isTopLevel = isTopLevel;
         }
 
         @Override
@@ -508,12 +548,12 @@ class StatementAnalyzer
             }
 
             // analyze the query that creates the data
-            Scope queryScope = analyze(insert.getQuery(), createScope(scope));
+            Scope queryScope = analyze(insert.getQuery());
 
             // verify the insert destination columns match the query
             RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, targetTable);
-            Optional<TableHandle> targetTableHandle = redirection.getTableHandle();
-            targetTable = redirection.getRedirectedTableName().orElse(targetTable);
+            Optional<TableHandle> targetTableHandle = redirection.tableHandle();
+            targetTable = redirection.redirectedTableName().orElse(targetTable);
             if (targetTableHandle.isEmpty()) {
                 throw semanticException(TABLE_NOT_FOUND, insert, "Table '%s' does not exist", targetTable);
             }
@@ -524,16 +564,22 @@ class StatementAnalyzer
             List<ColumnSchema> columns = tableSchema.getColumns().stream()
                     .filter(column -> !column.isHidden())
                     .collect(toImmutableList());
+            List<String> checkConstraints = tableSchema.getTableSchema().getCheckConstraints();
 
             for (ColumnSchema column : columns) {
-                if (!accessControl.getColumnMasks(session.toSecurityContext(), targetTable, column.getName(), column.getType()).isEmpty()) {
+                if (accessControl.getColumnMask(session.toSecurityContext(), targetTable, column.getName(), column.getType()).isPresent()) {
                     throw semanticException(NOT_SUPPORTED, insert, "Insert into table with column masks is not supported");
                 }
             }
 
             Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(session, targetTableHandle.get());
             List<Field> tableFields = analyzeTableOutputFields(insert.getTable(), targetTable, tableSchema, columnHandles);
-            analyzeFiltersAndMasks(insert.getTable(), targetTable, targetTableHandle, tableFields, session.getIdentity().getUser());
+            Scope accessControlScope = Scope.builder()
+                    .withRelationType(RelationId.anonymous(), new RelationType(tableFields))
+                    .build();
+            analyzeFiltersAndMasks(insert.getTable(), targetTable, new RelationType(tableFields), accessControlScope);
+            analyzeCheckConstraints(insert.getTable(), targetTable, accessControlScope, checkConstraints);
+            analysis.registerTable(insert.getTable(), targetTableHandle, targetTable, session.getIdentity().getUser(), accessControlScope);
 
             List<String> tableColumns = columns.stream()
                     .map(ColumnSchema::getName)
@@ -598,12 +644,13 @@ class StatementAnalyzer
 
             analysis.setUpdateType("INSERT");
             analysis.setUpdateTarget(
+                    targetTableHandle.get().getCatalogHandle().getVersion(),
                     targetTable,
                     Optional.empty(),
                     Optional.of(Streams.zip(
-                            columnStream,
-                            queryScope.getRelationType().getVisibleFields().stream(),
-                            (column, field) -> new OutputColumn(column, analysis.getSourceColumns(field)))
+                                    columnStream,
+                                    queryScope.getRelationType().getVisibleFields().stream(),
+                                    (column, field) -> new OutputColumn(column, analysis.getSourceColumns(field)))
                             .collect(toImmutableList())));
 
             return createAndAssignScope(insert, scope, Field.newUnqualified("rows", BIGINT));
@@ -620,8 +667,10 @@ class StatementAnalyzer
             analysis.setUpdateType("REFRESH MATERIALIZED VIEW");
 
             if (metadata.delegateMaterializedViewRefreshToConnector(session, name)) {
+                CatalogHandle catalogHandle = getRequiredCatalogHandle(metadata, session, refreshMaterializedView, name.getCatalogName());
                 analysis.setDelegatedRefreshMaterializedView(name);
                 analysis.setUpdateTarget(
+                        catalogHandle.getVersion(),
                         name,
                         Optional.empty(),
                         Optional.empty());
@@ -642,7 +691,7 @@ class StatementAnalyzer
             TableHandle targetTableHandle = metadata.getTableHandle(session, targetTable)
                     .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, refreshMaterializedView, "Table '%s' does not exist", targetTable));
 
-            analysis.setSkipMaterializedViewRefresh(metadata.getMaterializedViewFreshness(session, name).isMaterializedViewFresh());
+            analysis.setSkipMaterializedViewRefresh(metadata.getMaterializedViewFreshness(session, name).getFreshness() == FRESH);
 
             TableMetadata tableMetadata = metadata.getTableMetadata(session, targetTableHandle);
             List<String> insertColumns = tableMetadata.getColumns().stream()
@@ -661,16 +710,6 @@ class StatementAnalyzer
                     .map(insertColumn -> tableMetadata.getColumn(insertColumn).getType())
                     .collect(toImmutableList());
 
-            List<Type> queryTypes = queryScope.getRelationType().getVisibleFields().stream()
-                    .map(Field::getType)
-                    .collect(toImmutableList());
-
-            if (!typesMatchForInsert(tableTypes, queryTypes)) {
-                throw semanticException(TYPE_MISMATCH, refreshMaterializedView, "Insert query has mismatched column types: " +
-                        "Table: [" + Joiner.on(", ").join(tableTypes) + "], " +
-                        "Query: [" + Joiner.on(", ").join(queryTypes) + "]");
-            }
-
             Stream<Column> columns = Streams.zip(
                     insertColumns.stream(),
                     tableTypes.stream()
@@ -678,12 +717,13 @@ class StatementAnalyzer
                     Column::new);
 
             analysis.setUpdateTarget(
+                    targetTableHandle.getCatalogHandle().getVersion(),
                     targetTable,
                     Optional.empty(),
                     Optional.of(Streams.zip(
-                            columns,
-                            queryScope.getRelationType().getVisibleFields().stream(),
-                            (column, field) -> new OutputColumn(column, analysis.getSourceColumns(field)))
+                                    columns,
+                                    queryScope.getRelationType().getVisibleFields().stream(),
+                                    (column, field) -> new OutputColumn(column, analysis.getSourceColumns(field)))
                             .collect(toImmutableList())));
 
             return createAndAssignScope(refreshMaterializedView, scope, Field.newUnqualified("rows", BIGINT));
@@ -756,15 +796,15 @@ class StatementAnalyzer
             }
 
             RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, originalName);
-            QualifiedObjectName tableName = redirection.getRedirectedTableName().orElse(originalName);
-            TableHandle handle = redirection.getTableHandle()
+            QualifiedObjectName tableName = redirection.redirectedTableName().orElse(originalName);
+            TableHandle handle = redirection.tableHandle()
                     .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, table, "Table '%s' does not exist", tableName));
 
             accessControl.checkCanDeleteFromTable(session.toSecurityContext(), tableName);
 
             TableSchema tableSchema = metadata.getTableSchema(session, handle);
             for (ColumnSchema tableColumn : tableSchema.getColumns()) {
-                if (!accessControl.getColumnMasks(session.toSecurityContext(), tableName, tableColumn.getName(), tableColumn.getType()).isEmpty()) {
+                if (accessControl.getColumnMask(session.toSecurityContext(), tableName, tableColumn.getName(), tableColumn.getType()).isPresent()) {
                     throw semanticException(NOT_SUPPORTED, node, "Delete from table with column mask");
                 }
             }
@@ -779,8 +819,15 @@ class StatementAnalyzer
             node.getWhere().ifPresent(where -> analyzeWhere(node, tableScope, where));
 
             analysis.setUpdateType("DELETE");
-            analysis.setUpdateTarget(tableName, Optional.of(table), Optional.empty());
-            analyzeFiltersAndMasks(table, tableName, Optional.of(handle), analysis.getScope(table).getRelationType(), session.getIdentity().getUser());
+            analysis.setUpdateTarget(handle.getCatalogHandle().getVersion(), tableName, Optional.of(table), Optional.empty());
+            Scope accessControlScope = Scope.builder()
+                    .withRelationType(RelationId.anonymous(), analysis.getScope(table).getRelationType())
+                    .build();
+            analyzeFiltersAndMasks(table, tableName, analysis.getScope(table).getRelationType(), accessControlScope);
+            analyzeCheckConstraints(table, tableName, accessControlScope, tableSchema.getTableSchema().getCheckConstraints());
+            analysis.registerTable(table, Optional.of(handle), tableName, session.getIdentity().getUser(), accessControlScope);
+
+            createMergeAnalysis(table, handle, tableSchema, tableScope, tableScope, ImmutableList.of());
 
             return createAndAssignScope(node, scope, Field.newUnqualified("rows", BIGINT));
         }
@@ -789,15 +836,15 @@ class StatementAnalyzer
         protected Scope visitAnalyze(Analyze node, Optional<Scope> scope)
         {
             QualifiedObjectName tableName = createQualifiedObjectName(session, node, node.getTableName());
-            analysis.setUpdateType("ANALYZE");
-            analysis.setUpdateTarget(tableName, Optional.empty(), Optional.empty());
-
             if (metadata.isView(session, tableName)) {
                 throw semanticException(NOT_SUPPORTED, node, "Analyzing views is not supported");
             }
 
             TableHandle tableHandle = metadata.getTableHandle(session, tableName)
                     .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, node, "Table '%s' does not exist", tableName));
+
+            analysis.setUpdateType("ANALYZE");
+            analysis.setUpdateTarget(tableHandle.getCatalogHandle().getVersion(), tableName, Optional.empty(), Optional.empty());
 
             validateProperties(node.getProperties(), scope);
             String catalogName = tableName.getCatalogName();
@@ -826,7 +873,7 @@ class StatementAnalyzer
                 accessControl.checkCanInsertIntoTable(session.toSecurityContext(), tableName);
             }
             catch (AccessDeniedException exception) {
-                throw new AccessDeniedException(format("Cannot ANALYZE (missing insert privilege) table %s", tableName));
+                throw new AccessDeniedException(format("Cannot ANALYZE (missing insert privilege) table %s", tableName), exception);
             }
 
             return createAndAssignScope(node, scope, Field.newUnqualified("rows", BIGINT));
@@ -835,12 +882,17 @@ class StatementAnalyzer
         @Override
         protected Scope visitCreateTableAsSelect(CreateTableAsSelect node, Optional<Scope> scope)
         {
+            // TODO: Remove when engine is supporting table replacement
+            if (node.getSaveMode() == REPLACE) {
+                throw semanticException(NOT_SUPPORTED, node, "Replace table is not supported");
+            }
+
             // turn this into a query that has a new table writer node on top.
             QualifiedObjectName targetTable = createQualifiedObjectName(session, node, node.getName());
 
             Optional<TableHandle> targetTableHandle = metadata.getTableHandle(session, targetTable);
             if (targetTableHandle.isPresent()) {
-                if (node.isNotExists()) {
+                if (node.getSaveMode() == IGNORE) {
                     analysis.setCreate(new Analysis.Create(
                             Optional.of(targetTable),
                             Optional.empty(),
@@ -848,7 +900,7 @@ class StatementAnalyzer
                             node.isWithData(),
                             true));
                     analysis.setUpdateType("CREATE TABLE");
-                    analysis.setUpdateTarget(targetTable, Optional.empty(), Optional.of(ImmutableList.of()));
+                    analysis.setUpdateTarget(targetTableHandle.get().getCatalogHandle().getVersion(), targetTable, Optional.empty(), Optional.of(ImmutableList.of()));
                     return createAndAssignScope(node, scope, Field.newUnqualified("rows", BIGINT));
                 }
                 throw semanticException(TABLE_ALREADY_EXISTS, node, "Destination table '%s' already exists", targetTable);
@@ -867,10 +919,18 @@ class StatementAnalyzer
                     accessControl,
                     analysis.getParameters(),
                     true);
-            accessControl.checkCanCreateTable(session.toSecurityContext(), targetTable, properties);
+            Set<String> specifiedPropertyKeys = node.getProperties().stream()
+                    // property names are case-insensitive and normalized to lower case
+                    .map(property -> property.getName().getValue().toLowerCase(ENGLISH))
+                    .collect(toImmutableSet());
+            Map<String, Object> explicitlySetProperties = properties.keySet().stream()
+                    .peek(key -> verify(key.equals(key.toLowerCase(ENGLISH)), "Property name '%s' not in lower-case", key))
+                    .filter(specifiedPropertyKeys::contains)
+                    .collect(toImmutableMap(Function.identity(), properties::get));
+            accessControl.checkCanCreateTable(session.toSecurityContext(), targetTable, explicitlySetProperties);
 
             // analyze the query that creates the table
-            Scope queryScope = analyze(node.getQuery(), createScope(scope));
+            Scope queryScope = analyze(node.getQuery());
 
             ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
 
@@ -930,6 +990,7 @@ class StatementAnalyzer
 
             analysis.setUpdateType("CREATE TABLE");
             analysis.setUpdateTarget(
+                    catalogHandle.getVersion(),
                     targetTable,
                     Optional.empty(),
                     Optional.of(outputColumns.build()));
@@ -945,14 +1006,16 @@ class StatementAnalyzer
             // analyze the query that creates the view
             StatementAnalyzer analyzer = statementAnalyzerFactory.createStatementAnalyzer(analysis, session, warningCollector, CorrelationSupport.ALLOWED);
 
-            Scope queryScope = analyzer.analyze(node.getQuery(), scope);
+            Scope queryScope = analyzer.analyze(node.getQuery());
 
             accessControl.checkCanCreateView(session.toSecurityContext(), viewName);
 
             validateColumns(node, queryScope.getRelationType());
 
+            CatalogHandle catalogHandle = getRequiredCatalogHandle(metadata, session, node, viewName.getCatalogName());
             analysis.setUpdateType("CREATE VIEW");
             analysis.setUpdateTarget(
+                    catalogHandle.getVersion(),
                     viewName,
                     Optional.empty(),
                     Optional.of(queryScope.getRelationType().getVisibleFields().stream()
@@ -975,7 +1038,55 @@ class StatementAnalyzer
         }
 
         @Override
+        protected Scope visitSetSessionAuthorization(SetSessionAuthorization node, Optional<Scope> scope)
+        {
+            return createAndAssignScope(node, scope);
+        }
+
+        @Override
+        protected Scope visitResetSessionAuthorization(ResetSessionAuthorization node, Optional<Scope> scope)
+        {
+            return createAndAssignScope(node, scope);
+        }
+
+        @Override
         protected Scope visitAddColumn(AddColumn node, Optional<Scope> scope)
+        {
+            ColumnDefinition element = node.getColumn();
+            if (element.getName().getParts().size() > 1) {
+                if (!element.isNullable()) {
+                    throw semanticException(NOT_SUPPORTED, node, "Adding fields with NOT NULL constraint is unsupported");
+                }
+                if (!element.getProperties().isEmpty()) {
+                    throw semanticException(NOT_SUPPORTED, node, "Adding fields with column properties is unsupported");
+                }
+                if (element.getComment().isPresent()) {
+                    throw semanticException(NOT_SUPPORTED, node, "Adding fields with COMMENT is unsupported");
+                }
+            }
+            return createAndAssignScope(node, scope);
+        }
+
+        @Override
+        protected Scope visitSetColumnType(SetColumnType node, Optional<Scope> scope)
+        {
+            return createAndAssignScope(node, scope);
+        }
+
+        @Override
+        protected Scope visitCreateCatalog(CreateCatalog node, Optional<Scope> scope)
+        {
+            for (Property property : node.getProperties()) {
+                if (property.isSetToDefault()) {
+                    throw semanticException(INVALID_CATALOG_PROPERTY, property, "Catalog properties do not support DEFAULT value");
+                }
+            }
+            validateProperties(node.getProperties(), scope);
+            return createAndAssignScope(node, scope);
+        }
+
+        @Override
+        protected Scope visitDropCatalog(DropCatalog node, Optional<Scope> scope)
         {
             return createAndAssignScope(node, scope);
         }
@@ -1008,6 +1119,11 @@ class StatementAnalyzer
         @Override
         protected Scope visitCreateTable(CreateTable node, Optional<Scope> scope)
         {
+            // TODO: Remove when engine is supporting table replacement
+            if (node.getSaveMode() == REPLACE) {
+                throw semanticException(NOT_SUPPORTED, node, "Replace table is not supported");
+            }
+
             validateProperties(node.getProperties(), scope);
             return createAndAssignScope(node, scope);
         }
@@ -1097,8 +1213,8 @@ class StatementAnalyzer
             }
 
             RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, originalName);
-            QualifiedObjectName tableName = redirection.getRedirectedTableName().orElse(originalName);
-            TableHandle tableHandle = redirection.getTableHandle()
+            QualifiedObjectName tableName = redirection.redirectedTableName().orElse(originalName);
+            TableHandle tableHandle = redirection.tableHandle()
                     .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, table, "Table '%s' does not exist", tableName));
 
             accessControl.checkCanExecuteTableProcedure(
@@ -1112,12 +1228,12 @@ class StatementAnalyzer
 
             TableMetadata tableMetadata = metadata.getTableMetadata(session, tableHandle);
             for (ColumnMetadata tableColumn : tableMetadata.getColumns()) {
-                if (!accessControl.getColumnMasks(session.toSecurityContext(), tableName, tableColumn.getName(), tableColumn.getType()).isEmpty()) {
+                if (accessControl.getColumnMask(session.toSecurityContext(), tableName, tableColumn.getName(), tableColumn.getType()).isPresent()) {
                     throw semanticException(NOT_SUPPORTED, node, "ALTER TABLE EXECUTE is not supported for table with column masks");
                 }
             }
 
-            Scope tableScope = analyze(table, scope);
+            Scope tableScope = analyze(table);
 
             String catalogName = tableName.getCatalogName();
             CatalogHandle catalogHandle = getRequiredCatalogHandle(metadata, session, node, catalogName);
@@ -1125,7 +1241,7 @@ class StatementAnalyzer
 
             // analyze WHERE
             if (!procedureMetadata.getExecutionMode().supportsFilter() && node.getWhere().isPresent()) {
-                throw semanticException(NOT_SUPPORTED, node, "WHERE not supported for procedure " + procedureName);
+                throw semanticException(NOT_SUPPORTED, node, "WHERE not supported for procedure %s", procedureName);
             }
             node.getWhere().ifPresent(where -> analyzeWhere(node, tableScope, where));
 
@@ -1144,17 +1260,17 @@ class StatementAnalyzer
 
             TableExecuteHandle executeHandle =
                     metadata.getTableHandleForExecute(
-                            session,
-                            tableHandle,
-                            procedureName,
-                            tableProperties)
+                                    session,
+                                    tableHandle,
+                                    procedureName,
+                                    tableProperties)
                             .orElseThrow(() -> semanticException(NOT_SUPPORTED, node, "Procedure '%s' cannot be executed on table '%s'", procedureName, tableName));
 
             analysis.setTableExecuteReadsData(procedureMetadata.getExecutionMode().isReadsData());
             analysis.setTableExecuteHandle(executeHandle);
 
             analysis.setUpdateType("ALTER TABLE EXECUTE");
-            analysis.setUpdateTarget(tableName, Optional.of(table), Optional.empty());
+            analysis.setUpdateTarget(executeHandle.getCatalogHandle().getVersion(), tableName, Optional.of(table), Optional.empty());
 
             return createAndAssignScope(node, scope, Field.newUnqualified("rows", BIGINT));
         }
@@ -1259,6 +1375,12 @@ class StatementAnalyzer
         }
 
         @Override
+        protected Scope visitExecuteImmediate(ExecuteImmediate node, Optional<Scope> scope)
+        {
+            return createAndAssignScope(node, scope);
+        }
+
+        @Override
         protected Scope visitGrant(Grant node, Optional<Scope> scope)
         {
             return createAndAssignScope(node, scope);
@@ -1290,16 +1412,19 @@ class StatementAnalyzer
             if (node.isReplace() && node.isNotExists()) {
                 throw semanticException(NOT_SUPPORTED, node, "'CREATE OR REPLACE' and 'IF NOT EXISTS' clauses can not be used together");
             }
+            node.getGracePeriod().ifPresent(gracePeriod -> analyzeExpression(gracePeriod, Scope.create()));
 
             // analyze the query that creates the view
             StatementAnalyzer analyzer = statementAnalyzerFactory.createStatementAnalyzer(analysis, session, warningCollector, CorrelationSupport.ALLOWED);
 
-            Scope queryScope = analyzer.analyze(node.getQuery(), scope);
+            Scope queryScope = analyzer.analyze(node.getQuery());
 
             validateColumns(node, queryScope.getRelationType());
 
+            CatalogHandle catalogHandle = getRequiredCatalogHandle(metadata, session, node, viewName.getCatalogName());
             analysis.setUpdateType("CREATE MATERIALIZED VIEW");
             analysis.setUpdateTarget(
+                    catalogHandle.getVersion(),
                     viewName,
                     Optional.empty(),
                     Optional.of(
@@ -1400,7 +1525,7 @@ class StatementAnalyzer
             if (node.getOrderBy().isPresent()) {
                 orderByExpressions = analyzeOrderBy(node, getSortItemsFromOrderBy(node.getOrderBy()), queryBodyScope);
 
-                if (queryBodyScope.getOuterQueryParent().isPresent() && node.getLimit().isEmpty() && node.getOffset().isEmpty()) {
+                if ((queryBodyScope.getOuterQueryParent().isPresent() || !isTopLevel) && node.getLimit().isEmpty() && node.getOffset().isEmpty()) {
                     // not the root scope and ORDER BY is ineffective
                     analysis.markRedundantOrderBy(node.getOrderBy().get());
                     warningCollector.add(new TrinoWarning(REDUNDANT_ORDER_BY, "ORDER BY in subquery may have no effect"));
@@ -1442,6 +1567,7 @@ class StatementAnalyzer
 
             ImmutableList.Builder<Field> outputFields = ImmutableList.builder();
             for (Expression expression : node.getExpressions()) {
+                verifyNoAggregateWindowOrGroupingFunctions(session, metadata, expression, "UNNEST");
                 List<Field> expressionOutputs = new ArrayList<>();
 
                 ExpressionAnalysis expressionAnalysis = analyzeExpression(expression, createScope(scope));
@@ -1485,7 +1611,7 @@ class StatementAnalyzer
         protected Scope visitLateral(Lateral node, Optional<Scope> scope)
         {
             StatementAnalyzer analyzer = statementAnalyzerFactory.createStatementAnalyzer(analysis, session, warningCollector, CorrelationSupport.ALLOWED);
-            Scope queryScope = analyzer.analyze(node.getQuery(), scope);
+            Scope queryScope = analyzer.analyze(node.getQuery(), scope.orElseThrow());
             return createAndAssignScope(node, scope, queryScope.getRelationType());
         }
 
@@ -1498,71 +1624,155 @@ class StatementAnalyzer
             ConnectorTableFunction function = tableFunctionMetadata.getFunction();
             CatalogHandle catalogHandle = tableFunctionMetadata.getCatalogHandle();
 
-            Map<String, Argument> passedArguments = analyzeArguments(node, function.getArguments(), node.getArguments());
+            Node errorLocation = node;
+            if (!node.getArguments().isEmpty()) {
+                errorLocation = node.getArguments().get(0);
+            }
+
+            ArgumentsAnalysis argumentsAnalysis = analyzeArguments(function.getArguments(), node.getArguments(), scope, errorLocation);
 
             ConnectorTransactionHandle transactionHandle = transactionManager.getConnectorTransaction(session.getRequiredTransactionId(), catalogHandle);
-            TableFunctionAnalysis functionAnalysis = function.analyze(session.toConnectorSession(catalogHandle), transactionHandle, passedArguments);
-            analysis.setTableFunctionAnalysis(node, new TableFunctionInvocationAnalysis(catalogHandle, function.getName(), passedArguments, functionAnalysis.getHandle(), transactionHandle));
+            TableFunctionAnalysis functionAnalysis = function.analyze(
+                    session.toConnectorSession(catalogHandle),
+                    transactionHandle,
+                    argumentsAnalysis.getPassedArguments(),
+                    new InjectedConnectorAccessControl(accessControl, session.toSecurityContext(), catalogHandle.getCatalogName()));
 
-            // TODO handle the DescriptorMapping descriptorsToTables mapping from the TableFunction.Analysis:
-            // This is a mapping of descriptor arguments to table arguments. It consists of two parts:
-            // - mapping by descriptor field: (arg name of descriptor argument, and position in the descriptor) to (arg name of table argument)
-            // - mapping by descriptor: (arg name of descriptor argument) to (arg name of table argument)
-            // 1. get the DescriptorField from the designated DescriptorArgument (or all fields for mapping by descriptor)
-            // 2. validate there is no DataType specified,
-            // 3. analyze the Identifier in the scope of the designated table (it is recorded, because args were already analyzed). Disable correlation.
-            // 4. at this point, the Identifier should be recorded as a column reference to the appropriate table
-            // 5. record the mapping NameAndPosition -> Identifier
-            // ... later translate Identifier to Symbol in Planner, and eventually translate it to channel before execution
-            if (!functionAnalysis.getDescriptorMapping().isEmpty()) {
-                throw semanticException(NOT_SUPPORTED, node, "Table arguments are not yet supported for table functions");
-            }
+            List<List<String>> copartitioningLists = analyzeCopartitioning(node.getCopartitioning(), argumentsAnalysis.getTableArgumentAnalyses());
 
-            // TODO process the copartitioning:
-            // 1. validate input table references
-            // 2. the copartitioned tables in each set must be partitioned, and have the same number of partitioning columns
-            // 3. the corresponding columns must be comparable
-            // 4. within a set, determine and record coercions of the corresponding columns to a common supertype
-            // Note that if a table is part of multiple copartitioning sets, it might require a different coercion for a column
-            // per each set. Additionally, there might be another coercion required by the Table Function logic. Also, since
-            // all partitioning columns are passed-through, we also need an un-coerced copy.
-            // See ExpressionAnalyzer.sortKeyCoercionsForFrameBoundCalculation for multiple coercions on a column.
-            if (!node.getCopartitioning().isEmpty()) {
-                throw semanticException(NOT_SUPPORTED, node, "COPARTITION clause is not yet supported for table functions");
-            }
-
-            // determine the result relation type.
-            // The result relation type of a table function consists of:
-            // 1. passed columns from input tables:
-            // - for tables with the "pass through columns" option, these are all columns of the table,
-            // - for tables without the "pass through columns" option, these are the partitioning columns of the table, if any.
-            // 2. columns created by the table function, called the proper columns.
+            // determine the result relation type per SQL standard ISO/IEC 9075-2, 4.33 SQL-invoked routines, p. 123, 413, 414
             ReturnTypeSpecification returnTypeSpecification = function.getReturnTypeSpecification();
+            if (returnTypeSpecification == GENERIC_TABLE || !argumentsAnalysis.getTableArgumentAnalyses().isEmpty()) {
+                analysis.addPolymorphicTableFunction(node);
+            }
             Optional<Descriptor> analyzedProperColumnsDescriptor = functionAnalysis.getReturnedType();
             Descriptor properColumnsDescriptor;
             if (returnTypeSpecification == ONLY_PASS_THROUGH) {
-                // this option is only allowed if there are input tables
-                throw semanticException(NOT_SUPPORTED, node, "Returning only pass through columns is not yet supported for table functions");
-            }
-            if (returnTypeSpecification == GENERIC_TABLE) {
-                properColumnsDescriptor = analyzedProperColumnsDescriptor
-                        .orElseThrow(() -> semanticException(MISSING_RETURN_TYPE, node, "Cannot determine returned relation type for table function " + node.getName()));
-            }
-            else {
-                // returned type is statically declared at function declaration and cannot be overridden
+                if (analysis.isAliased(node)) {
+                    // According to SQL standard ISO/IEC 9075-2, 7.6 <table reference>, p. 409,
+                    // table alias is prohibited for a table function with ONLY PASS THROUGH returned type.
+                    throw semanticException(INVALID_TABLE_FUNCTION_INVOCATION, node, "Alias specified for table function with ONLY PASS THROUGH return type");
+                }
                 if (analyzedProperColumnsDescriptor.isPresent()) {
+                    // If a table function has ONLY PASS THROUGH returned type, it does not produce any proper columns,
+                    // so the function's analyze() method should not return the proper columns descriptor.
+                    throw semanticException(AMBIGUOUS_RETURN_TYPE, node, "Returned relation type for table function %s is ambiguous", node.getName());
+                }
+                if (function.getArguments().stream()
+                        .filter(TableArgumentSpecification.class::isInstance)
+                        .map(TableArgumentSpecification.class::cast)
+                        .noneMatch(TableArgumentSpecification::isPassThroughColumns)) {
+                    // According to SQL standard ISO/IEC 9075-2, 10.4 <routine invocation>, p. 764,
+                    // if there is no generic table parameter that specifies PASS THROUGH, then number of proper columns shall be positive.
+                    // For GENERIC_TABLE and DescribedTable returned types, this is enforced by the Descriptor constructor, which requires positive number of fields.
+                    // Here we enforce it for the remaining returned type specification: ONLY_PASS_THROUGH.
+                    throw new TrinoException(FUNCTION_IMPLEMENTATION_ERROR, "A table function with ONLY_PASS_THROUGH return type must have a table argument with pass-through columns.");
+                }
+                properColumnsDescriptor = null;
+            }
+            else if (returnTypeSpecification == GENERIC_TABLE) {
+                // According to SQL standard ISO/IEC 9075-2, 7.6 <table reference>, p. 409,
+                // table alias is mandatory for a polymorphic table function invocation which produces proper columns.
+                // We don't enforce this requirement.
+                properColumnsDescriptor = analyzedProperColumnsDescriptor
+                        .orElseThrow(() -> semanticException(MISSING_RETURN_TYPE, node, "Cannot determine returned relation type for table function %s", node.getName()));
+            }
+            else { // returned type is statically declared at function declaration
+                // According to SQL standard ISO/IEC 9075-2, 7.6 <table reference>, p. 409,
+                // table alias is mandatory for a polymorphic table function invocation which produces proper columns.
+                // We don't enforce this requirement.
+                if (analyzedProperColumnsDescriptor.isPresent()) {
+                    // If a table function has statically declared returned type, it is returned in TableFunctionMetadata
+                    // so the function's analyze() method should not return the proper columns descriptor.
                     throw semanticException(AMBIGUOUS_RETURN_TYPE, node, "Returned relation type for table function %s is ambiguous", node.getName());
                 }
                 properColumnsDescriptor = ((DescribedTable) returnTypeSpecification).getDescriptor();
             }
 
-            // currently we don't support input tables, so the output consists of proper columns only
-            List<Field> fields = properColumnsDescriptor.getFields().stream()
-                    // per spec, field names are mandatory
-                    .map(field -> Field.newUnqualified(field.getName(), field.getType().orElseThrow(() -> new IllegalStateException("missing returned type for proper field"))))
+            // validate the required input columns
+            Map<String, List<Integer>> requiredColumns = functionAnalysis.getRequiredColumns();
+            Map<String, TableArgumentAnalysis> tableArgumentsByName = argumentsAnalysis.getTableArgumentAnalyses().stream()
+                    .collect(toImmutableMap(TableArgumentAnalysis::getArgumentName, Function.identity()));
+            Set<String> allInputs = ImmutableSet.copyOf(tableArgumentsByName.keySet());
+            requiredColumns.forEach((name, columns) -> {
+                if (!allInputs.contains(name)) {
+                    throw new TrinoException(FUNCTION_IMPLEMENTATION_ERROR, format("Table function %s specifies required columns from table argument %s which cannot be found", node.getName(), name));
+                }
+                if (columns.isEmpty()) {
+                    throw new TrinoException(FUNCTION_IMPLEMENTATION_ERROR, format("Table function %s specifies empty list of required columns from table argument %s", node.getName(), name));
+                }
+                // the scope is recorded, because table arguments are already analyzed
+                Scope inputScope = analysis.getScope(tableArgumentsByName.get(name).getRelation());
+                columns.stream()
+                        .filter(column -> column < 0 || column >= inputScope.getRelationType().getVisibleFieldCount())
+                        .findFirst()
+                        .ifPresent(column -> {
+                            throw new TrinoException(FUNCTION_IMPLEMENTATION_ERROR, format("Invalid index: %s of required column from table argument %s", column, name));
+                        });
+                // record the required columns for access control
+                columns.stream()
+                        .map(inputScope.getRelationType()::getFieldByIndex)
+                        .forEach(this::recordColumnAccess);
+            });
+            Set<String> requiredInputs = ImmutableSet.copyOf(requiredColumns.keySet());
+            allInputs.stream()
+                    .filter(input -> !requiredInputs.contains(input))
+                    .findFirst()
+                    .ifPresent(input -> {
+                        throw new TrinoException(FUNCTION_IMPLEMENTATION_ERROR, format("Table function %s does not specify required input columns from table argument %s", node.getName(), input));
+                    });
+
+            // The result relation type of a table function consists of:
+            // 1. columns created by the table function, called the proper columns.
+            // 2. passed columns from input tables:
+            // - for tables with the "pass through columns" option, these are all columns of the table,
+            // - for tables without the "pass through columns" option, these are the partitioning columns of the table, if any.
+            ImmutableList.Builder<Field> fields = ImmutableList.builder();
+
+            // proper columns first
+            if (properColumnsDescriptor != null) {
+                properColumnsDescriptor.getFields().stream()
+                        // per spec, field names are mandatory. We support anonymous fields.
+                        .map(field -> Field.newUnqualified(field.getName(), field.getType().orElseThrow(() -> new IllegalStateException("missing returned type for proper field"))))
+                        .forEach(fields::add);
+            }
+
+            // next, columns derived from table arguments, in order of argument declarations
+            List<String> tableArgumentNames = function.getArguments().stream()
+                    .filter(argumentSpecification -> argumentSpecification instanceof TableArgumentSpecification)
+                    .map(ArgumentSpecification::getName)
                     .collect(toImmutableList());
 
-            return createAndAssignScope(node, scope, fields);
+            // table arguments in order of argument declarations
+            ImmutableList.Builder<TableArgumentAnalysis> orderedTableArguments = ImmutableList.builder();
+
+            for (String name : tableArgumentNames) {
+                TableArgumentAnalysis argument = tableArgumentsByName.get(name);
+                orderedTableArguments.add(argument);
+                Scope argumentScope = analysis.getScope(argument.getRelation());
+                if (argument.isPassThroughColumns()) {
+                    argumentScope.getRelationType().getAllFields()
+                            .forEach(fields::add);
+                }
+                else if (argument.getPartitionBy().isPresent()) {
+                    argument.getPartitionBy().get().stream()
+                            .map(expression -> validateAndGetInputField(expression, argumentScope))
+                            .forEach(fields::add);
+                }
+            }
+
+            analysis.setTableFunctionAnalysis(node, new TableFunctionInvocationAnalysis(
+                    catalogHandle,
+                    function.getName(),
+                    argumentsAnalysis.getPassedArguments(),
+                    orderedTableArguments.build(),
+                    functionAnalysis.getRequiredColumns(),
+                    copartitioningLists,
+                    properColumnsDescriptor == null ? 0 : properColumnsDescriptor.getFields().size(),
+                    functionAnalysis.getHandle(),
+                    transactionHandle));
+
+            return createAndAssignScope(node, scope, fields.build());
         }
 
         private Optional<TableFunctionMetadata> resolveTableFunction(TableFunctionInvocation node)
@@ -1581,19 +1791,14 @@ class StatementAnalyzer
             return Optional.empty();
         }
 
-        private Map<String, Argument> analyzeArguments(Node node, List<ArgumentSpecification> argumentSpecifications, List<TableFunctionArgument> arguments)
+        private ArgumentsAnalysis analyzeArguments(List<ArgumentSpecification> argumentSpecifications, List<TableFunctionArgument> arguments, Optional<Scope> scope, Node errorLocation)
         {
-            Node errorLocation = node;
-            if (!arguments.isEmpty()) {
-                errorLocation = arguments.get(0);
-            }
-
             if (argumentSpecifications.size() < arguments.size()) {
                 throw semanticException(INVALID_ARGUMENTS, errorLocation, "Too many arguments. Expected at most %s arguments, got %s arguments", argumentSpecifications.size(), arguments.size());
             }
 
             if (argumentSpecifications.isEmpty()) {
-                return ImmutableMap.of();
+                return new ArgumentsAnalysis(ImmutableMap.of(), ImmutableList.of());
             }
 
             boolean argumentsPassedByName = !arguments.isEmpty() && arguments.stream().allMatch(argument -> argument.getName().isPresent());
@@ -1603,24 +1808,28 @@ class StatementAnalyzer
             }
 
             ImmutableMap.Builder<String, Argument> passedArguments = ImmutableMap.builder();
+            ImmutableList.Builder<TableArgumentAnalysis> tableArgumentAnalyses = ImmutableList.builder();
             if (argumentsPassedByName) {
                 Map<String, ArgumentSpecification> argumentSpecificationsByName = new HashMap<>();
                 for (ArgumentSpecification argumentSpecification : argumentSpecifications) {
                     if (argumentSpecificationsByName.put(argumentSpecification.getName(), argumentSpecification) != null) {
+                        // this should never happen, because the argument names are validated at function registration time
                         throw new IllegalStateException("Duplicate argument specification for name: " + argumentSpecification.getName());
                     }
                 }
                 Set<String> uniqueArgumentNames = new HashSet<>();
                 for (TableFunctionArgument argument : arguments) {
-                    String argumentName = argument.getName().get().getCanonicalValue();
+                    String argumentName = argument.getName().orElseThrow().getCanonicalValue();
                     if (!uniqueArgumentNames.add(argumentName)) {
-                        throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Duplicate argument name: " + argumentName);
+                        throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Duplicate argument name: %s", argumentName);
                     }
                     ArgumentSpecification argumentSpecification = argumentSpecificationsByName.remove(argumentName);
                     if (argumentSpecification == null) {
-                        throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Unexpected argument name: " + argumentName);
+                        throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Unexpected argument name: %s", argumentName);
                     }
-                    passedArguments.put(argumentSpecification.getName(), analyzeArgument(argumentSpecification, argument));
+                    ArgumentAnalysis argumentAnalysis = analyzeArgument(argumentSpecification, argument, scope);
+                    passedArguments.put(argumentSpecification.getName(), argumentAnalysis.getArgument());
+                    argumentAnalysis.getTableArgumentAnalysis().ifPresent(tableArgumentAnalyses::add);
                 }
                 // apply defaults for not specified arguments
                 for (Map.Entry<String, ArgumentSpecification> entry : argumentSpecificationsByName.entrySet()) {
@@ -1632,7 +1841,9 @@ class StatementAnalyzer
                 for (int i = 0; i < arguments.size(); i++) {
                     TableFunctionArgument argument = arguments.get(i);
                     ArgumentSpecification argumentSpecification = argumentSpecifications.get(i); // TODO args passed positionally - can one only pass some prefix of args?
-                    passedArguments.put(argumentSpecification.getName(), analyzeArgument(argumentSpecification, argument));
+                    ArgumentAnalysis argumentAnalysis = analyzeArgument(argumentSpecification, argument, scope);
+                    passedArguments.put(argumentSpecification.getName(), argumentAnalysis.getArgument());
+                    argumentAnalysis.getTableArgumentAnalysis().ifPresent(tableArgumentAnalyses::add);
                 }
                 // apply defaults for not specified arguments
                 for (int i = arguments.size(); i < argumentSpecifications.size(); i++) {
@@ -1641,98 +1852,201 @@ class StatementAnalyzer
                 }
             }
 
-            return passedArguments.buildOrThrow();
+            return new ArgumentsAnalysis(passedArguments.buildOrThrow(), tableArgumentAnalyses.build());
         }
 
-        private Argument analyzeArgument(ArgumentSpecification argumentSpecification, TableFunctionArgument argument)
+        private ArgumentAnalysis analyzeArgument(ArgumentSpecification argumentSpecification, TableFunctionArgument argument, Optional<Scope> scope)
         {
             String actualType;
-            if (argument.getValue() instanceof Relation) {
+            if (argument.getValue() instanceof TableFunctionTableArgument) {
                 actualType = "table";
             }
-            else if (argument.getValue() instanceof DescriptorArgument) {
+            else if (argument.getValue() instanceof TableFunctionDescriptorArgument) {
                 actualType = "descriptor";
             }
             else if (argument.getValue() instanceof Expression) {
                 actualType = "expression";
             }
             else {
-                throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Unexpected table function argument type: " + argument.getClass().getSimpleName());
+                throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Unexpected table function argument type: %s", argument.getClass().getSimpleName());
             }
 
             if (argumentSpecification instanceof TableArgumentSpecification) {
-                if (!(argument.getValue() instanceof Relation)) {
+                if (!(argument.getValue() instanceof TableFunctionTableArgument)) {
                     if (argument.getValue() instanceof FunctionCall) {
                         // probably an attempt to pass a table function call, which is not supported, and was parsed as a function call
                         throw semanticException(NOT_SUPPORTED, argument, "Invalid table argument %s. Table functions are not allowed as table function arguments", argumentSpecification.getName());
                     }
                     throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Invalid argument %s. Expected table, got %s", argumentSpecification.getName(), actualType);
                 }
-                // TODO analyze the argument
-                // 1. process the Relation
-                // 2. partitioning and ordering must only apply to tables with set semantics
-                // 3. validate partitioning and ordering using `validateAndGetInputField()`
-                // 4. validate the prune when empty property vs argument specification (forbidden for row semantics; override? -> check spec)
-                // 5. return Argument
-                throw semanticException(NOT_SUPPORTED, argument, "Table arguments are not yet supported for table functions");
+                return analyzeTableArgument(argument, (TableArgumentSpecification) argumentSpecification, scope);
             }
             if (argumentSpecification instanceof DescriptorArgumentSpecification) {
-                if (!(argument.getValue() instanceof DescriptorArgument)) {
+                if (!(argument.getValue() instanceof TableFunctionDescriptorArgument)) {
                     if (argument.getValue() instanceof FunctionCall && ((FunctionCall) argument.getValue()).getName().hasSuffix(QualifiedName.of("descriptor"))) { // function name is always compared case-insensitive
                         // malformed descriptor which parsed as a function call
                         throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Invalid descriptor argument %s. Descriptors should be formatted as 'DESCRIPTOR(name [type], ...)'", argumentSpecification.getName());
                     }
                     throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Invalid argument %s. Expected descriptor, got %s", argumentSpecification.getName(), actualType);
                 }
-                throw semanticException(NOT_SUPPORTED, argument, "Descriptor arguments are not yet supported for table functions");
+                return analyzeDescriptorArgument((TableFunctionDescriptorArgument) argument.getValue());
             }
             if (argumentSpecification instanceof ScalarArgumentSpecification) {
-                if (!(argument.getValue() instanceof Expression)) {
+                if (!(argument.getValue() instanceof Expression expression)) {
                     throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Invalid argument %s. Expected expression, got %s", argumentSpecification.getName(), actualType);
                 }
-                Expression expression = (Expression) argument.getValue();
                 // 'descriptor' as a function name is not allowed in this context
-                if (argument.getValue() instanceof FunctionCall && ((FunctionCall) argument.getValue()).getName().hasSuffix(QualifiedName.of("descriptor"))) { // function name is always compared case-insensitive
+                if (expression instanceof FunctionCall && ((FunctionCall) expression).getName().hasSuffix(QualifiedName.of("descriptor"))) { // function name is always compared case-insensitive
                     throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "'descriptor' function is not allowed as a table function argument");
                 }
-                // inline parameters
-                Expression inlined = ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<>()
-                {
-                    @Override
-                    public Expression rewriteParameter(Parameter node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
-                    {
-                        if (analysis.isDescribe()) {
-                            // We cannot handle DESCRIBE when a table function argument involves a parameter.
-                            // In DESCRIBE, the parameter values are not known. We cannot pass a dummy value for a parameter.
-                            // The value of a table function argument can affect the returned relation type. The returned
-                            // relation type can affect the assumed types for other parameters in the query.
-                            throw semanticException(NOT_SUPPORTED, node, "DESCRIBE is not supported if a table function uses parameters");
-                        }
-                        return analysis.getParameters().get(NodeRef.of(node));
-                    }
-                }, expression);
-                Type expectedArgumentType = ((ScalarArgumentSpecification) argumentSpecification).getType();
-                // currently, only constant arguments are supported
-                Object constantValue = ExpressionInterpreter.evaluateConstantExpression(inlined, expectedArgumentType, plannerContext, session, accessControl, analysis.getParameters());
-                return ScalarArgument.builder()
-                        .type(expectedArgumentType)
-                        .value(constantValue)
-                        .build();
+                return analyzeScalarArgument(expression, ((ScalarArgumentSpecification) argumentSpecification).getType());
             }
 
             throw new IllegalStateException("Unexpected argument specification: " + argumentSpecification.getClass().getSimpleName());
         }
 
+        private ArgumentAnalysis analyzeTableArgument(TableFunctionArgument argument, TableArgumentSpecification argumentSpecification, Optional<Scope> scope)
+        {
+            TableFunctionTableArgument tableArgument = (TableFunctionTableArgument) argument.getValue();
+
+            TableArgument.Builder argumentBuilder = TableArgument.builder();
+            TableArgumentAnalysis.Builder analysisBuilder = TableArgumentAnalysis.builder();
+            analysisBuilder.withArgumentName(argumentSpecification.getName());
+
+            // process the relation
+            Relation relation = tableArgument.getTable();
+            analysisBuilder.withRelation(relation);
+            Scope argumentScope = process(relation, scope);
+            QualifiedName relationName = analysis.getRelationName(relation);
+            if (relationName != null) {
+                analysisBuilder.withName(relationName);
+            }
+
+            argumentBuilder.rowType(RowType.from(argumentScope.getRelationType().getVisibleFields().stream()
+                    .map(field -> new RowType.Field(field.getName(), field.getType()))
+                    .collect(toImmutableList())));
+
+            // analyze PARTITION BY
+            if (tableArgument.getPartitionBy().isPresent()) {
+                if (argumentSpecification.isRowSemantics()) {
+                    throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Invalid argument %s. Partitioning specified for table argument with row semantics", argumentSpecification.getName());
+                }
+                List<Expression> partitionBy = tableArgument.getPartitionBy().get();
+                analysisBuilder.withPartitionBy(partitionBy);
+                partitionBy.forEach(partitioningColumn -> {
+                    validateAndGetInputField(partitioningColumn, argumentScope);
+                    Type type = analyzeExpression(partitioningColumn, argumentScope).getType(partitioningColumn);
+                    if (!type.isComparable()) {
+                        throw semanticException(TYPE_MISMATCH, partitioningColumn, "%s is not comparable, and therefore cannot be used in PARTITION BY", type);
+                    }
+                });
+                argumentBuilder.partitionBy(partitionBy.stream()
+                        // each expression is either an Identifier or a DereferenceExpression
+                        .map(Expression::toString)
+                        .collect(toImmutableList()));
+            }
+
+            // analyze ORDER BY
+            if (tableArgument.getOrderBy().isPresent()) {
+                if (argumentSpecification.isRowSemantics()) {
+                    throw semanticException(INVALID_FUNCTION_ARGUMENT, argument, "Invalid argument %s. Ordering specified for table argument with row semantics", argumentSpecification.getName());
+                }
+                OrderBy orderBy = tableArgument.getOrderBy().get();
+                analysisBuilder.withOrderBy(orderBy);
+                orderBy.getSortItems().stream()
+                        .map(SortItem::getSortKey)
+                        .forEach(orderingColumn -> {
+                            validateAndGetInputField(orderingColumn, argumentScope);
+                            Type type = analyzeExpression(orderingColumn, argumentScope).getType(orderingColumn);
+                            if (!type.isOrderable()) {
+                                throw semanticException(TYPE_MISMATCH, orderingColumn, "%s is not orderable, and therefore cannot be used in ORDER BY", type);
+                            }
+                        });
+                argumentBuilder.orderBy(orderBy.getSortItems().stream()
+                        // each sort key is either an Identifier or a DereferenceExpression
+                        .map(sortItem -> sortItem.getSortKey().toString())
+                        .collect(toImmutableList()));
+            }
+
+            // analyze the PRUNE/KEEP WHEN EMPTY property
+            boolean pruneWhenEmpty = argumentSpecification.isPruneWhenEmpty();
+            if (tableArgument.getEmptyTableTreatment().isPresent()) {
+                if (argumentSpecification.isRowSemantics()) {
+                    throw semanticException(INVALID_FUNCTION_ARGUMENT, tableArgument.getEmptyTableTreatment().get(), "Invalid argument %s. Empty behavior specified for table argument with row semantics", argumentSpecification.getName());
+                }
+                pruneWhenEmpty = tableArgument.getEmptyTableTreatment().get().getTreatment() == EmptyTableTreatment.Treatment.PRUNE;
+            }
+            analysisBuilder.withPruneWhenEmpty(pruneWhenEmpty);
+
+            // record remaining properties
+            analysisBuilder.withRowSemantics(argumentSpecification.isRowSemantics());
+            analysisBuilder.withPassThroughColumns(argumentSpecification.isPassThroughColumns());
+
+            return new ArgumentAnalysis(argumentBuilder.build(), Optional.of(analysisBuilder.build()));
+        }
+
+        private ArgumentAnalysis analyzeDescriptorArgument(TableFunctionDescriptorArgument argument)
+        {
+            return new ArgumentAnalysis(
+                    argument.getDescriptor()
+                            .map(descriptor -> DescriptorArgument.builder()
+                                    .descriptor(new Descriptor(descriptor.getFields().stream()
+                                            .map(field -> new Descriptor.Field(
+                                                    field.getName().getCanonicalValue(),
+                                                    field.getType().map(type -> {
+                                                        try {
+                                                            return plannerContext.getTypeManager().getType(toTypeSignature(type));
+                                                        }
+                                                        catch (TypeNotFoundException e) {
+                                                            throw semanticException(TYPE_MISMATCH, type, "Unknown type: %s", type);
+                                                        }
+                                                    })))
+                                            .collect(toImmutableList())))
+                                    .build())
+                            .orElse(NULL_DESCRIPTOR),
+                    Optional.empty());
+        }
+
+        private ArgumentAnalysis analyzeScalarArgument(Expression expression, Type type)
+        {
+            // inline parameters
+            Expression inlined = ExpressionTreeRewriter.rewriteWith(new ExpressionRewriter<>()
+            {
+                @Override
+                public Expression rewriteParameter(Parameter node, Void context, ExpressionTreeRewriter<Void> treeRewriter)
+                {
+                    if (analysis.isDescribe()) {
+                        // We cannot handle DESCRIBE when a table function argument involves a parameter.
+                        // In DESCRIBE, the parameter values are not known. We cannot pass a dummy value for a parameter.
+                        // The value of a table function argument can affect the returned relation type. The returned
+                        // relation type can affect the assumed types for other parameters in the query.
+                        throw semanticException(NOT_SUPPORTED, node, "DESCRIBE is not supported if a table function uses parameters");
+                    }
+                    return analysis.getParameters().get(NodeRef.of(node));
+                }
+            }, expression);
+            // currently, only constant arguments are supported
+            Object constantValue = ExpressionInterpreter.evaluateConstantExpression(inlined, type, plannerContext, session, accessControl, analysis.getParameters());
+            return new ArgumentAnalysis(
+                    ScalarArgument.builder()
+                            .type(type)
+                            .value(constantValue)
+                            .build(),
+                    Optional.empty());
+        }
+
         private Argument analyzeDefault(ArgumentSpecification argumentSpecification, Node errorLocation)
         {
             if (argumentSpecification.isRequired()) {
-                throw semanticException(MISSING_ARGUMENT, errorLocation, "Missing argument: " + argumentSpecification.getName());
+                throw semanticException(MISSING_ARGUMENT, errorLocation, "Missing argument: %s", argumentSpecification.getName());
             }
 
             checkArgument(!(argumentSpecification instanceof TableArgumentSpecification), "invalid table argument specification: default set");
 
             if (argumentSpecification instanceof DescriptorArgumentSpecification) {
-                throw semanticException(NOT_SUPPORTED, errorLocation, "Descriptor arguments are not yet supported for table functions");
+                return DescriptorArgument.builder()
+                        .descriptor((Descriptor) argumentSpecification.getDefaultValue())
+                        .build();
             }
             if (argumentSpecification instanceof ScalarArgumentSpecification) {
                 return ScalarArgument.builder()
@@ -1742,6 +2056,119 @@ class StatementAnalyzer
             }
 
             throw new IllegalStateException("Unexpected argument specification: " + argumentSpecification.getClass().getSimpleName());
+        }
+
+        private List<List<String>> analyzeCopartitioning(List<List<QualifiedName>> copartitioning, List<TableArgumentAnalysis> tableArgumentAnalyses)
+        {
+            // map table arguments by relation names. usa a multimap, because multiple arguments can have the same value, e.g. input_1 => tpch.tiny.orders, input_2 => tpch.tiny.orders
+            ImmutableMultimap.Builder<QualifiedName, TableArgumentAnalysis> unqualifiedInputsBuilder = ImmutableMultimap.builder();
+            ImmutableMultimap.Builder<QualifiedName, TableArgumentAnalysis> qualifiedInputsBuilder = ImmutableMultimap.builder();
+            tableArgumentAnalyses.stream()
+                    .filter(argument -> argument.getName().isPresent())
+                    .forEach(argument -> {
+                        QualifiedName name = argument.getName().get();
+                        if (name.getParts().size() == 1) {
+                            unqualifiedInputsBuilder.put(name, argument);
+                        }
+                        else if (name.getParts().size() == 3) {
+                            qualifiedInputsBuilder.put(name, argument);
+                        }
+                        else {
+                            throw new IllegalStateException("relation name should be unqualified or fully qualified");
+                        }
+                    });
+            Multimap<QualifiedName, TableArgumentAnalysis> unqualifiedInputs = unqualifiedInputsBuilder.build();
+            Multimap<QualifiedName, TableArgumentAnalysis> qualifiedInputs = qualifiedInputsBuilder.build();
+
+            ImmutableList.Builder<List<String>> copartitionBuilder = ImmutableList.builder();
+            Set<String> referencedArguments = new HashSet<>();
+            for (List<QualifiedName> nameList : copartitioning) {
+                ImmutableList.Builder<TableArgumentAnalysis> copartitionListBuilder = ImmutableList.builder();
+
+                // resolve copartition tables as references to table arguments
+                for (QualifiedName name : nameList) {
+                    Collection<TableArgumentAnalysis> candidates = emptyList();
+                    if (name.getParts().size() == 1) {
+                        // try to match unqualified name. it might be a reference to a CTE or an aliased relation
+                        candidates = unqualifiedInputs.get(name);
+                    }
+                    if (candidates.isEmpty()) {
+                        // qualify the name using current schema and catalog
+                        QualifiedObjectName fullyQualifiedName = createQualifiedObjectName(session, name.getOriginalParts().get(0), name);
+                        candidates = qualifiedInputs.get(QualifiedName.of(fullyQualifiedName.getCatalogName(), fullyQualifiedName.getSchemaName(), fullyQualifiedName.getObjectName()));
+                    }
+                    if (candidates.isEmpty()) {
+                        throw semanticException(INVALID_COPARTITIONING, name.getOriginalParts().get(0), "No table argument found for name: %s", name);
+                    }
+                    if (candidates.size() > 1) {
+                        throw semanticException(INVALID_COPARTITIONING, name.getOriginalParts().get(0), "Ambiguous reference: multiple table arguments found for name: %s", name);
+                    }
+                    TableArgumentAnalysis argument = getOnlyElement(candidates);
+                    if (!referencedArguments.add(argument.getArgumentName())) {
+                        // multiple references to argument in COPARTITION clause are implicitly prohibited by
+                        // ISO/IEC TR REPORT 19075-7, p.33, Feature B203, “More than one copartition specification”
+                        throw semanticException(INVALID_COPARTITIONING, name.getOriginalParts().get(0), "Multiple references to table argument: %s in COPARTITION clause", name);
+                    }
+                    copartitionListBuilder.add(argument);
+                }
+                List<TableArgumentAnalysis> copartitionList = copartitionListBuilder.build();
+
+                // analyze partitioning columns
+                copartitionList.stream()
+                        .filter(argument -> argument.getPartitionBy().isEmpty())
+                        .findFirst().ifPresent(unpartitioned -> {
+                            throw semanticException(INVALID_COPARTITIONING, unpartitioned.getRelation(), "Table %s referenced in COPARTITION clause is not partitioned", unpartitioned.getName().orElseThrow());
+                        });
+                // TODO make sure that copartitioned tables cannot have empty partitioning lists.
+                //  ISO/IEC TR REPORT 19075-7, 4.5 Partitioning and ordering, p.25 is not clear: "With copartitioning, the copartitioned table arguments must have the same number of partitioning columns,
+                //  and corresponding partitioning columns must be comparable. The DBMS effectively performs a full outer equijoin on the copartitioning columns"
+                copartitionList.stream()
+                        .filter(argument -> argument.getPartitionBy().orElseThrow().isEmpty())
+                        .findFirst().ifPresent(partitionedOnEmpty -> {
+                            // table is partitioned but no partitioning columns are specified (single partition)
+                            throw semanticException(INVALID_COPARTITIONING, partitionedOnEmpty.getRelation(), "No partitioning columns specified for table %s referenced in COPARTITION clause", partitionedOnEmpty.getName().orElseThrow());
+                        });
+                List<List<Expression>> partitioningColumns = copartitionList.stream()
+                        .map(TableArgumentAnalysis::getPartitionBy)
+                        .map(Optional::orElseThrow)
+                        .collect(toImmutableList());
+                if (partitioningColumns.stream()
+                        .map(List::size)
+                        .distinct()
+                        .count() > 1) {
+                    throw semanticException(INVALID_COPARTITIONING, nameList.get(0).getOriginalParts().get(0), "Numbers of partitioning columns in copartitioned tables do not match");
+                }
+
+                // coerce corresponding copartition columns to common supertype
+                for (int index = 0; index < partitioningColumns.get(0).size(); index++) {
+                    Type commonSuperType = analysis.getType(partitioningColumns.get(0).get(index));
+                    // find common supertype
+                    for (List<Expression> columnList : partitioningColumns) {
+                        Optional<Type> superType = typeCoercion.getCommonSuperType(commonSuperType, analysis.getType(columnList.get(index)));
+                        if (superType.isEmpty()) {
+                            throw semanticException(TYPE_MISMATCH, nameList.get(0).getOriginalParts().get(0), "Partitioning columns in copartitioned tables have incompatible types");
+                        }
+                        commonSuperType = superType.get();
+                    }
+                    for (List<Expression> columnList : partitioningColumns) {
+                        Expression column = columnList.get(index);
+                        Type type = analysis.getType(column);
+                        if (!type.equals(commonSuperType)) {
+                            if (!typeCoercion.canCoerce(type, commonSuperType)) {
+                                throw semanticException(TYPE_MISMATCH, column, "Cannot coerce column of type %s to common supertype: %s", type.getDisplayName(), commonSuperType.getDisplayName());
+                            }
+                            analysis.addCoercion(column, commonSuperType, typeCoercion.isTypeOnlyCoercion(type, commonSuperType));
+                        }
+                    }
+                }
+
+                // record the resolved copartition arguments by argument names
+                copartitionBuilder.add(copartitionList.stream()
+                        .map(TableArgumentAnalysis::getArgumentName)
+                        .collect(toImmutableList()));
+            }
+
+            return copartitionBuilder.build();
         }
 
         private Optional<QualifiedName> getMaterializedViewStorageTableName(MaterializedViewDefinition viewDefinition)
@@ -1764,6 +2191,7 @@ class StatementAnalyzer
                 // is this a reference to a WITH query?
                 Optional<WithQuery> withQuery = createScope(scope).getNamedQuery(table.getName().getSuffix());
                 if (withQuery.isPresent()) {
+                    analysis.setRelationName(table, table.getName());
                     return createScopeForCommonTableExpression(table, scope, withQuery.get());
                 }
                 // is this a recursive reference in expandable WITH query? If so, there's base scope recorded.
@@ -1775,26 +2203,30 @@ class StatementAnalyzer
                             .withRelationType(baseScope.getRelationId(), baseScope.getRelationType())
                             .build();
                     analysis.setScope(table, resultScope);
+                    analysis.setRelationName(table, table.getName());
                     return resultScope;
                 }
             }
 
             QualifiedObjectName name = createQualifiedObjectName(session, table, table.getName());
+            analysis.setRelationName(table, QualifiedName.of(name.getCatalogName(), name.getSchemaName(), name.getObjectName()));
 
             Optional<MaterializedViewDefinition> optionalMaterializedView = metadata.getMaterializedView(session, name);
             if (optionalMaterializedView.isPresent()) {
-                if (metadata.getMaterializedViewFreshness(session, name).isMaterializedViewFresh()) {
-                    // If materialized view is current, answer the query using the storage table
-                    QualifiedName storageName = getMaterializedViewStorageTableName(optionalMaterializedView.get())
+                MaterializedViewDefinition materializedViewDefinition = optionalMaterializedView.get();
+                analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), name);
+                if (isMaterializedViewSufficientlyFresh(session, name, materializedViewDefinition)) {
+                    // If materialized view is sufficiently fresh with respect to its grace period, answer the query using the storage table
+                    QualifiedName storageName = getMaterializedViewStorageTableName(materializedViewDefinition)
                             .orElseThrow(() -> semanticException(INVALID_VIEW, table, "Materialized view '%s' is fresh but does not have storage table name", name));
                     QualifiedObjectName storageTableName = createQualifiedObjectName(session, table, storageName);
                     checkStorageTableNotRedirected(storageTableName);
                     TableHandle tableHandle = metadata.getTableHandle(session, storageTableName)
                             .orElseThrow(() -> semanticException(INVALID_VIEW, table, "Storage table '%s' does not exist", storageTableName));
-                    return createScopeForMaterializedView(table, name, scope, optionalMaterializedView.get(), Optional.of(tableHandle));
+                    return createScopeForMaterializedView(table, name, scope, materializedViewDefinition, Optional.of(tableHandle));
                 }
                 // This is a stale materialized view and should be expanded like a logical view
-                return createScopeForMaterializedView(table, name, scope, optionalMaterializedView.get(), Optional.empty());
+                return createScopeForMaterializedView(table, name, scope, materializedViewDefinition, Optional.empty());
             }
 
             // This could be a reference to a logical view or a table
@@ -1806,8 +2238,8 @@ class StatementAnalyzer
 
             // This can only be a table
             RedirectionAwareTableHandle redirection = getTableHandle(table, name, scope);
-            Optional<TableHandle> tableHandle = redirection.getTableHandle();
-            QualifiedObjectName targetTableName = redirection.getRedirectedTableName().orElse(name);
+            Optional<TableHandle> tableHandle = redirection.tableHandle();
+            QualifiedObjectName targetTableName = redirection.redirectedTableName().orElse(name);
             analysis.addEmptyColumnReferencesForTable(accessControl, session.getIdentity(), targetTableName);
 
             if (tableHandle.isEmpty()) {
@@ -1827,23 +2259,7 @@ class StatementAnalyzer
 
             if (addRowIdColumn) {
                 // Add the row id field
-                ColumnHandle rowIdColumnHandle = switch (updateKind.get()) {
-                    case DELETE -> metadata.getDeleteRowIdColumnHandle(session, tableHandle.get());
-                    case UPDATE -> {
-                        List<ColumnSchema> updatedColumnMetadata = analysis.getUpdatedColumns()
-                                .orElseThrow(() -> new VerifyException("updated columns not set"));
-                        Set<String> updatedColumnNames = updatedColumnMetadata.stream()
-                                .map(ColumnSchema::getName)
-                                .collect(toImmutableSet());
-                        List<ColumnHandle> updatedColumns = columnHandles.entrySet().stream()
-                                .filter(entry -> updatedColumnNames.contains(entry.getKey()))
-                                .map(Map.Entry::getValue)
-                                .collect(toImmutableList());
-                        yield metadata.getUpdateRowIdColumnHandle(session, tableHandle.get(), updatedColumns);
-                    }
-                    case MERGE -> metadata.getMergeRowIdColumnHandle(session, tableHandle.get());
-                };
-
+                ColumnHandle rowIdColumnHandle = metadata.getMergeRowIdColumnHandle(session, tableHandle.get());
                 Type type = metadata.getColumnMetadata(session, tableHandle.get(), rowIdColumnHandle).getType();
                 Field field = Field.newUnqualified(Optional.empty(), type);
                 fields.add(field);
@@ -1852,7 +2268,11 @@ class StatementAnalyzer
 
             List<Field> outputFields = fields.build();
 
-            analyzeFiltersAndMasks(table, targetTableName, tableHandle, outputFields, session.getIdentity().getUser());
+            Scope accessControlScope = Scope.builder()
+                    .withRelationType(RelationId.anonymous(), new RelationType(outputFields))
+                    .build();
+            analyzeFiltersAndMasks(table, targetTableName, new RelationType(outputFields), accessControlScope);
+            analysis.registerTable(table, tableHandle, targetTableName, session.getIdentity().getUser(), accessControlScope);
 
             Scope tableScope = createAndAssignScope(table, scope, outputFields);
 
@@ -1865,39 +2285,73 @@ class StatementAnalyzer
             return tableScope;
         }
 
+        private boolean isMaterializedViewSufficientlyFresh(Session session, QualifiedObjectName name, MaterializedViewDefinition materializedViewDefinition)
+        {
+            MaterializedViewFreshness materializedViewFreshness = metadata.getMaterializedViewFreshness(session, name);
+            MaterializedViewFreshness.Freshness freshness = materializedViewFreshness.getFreshness();
+
+            if (isLegacyMaterializedViewGracePeriod(session)) {
+                return switch (freshness) {
+                    case FRESH, UNKNOWN -> true;
+                    case STALE -> false;
+                };
+            }
+
+            if (freshness == FRESH) {
+                return true;
+            }
+            Optional<Instant> lastFreshTime = materializedViewFreshness.getLastFreshTime();
+            if (lastFreshTime.isEmpty()) {
+                // E.g. never refreshed, or connector not updated to report fresh time
+                return false;
+            }
+            if (materializedViewDefinition.getGracePeriod().isEmpty()) {
+                // Unlimited grace period
+                return true;
+            }
+            Duration gracePeriod = materializedViewDefinition.getGracePeriod().get();
+            if (gracePeriod.isZero()) {
+                // Consider 0 as a special value meaning "do not accept any staleness". This makes 0 more reliable, and more likely what user wanted,
+                // regardless of lastFreshTime, query time or rounding.
+                return false;
+            }
+
+            // Can be negative
+            // TODO should we compare lastFreshTime with session.start() or with current time? The freshness is calculated with respect to current state of things.
+            Duration staleness = Duration.between(lastFreshTime.get(), sessionTimeProvider.getStart(session));
+            return staleness.compareTo(gracePeriod) <= 0;
+        }
+
         private void checkStorageTableNotRedirected(QualifiedObjectName source)
         {
-            metadata.getRedirectionAwareTableHandle(session, source).getRedirectedTableName().ifPresent(name -> {
+            metadata.getRedirectionAwareTableHandle(session, source).redirectedTableName().ifPresent(name -> {
                 throw new TrinoException(NOT_SUPPORTED, format("Redirection of materialized view storage table '%s' to '%s' is not supported", source, name));
             });
         }
 
-        private void analyzeFiltersAndMasks(Table table, QualifiedObjectName name, Optional<TableHandle> tableHandle, List<Field> fields, String authorization)
+        private void analyzeFiltersAndMasks(Table table, QualifiedObjectName name, RelationType relationType, Scope accessControlScope)
         {
-            analyzeFiltersAndMasks(table, name, tableHandle, new RelationType(fields), authorization);
-        }
-
-        private void analyzeFiltersAndMasks(Table table, QualifiedObjectName name, Optional<TableHandle> tableHandle, RelationType relationType, String authorization)
-        {
-            Scope accessControlScope = Scope.builder()
-                    .withRelationType(RelationId.anonymous(), relationType)
-                    .build();
-
             for (int index = 0; index < relationType.getAllFieldCount(); index++) {
                 Field field = relationType.getFieldByIndex(index);
                 if (field.getName().isPresent()) {
-                    List<ViewExpression> masks = accessControl.getColumnMasks(session.toSecurityContext(), name, field.getName().get(), field.getType());
+                    Optional<ViewExpression> mask = accessControl.getColumnMask(session.toSecurityContext(), name, field.getName().get(), field.getType());
 
-                    if (!masks.isEmpty() && checkCanSelectFromColumn(name, field.getName().orElseThrow())) {
-                        masks.forEach(mask -> analyzeColumnMask(session.getIdentity().getUser(), table, name, field, accessControlScope, mask));
+                    if (mask.isPresent() && checkCanSelectFromColumn(name, field.getName().orElseThrow())) {
+                        analyzeColumnMask(session.getIdentity().getUser(), table, name, field, accessControlScope, mask.get());
                     }
                 }
             }
 
             accessControl.getRowFilters(session.toSecurityContext(), name)
                     .forEach(filter -> analyzeRowFilter(session.getIdentity().getUser(), table, name, accessControlScope, filter));
+        }
 
-            analysis.registerTable(table, tableHandle, name, authorization, accessControlScope);
+        private void analyzeCheckConstraints(Table table, QualifiedObjectName name, Scope accessControlScope, List<String> constraints)
+        {
+            for (String constraint : constraints) {
+                ViewExpression expression = new ViewExpression(Optional.empty(), Optional.of(name.getCatalogName()), Optional.of(name.getSchemaName()), constraint);
+                analyzeCheckConstraint(table, name, accessControlScope, expression);
+            }
         }
 
         private boolean checkCanSelectFromColumn(QualifiedObjectName name, String column)
@@ -1997,15 +2451,13 @@ class StatementAnalyzer
                 Optional<TableHandle> storageTable)
         {
             Statement statement = analysis.getStatement();
-            if (statement instanceof CreateView) {
-                CreateView viewStatement = (CreateView) statement;
+            if (statement instanceof CreateView viewStatement) {
                 QualifiedObjectName viewNameFromStatement = createQualifiedObjectName(session, viewStatement, viewStatement.getName());
                 if (viewStatement.isReplace() && viewNameFromStatement.equals(name)) {
                     throw semanticException(VIEW_IS_RECURSIVE, table, "Statement would create a recursive view");
                 }
             }
-            if (statement instanceof CreateMaterializedView) {
-                CreateMaterializedView viewStatement = (CreateMaterializedView) statement;
+            if (statement instanceof CreateMaterializedView viewStatement) {
                 QualifiedObjectName viewNameFromStatement = createQualifiedObjectName(session, viewStatement, viewStatement.getName());
                 if (viewStatement.isReplace() && viewNameFromStatement.equals(name)) {
                     throw semanticException(VIEW_IS_RECURSIVE, table, "Statement would create a recursive materialized view");
@@ -2039,13 +2491,21 @@ class StatementAnalyzer
 
             if (storageTable.isPresent()) {
                 List<Field> storageTableFields = analyzeStorageTable(table, viewFields, storageTable.get());
-                analyzeFiltersAndMasks(table, name, storageTable, viewFields, session.getIdentity().getUser());
+                Scope accessControlScope = Scope.builder()
+                        .withRelationType(RelationId.anonymous(), new RelationType(viewFields))
+                        .build();
+                analyzeFiltersAndMasks(table, name, new RelationType(viewFields), accessControlScope);
+                analysis.registerTable(table, storageTable, name, session.getIdentity().getUser(), accessControlScope);
                 analysis.addRelationCoercion(table, viewFields.stream().map(Field::getType).toArray(Type[]::new));
                 // use storage table output fields as they contain ColumnHandles
                 return createAndAssignScope(table, scope, storageTableFields);
             }
 
-            analyzeFiltersAndMasks(table, name, storageTable, viewFields, session.getIdentity().getUser());
+            Scope accessControlScope = Scope.builder()
+                    .withRelationType(RelationId.anonymous(), new RelationType(viewFields))
+                    .build();
+            analyzeFiltersAndMasks(table, name, new RelationType(viewFields), accessControlScope);
+            analysis.registerTable(table, storageTable, name, session.getIdentity().getUser(), accessControlScope);
             viewFields.forEach(field -> analysis.addSourceColumns(field, ImmutableSet.of(new SourceColumn(name, field.getName().orElseThrow()))));
             analysis.registerNamedQuery(table, query);
             return createAndAssignScope(table, scope, viewFields);
@@ -2146,6 +2606,9 @@ class StatementAnalyzer
         protected Scope visitPatternRecognitionRelation(PatternRecognitionRelation relation, Optional<Scope> scope)
         {
             Scope inputScope = process(relation.getInput(), scope);
+
+            // MATCH_RECOGNIZE cannot be applied to a polymorphic table function (SQL standard ISO/IEC 9075-2, 7.6 <table reference>, p. 409)
+            validateNoNestedTableFunction(relation.getInput(), "row pattern matching");
 
             // check that input table column names are not ambiguous
             // Note: This check is not compliant with SQL identifier semantics. Quoted identifiers should have different comparison rules than unquoted identifiers.
@@ -2275,7 +2738,7 @@ class StatementAnalyzer
                 qualifiedName = getQualifiedName((DereferenceExpression) expression);
             }
             else {
-                throw semanticException(INVALID_COLUMN_REFERENCE, expression, "Expected column reference. Actual: " + expression);
+                throw semanticException(INVALID_COLUMN_REFERENCE, expression, "Expected column reference. Actual: %s", expression);
             }
             Optional<ResolvedField> field = inputScope.tryResolveField(expression, qualifiedName);
             if (field.isEmpty() || !field.get().isLocal()) {
@@ -2331,10 +2794,17 @@ class StatementAnalyzer
         @Override
         protected Scope visitAliasedRelation(AliasedRelation relation, Optional<Scope> scope)
         {
+            analysis.setRelationName(relation, QualifiedName.of(ImmutableList.of(relation.getAlias())));
+            analysis.addAliased(relation.getRelation());
             Scope relationScope = process(relation.getRelation(), scope);
+            RelationType relationType = relationScope.getRelationType();
+
+            // special-handle table function invocation
+            if (relation.getRelation() instanceof TableFunctionInvocation function) {
+                return createAndAssignScope(relation, scope, aliasTableFunctionInvocation(relation, relationType, function));
+            }
 
             // todo this check should be inside of TupleDescriptor.withAlias, but the exception needs the node object
-            RelationType relationType = relationScope.getRelationType();
             if (relation.getColumnNames() != null) {
                 int totalColumns = relationType.getVisibleFieldCount();
                 if (totalColumns != relation.getColumnNames().size()) {
@@ -2367,6 +2837,83 @@ class StatementAnalyzer
             return createAndAssignScope(relation, scope, descriptor);
         }
 
+        // As described by the SQL standard ISO/IEC 9075-2, 7.6 <table reference>, p. 409
+        private RelationType aliasTableFunctionInvocation(AliasedRelation relation, RelationType relationType, TableFunctionInvocation function)
+        {
+            TableFunctionInvocationAnalysis tableFunctionAnalysis = analysis.getTableFunctionAnalysis(function);
+            int properColumnsCount = tableFunctionAnalysis.getProperColumnsCount();
+
+            // check that relation alias is different from range variables of all table arguments
+            tableFunctionAnalysis.getTableArgumentAnalyses().stream()
+                    .map(TableArgumentAnalysis::getName)
+                    .filter(Optional::isPresent)
+                    .map(Optional::get)
+                    .filter(name -> name.hasSuffix(QualifiedName.of(ImmutableList.of(relation.getAlias()))))
+                    .findFirst()
+                    .ifPresent(name -> {
+                        throw semanticException(DUPLICATE_RANGE_VARIABLE, relation.getAlias(), "Relation alias: %s is a duplicate of input table name: %s", relation.getAlias(), name);
+                    });
+
+            // build the new relation type. the alias must be applied to the proper columns only,
+            // and it must not shadow the range variables exposed by the table arguments
+            ImmutableList.Builder<Field> fieldsBuilder = ImmutableList.builder();
+            // first, put the table function's proper columns with alias
+            if (relation.getColumnNames() != null) {
+                // check that number of column aliases matches number of table function's proper columns
+                if (properColumnsCount != relation.getColumnNames().size()) {
+                    throw semanticException(MISMATCHED_COLUMN_ALIASES, relation, "Column alias list has %s entries but table function has %s proper columns", relation.getColumnNames().size(), properColumnsCount);
+                }
+                for (int i = 0; i < properColumnsCount; i++) {
+                    // proper columns are not hidden, so we don't need to skip hidden fields
+                    Field field = relationType.getFieldByIndex(i);
+                    fieldsBuilder.add(Field.newQualified(
+                            QualifiedName.of(ImmutableList.of(relation.getAlias())),
+                            Optional.of(relation.getColumnNames().get(i).getCanonicalValue()), // although the canonical name is recorded, fields are resolved case-insensitive
+                            field.getType(),
+                            field.isHidden(),
+                            field.getOriginTable(),
+                            field.getOriginColumnName(),
+                            field.isAliased()));
+                }
+            }
+            else {
+                for (int i = 0; i < properColumnsCount; i++) {
+                    Field field = relationType.getFieldByIndex(i);
+                    fieldsBuilder.add(Field.newQualified(
+                            QualifiedName.of(ImmutableList.of(relation.getAlias())),
+                            field.getName(),
+                            field.getType(),
+                            field.isHidden(),
+                            field.getOriginTable(),
+                            field.getOriginColumnName(),
+                            field.isAliased()));
+                }
+            }
+
+            // append remaining fields. They are not being aliased, so hidden fields are included
+            for (int i = properColumnsCount; i < relationType.getAllFieldCount(); i++) {
+                fieldsBuilder.add(relationType.getFieldByIndex(i));
+            }
+
+            List<Field> fields = fieldsBuilder.build();
+
+            // check that there are no duplicate names within the table function's proper columns
+            Set<String> names = new HashSet<>();
+            fields.subList(0, properColumnsCount).stream()
+                    .map(Field::getName)
+                    .filter(Optional::isPresent)
+                    .map(Optional::get)
+                    // field names are resolved case-insensitive
+                    .map(name -> name.toLowerCase(ENGLISH))
+                    .forEach(name -> {
+                        if (!names.add(name)) {
+                            throw semanticException(DUPLICATE_COLUMN_NAME, relation.getRelation(), "Duplicate name of table function proper column: %s", name);
+                        }
+                    });
+
+            return new RelationType(fields);
+        }
+
         @Override
         protected Scope visitSampledRelation(SampledRelation relation, Optional<Scope> scope)
         {
@@ -2376,15 +2923,15 @@ class StatementAnalyzer
             }
 
             Map<NodeRef<Expression>, Type> expressionTypes = ExpressionAnalyzer.analyzeExpressions(
-                    session,
-                    plannerContext,
-                    statementAnalyzerFactory,
-                    accessControl,
-                    TypeProvider.empty(),
-                    ImmutableList.of(samplePercentage),
-                    analysis.getParameters(),
-                    WarningCollector.NOOP,
-                    analysis.getQueryType())
+                            session,
+                            plannerContext,
+                            statementAnalyzerFactory,
+                            accessControl,
+                            TypeProvider.empty(),
+                            ImmutableList.of(samplePercentage),
+                            analysis.getParameters(),
+                            WarningCollector.NOOP,
+                            analysis.getQueryType())
                     .getExpressionTypes();
 
             Type samplePercentageType = expressionTypes.get(NodeRef.of(samplePercentage));
@@ -2412,14 +2959,38 @@ class StatementAnalyzer
 
             analysis.setSampleRatio(relation, samplePercentageValue / 100);
             Scope relationScope = process(relation.getRelation(), scope);
+
+            // TABLESAMPLE cannot be applied to a polymorphic table function (SQL standard ISO/IEC 9075-2, 7.6 <table reference>, p. 409)
+            // Note: the below method finds a table function immediately nested in SampledRelation, or aliased.
+            // Potentially, a table function could be also nested with intervening PatternRecognitionRelation.
+            // Such case is handled in visitPatternRecognitionRelation().
+            validateNoNestedTableFunction(relation.getRelation(), "sample");
+
             return createAndAssignScope(relation, scope, relationScope.getRelationType());
+        }
+
+        // this method should run after the `base` relation is processed, so that it is
+        // determined whether the table function is polymorphic
+        private void validateNoNestedTableFunction(Relation base, String context)
+        {
+            TableFunctionInvocation tableFunctionInvocation = null;
+            if (base instanceof TableFunctionInvocation invocation) {
+                tableFunctionInvocation = invocation;
+            }
+            else if (base instanceof AliasedRelation aliasedRelation &&
+                    aliasedRelation.getRelation() instanceof TableFunctionInvocation invocation) {
+                tableFunctionInvocation = invocation;
+            }
+            if (tableFunctionInvocation != null && analysis.isPolymorphicTableFunction(tableFunctionInvocation)) {
+                throw semanticException(INVALID_TABLE_FUNCTION_INVOCATION, base, "Cannot apply %s to polymorphic table function invocation", context);
+            }
         }
 
         @Override
         protected Scope visitTableSubquery(TableSubquery node, Optional<Scope> scope)
         {
             StatementAnalyzer analyzer = statementAnalyzerFactory.createStatementAnalyzer(analysis, session, warningCollector, CorrelationSupport.ALLOWED);
-            Scope queryScope = analyzer.analyze(node.getQuery(), scope);
+            Scope queryScope = analyzer.analyze(node.getQuery(), scope.orElseThrow());
             return createAndAssignScope(node, scope, queryScope.getRelationType());
         }
 
@@ -2450,7 +3021,7 @@ class StatementAnalyzer
 
                 orderByExpressions = analyzeOrderBy(node, orderBy.getSortItems(), orderByScope.get());
 
-                if (sourceScope.getOuterQueryParent().isPresent() && node.getLimit().isEmpty() && node.getOffset().isEmpty()) {
+                if ((sourceScope.getOuterQueryParent().isPresent() || !isTopLevel) && node.getLimit().isEmpty() && node.getOffset().isEmpty()) {
                     // not the root scope and ORDER BY is ineffective
                     analysis.markRedundantOrderBy(orderBy);
                     warningCollector.add(new TrinoWarning(REDUNDANT_ORDER_BY, "ORDER BY in subquery may have no effect"));
@@ -2567,12 +3138,13 @@ class StatementAnalyzer
             if (node instanceof Intersect || node instanceof Except || node instanceof Union && node.isDistinct()) {
                 for (Type type : outputFieldTypes) {
                     if (!type.isComparable()) {
-                        StringBuilder message = new StringBuilder(format("Type %s is not comparable and therefore cannot be used in ", type));
-                        message.append(setOperationName);
-                        if (node instanceof Union) {
-                            message.append(" DISTINCT");
-                        }
-                        throw semanticException(TYPE_MISMATCH, node, message.toString());
+                        throw semanticException(
+                                TYPE_MISMATCH,
+                                node,
+                                "Type %s is not comparable and therefore cannot be used in %s%s",
+                                type,
+                                setOperationName,
+                                node instanceof Union ? " DISTINCT" : "");
                     }
                 }
             }
@@ -2701,8 +3273,8 @@ class StatementAnalyzer
             }
 
             RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, originalName);
-            QualifiedObjectName tableName = redirection.getRedirectedTableName().orElse(originalName);
-            TableHandle handle = redirection.getTableHandle()
+            QualifiedObjectName tableName = redirection.redirectedTableName().orElse(originalName);
+            TableHandle handle = redirection.tableHandle()
                     .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, table, "Table '%s' does not exist", tableName));
 
             TableSchema tableSchema = metadata.getTableSchema(session, handle);
@@ -2730,15 +3302,20 @@ class StatementAnalyzer
             // TODO: how to deal with connectors that need to see the pre-image of rows to perform the update without
             //       flowing that data through the masking logic
             for (ColumnSchema tableColumn : allColumns) {
-                if (!accessControl.getColumnMasks(session.toSecurityContext(), tableName, tableColumn.getName(), tableColumn.getType()).isEmpty()) {
+                if (accessControl.getColumnMask(session.toSecurityContext(), tableName, tableColumn.getName(), tableColumn.getType()).isPresent()) {
                     throw semanticException(NOT_SUPPORTED, update, "Updating a table with column masks is not supported");
                 }
             }
 
-            List<ColumnSchema> updatedColumns = allColumns.stream()
+            List<ColumnSchema> updatedColumnSchemas = allColumns.stream()
                     .filter(column -> assignmentTargets.contains(column.getName()))
                     .collect(toImmutableList());
-            analysis.setUpdatedColumns(updatedColumns);
+            analysis.setUpdatedColumns(updatedColumnSchemas);
+
+            Map<String, ColumnHandle> allColumnHandles = metadata.getColumnHandles(session, handle);
+            List<ColumnHandle> updatedColumnHandles = updatedColumnSchemas.stream()
+                    .map(columnSchema -> allColumnHandles.get(columnSchema.getName()))
+                    .collect(toImmutableList());
 
             // Analyzer checks for select permissions but UPDATE has a separate permission, so disable access checks
             StatementAnalyzer analyzer = statementAnalyzerFactory
@@ -2747,17 +3324,29 @@ class StatementAnalyzer
 
             Scope tableScope = analyzer.analyzeForUpdate(table, scope, UpdateKind.UPDATE);
             update.getWhere().ifPresent(where -> analyzeWhere(update, tableScope, where));
+            analyzeCheckConstraints(table, tableName, tableScope, tableSchema.getTableSchema().getCheckConstraints());
+            analysis.registerTable(table, redirection.tableHandle(), tableName, session.getIdentity().getUser(), tableScope);
 
             ImmutableList.Builder<ExpressionAnalysis> analysesBuilder = ImmutableList.builder();
             ImmutableList.Builder<Type> expressionTypesBuilder = ImmutableList.builder();
+            ImmutableMap.Builder<String, Set<SourceColumn>> sourceColumnsByColumnNameBuilder = ImmutableMap.builder();
             for (UpdateAssignment assignment : update.getAssignments()) {
+                String targetColumnName = assignment.getName().getValue();
                 Expression expression = assignment.getValue();
-                ExpressionAnalysis analysis = analyzeExpression(expression, tableScope);
-                analysesBuilder.add(analysis);
-                expressionTypesBuilder.add(analysis.getType(expression));
+                ExpressionAnalysis expressionAnalysis = analyzeExpression(expression, tableScope);
+                analysesBuilder.add(expressionAnalysis);
+                expressionTypesBuilder.add(expressionAnalysis.getType(expression));
+
+                Set<SourceColumn> sourceColumns = expressionAnalysis.getSubqueries().stream()
+                        .map(query -> analyze(query.getNode(), tableScope))
+                        .flatMap(subqueryScope -> subqueryScope.getRelationType().getVisibleFields().stream())
+                        .flatMap(field -> analysis.getSourceColumns(field).stream())
+                        .collect(toImmutableSet());
+                sourceColumnsByColumnNameBuilder.put(targetColumnName, sourceColumns);
             }
             List<ExpressionAnalysis> analyses = analysesBuilder.build();
             List<Type> expressionTypes = expressionTypesBuilder.build();
+            Map<String, Set<SourceColumn>> sourceColumnsByColumnName = sourceColumnsByColumnNameBuilder.buildOrThrow();
 
             List<Type> tableTypes = update.getAssignments().stream()
                     .map(assignment -> requireNonNull(columns.get(assignment.getName().getValue())))
@@ -2784,11 +3373,16 @@ class StatementAnalyzer
 
             analysis.setUpdateType("UPDATE");
             analysis.setUpdateTarget(
+                    handle.getCatalogHandle().getVersion(),
                     tableName,
                     Optional.of(table),
-                    Optional.of(updatedColumns.stream()
-                            .map(column -> new OutputColumn(new Column(column.getName(), column.getType().toString()), ImmutableSet.of()))
+                    Optional.of(updatedColumnSchemas.stream()
+                            .map(column -> new OutputColumn(
+                                    new Column(column.getName(), column.getType().toString()),
+                                    sourceColumnsByColumnName.getOrDefault(column.getName(), ImmutableSet.of())))
                             .collect(toImmutableList())));
+
+            createMergeAnalysis(table, handle, tableSchema, tableScope, tableScope, ImmutableList.of(updatedColumnHandles));
 
             return createAndAssignScope(update, scope, Field.newUnqualified("rows", BIGINT));
         }
@@ -2807,8 +3401,8 @@ class StatementAnalyzer
             }
 
             RedirectionAwareTableHandle redirection = metadata.getRedirectionAwareTableHandle(session, originalTableName);
-            QualifiedObjectName tableName = redirection.getRedirectedTableName().orElse(originalTableName);
-            TableHandle targetTableHandle = redirection.getTableHandle()
+            QualifiedObjectName tableName = redirection.redirectedTableName().orElse(originalTableName);
+            TableHandle targetTableHandle = redirection.tableHandle()
                     .orElseThrow(() -> semanticException(TABLE_NOT_FOUND, table, "Table '%s' does not exist", tableName));
 
             StatementAnalyzer analyzer = statementAnalyzerFactory
@@ -2844,38 +3438,22 @@ class StatementAnalyzer
             }
 
             if (!accessControl.getRowFilters(session.toSecurityContext(), tableName).isEmpty()) {
-                throw semanticException(NOT_SUPPORTED, merge, "Merge table with row filter");
+                throw semanticException(NOT_SUPPORTED, merge, "Cannot merge into a table with row filters");
             }
-
-            Scope targetTableScope = analyzer.analyzeForUpdate(relation, scope, UpdateKind.MERGE);
-            Scope sourceTableScope = process(merge.getSource(), scope);
-            Scope joinScope = createAndAssignScope(merge, scope, targetTableScope.getRelationType().joinWith(sourceTableScope.getRelationType()));
+            Scope mergeScope = createScope(scope);
+            Scope targetTableScope = analyzer.analyzeForUpdate(relation, Optional.of(mergeScope), UpdateKind.MERGE);
+            Scope sourceTableScope = process(merge.getSource(), mergeScope);
+            Scope joinScope = createAndAssignScope(merge, Optional.of(mergeScope), targetTableScope.getRelationType().joinWith(sourceTableScope.getRelationType()));
+            analyzeCheckConstraints(table, tableName, targetTableScope, tableSchema.getTableSchema().getCheckConstraints());
+            analysis.registerTable(table, redirection.tableHandle(), tableName, session.getIdentity().getUser(), targetTableScope);
 
             for (ColumnSchema column : dataColumnSchemas) {
-                if (!accessControl.getColumnMasks(session.toSecurityContext(), tableName, column.getName(), column.getType()).isEmpty()) {
-                    throw semanticException(NOT_SUPPORTED, merge, "Merge table with column mask");
+                if (accessControl.getColumnMask(session.toSecurityContext(), tableName, column.getName(), column.getType()).isPresent()) {
+                    throw semanticException(NOT_SUPPORTED, merge, "Cannot merge into a table with column masks");
                 }
             }
-
-            Optional<TableLayout> insertLayout = metadata.getInsertLayout(session, targetTableHandle);
 
             Map<String, ColumnHandle> allColumnHandles = metadata.getColumnHandles(session, targetTableHandle);
-            ImmutableList.Builder<ColumnHandle> dataColumnHandlesBuilder = ImmutableList.builder();
-            ImmutableSet.Builder<String> dataColumnNamesBuilder = ImmutableSet.builder();
-            ImmutableList.Builder<ColumnHandle> redistributionColumnHandlesBuilder = ImmutableList.builder();
-            Set<String> partitioningColumnNames = ImmutableSet.copyOf(insertLayout.map(TableLayout::getPartitionColumns).orElse(ImmutableList.of()));
-            for (ColumnSchema columnSchema : dataColumnSchemas) {
-                String name = columnSchema.getName();
-                ColumnHandle handle = allColumnHandles.get(name);
-                dataColumnNamesBuilder.add(name);
-                dataColumnHandlesBuilder.add(handle);
-                if (partitioningColumnNames.contains(name)) {
-                    redistributionColumnHandlesBuilder.add(handle);
-                }
-            }
-            List<ColumnHandle> dataColumnHandles = dataColumnHandlesBuilder.build();
-            Set<String> dataColumnNames = dataColumnNamesBuilder.build();
-            List<ColumnHandle> redistributionColumnHandles = redistributionColumnHandlesBuilder.build();
 
             Map<String, Type> dataColumnTypes = dataColumnSchemas.stream().collect(toImmutableMap(ColumnSchema::getName, ColumnSchema::getType));
 
@@ -2906,7 +3484,7 @@ class StatementAnalyzer
                 checkArgument(columnCount == setExpressions.size(), "Number of merge columns (%s) isn't equal to number of expressions (%s)", columnCount, setExpressions.size());
                 Set<String> columnNameSet = new HashSet<>(columnCount);
                 caseColumnNames.forEach(mergeColumn -> {
-                    if (!dataColumnNames.contains(mergeColumn)) {
+                    if (!dataColumnTypes.keySet().contains(mergeColumn)) {
                         throw semanticException(COLUMN_NOT_FOUND, merge, "Merge column name does not exist in target table: %s", mergeColumn);
                     }
                     if (!columnNameSet.add(mergeColumn)) {
@@ -2965,51 +3543,88 @@ class StatementAnalyzer
                     .collect(toImmutableList());
 
             analysis.setUpdateType("MERGE");
-            analysis.setUpdateTarget(tableName, Optional.of(table), Optional.of(updatedColumns));
+            analysis.setUpdateTarget(targetTableHandle.getCatalogHandle().getVersion(), tableName, Optional.of(table), Optional.of(updatedColumns));
             List<List<ColumnHandle>> mergeCaseColumnHandles = buildCaseColumnLists(merge, dataColumnSchemas, allColumnHandles);
 
-            Optional<PartitioningHandle> updateLayout = metadata.getUpdateLayout(session, targetTableHandle);
+            createMergeAnalysis(table, targetTableHandle, tableSchema, targetTableScope, joinScope, mergeCaseColumnHandles);
 
+            return createAndAssignScope(merge, Optional.empty(), Field.newUnqualified("rows", BIGINT));
+        }
+
+        private void createMergeAnalysis(Table table, TableHandle handle, TableSchema tableSchema, Scope tableScope, Scope joinScope, List<List<ColumnHandle>> updatedColumns)
+        {
+            Optional<PartitioningHandle> updateLayout = metadata.getUpdateLayout(session, handle);
+            Map<String, ColumnHandle> allColumnHandles = metadata.getColumnHandles(session, handle);
             ImmutableMap.Builder<ColumnHandle, Integer> columnHandleFieldNumbersBuilder = ImmutableMap.builder();
             Map<String, Integer> fieldIndexes = new HashMap<>();
-            RelationType relationType = targetTableScope.getRelationType();
+            RelationType relationType = tableScope.getRelationType();
             for (Field field : relationType.getAllFields()) {
                 // Only the rowId column handle will have no name, and we want to skip that column
                 field.getName().ifPresent(name -> {
                     int fieldIndex = relationType.indexOf(field);
-                    ColumnHandle handle = allColumnHandles.get(name);
+                    ColumnHandle columnHandle = allColumnHandles.get(name);
                     verify(handle != null, "allColumnHandles does not contain the named handle: %s", name);
-                    columnHandleFieldNumbersBuilder.put(handle, fieldIndex);
+                    columnHandleFieldNumbersBuilder.put(columnHandle, fieldIndex);
                     fieldIndexes.put(name, fieldIndex);
                 });
             }
             Map<ColumnHandle, Integer> columnHandleFieldNumbers = columnHandleFieldNumbersBuilder.buildOrThrow();
 
+            List<ColumnSchema> dataColumnSchemas = tableSchema.getColumns().stream()
+                    .filter(column -> !column.isHidden())
+                    .collect(toImmutableList());
+            Optional<TableLayout> insertLayout = metadata.getInsertLayout(session, handle);
+
+            ImmutableList.Builder<ColumnHandle> dataColumnHandlesBuilder = ImmutableList.builder();
+            ImmutableSet.Builder<String> dataColumnNamesBuilder = ImmutableSet.builder();
+            ImmutableList.Builder<ColumnHandle> redistributionColumnHandlesBuilder = ImmutableList.builder();
+            Set<String> partitioningColumnNames = ImmutableSet.copyOf(insertLayout.map(TableLayout::getPartitionColumns).orElse(ImmutableList.of()));
+            for (ColumnSchema columnSchema : dataColumnSchemas) {
+                String name = columnSchema.getName();
+                ColumnHandle columnHandle = allColumnHandles.get(name);
+                dataColumnNamesBuilder.add(name);
+                dataColumnHandlesBuilder.add(columnHandle);
+                if (partitioningColumnNames.contains(name)) {
+                    redistributionColumnHandlesBuilder.add(columnHandle);
+                }
+            }
+            List<ColumnHandle> dataColumnHandles = dataColumnHandlesBuilder.build();
+            List<ColumnHandle> redistributionColumnHandles = redistributionColumnHandlesBuilder.build();
+
             List<Integer> insertPartitioningArgumentIndexes = partitioningColumnNames.stream()
                     .map(fieldIndexes::get)
                     .collect(toImmutableList());
 
-            Set<ColumnHandle> nonNullableColumnHandles = metadata.getTableMetadata(session, targetTableHandle).getColumns().stream()
+            Set<ColumnHandle> nonNullableColumnHandles = metadata.getTableMetadata(session, handle).getColumns().stream()
                     .filter(column -> !column.isNullable())
                     .map(ColumnMetadata::getName)
                     .map(allColumnHandles::get)
                     .collect(toImmutableSet());
+
+            // create the RowType that holds all column values
+            List<RowType.Field> fields = new ArrayList<>();
+            for (ColumnSchema schema : dataColumnSchemas) {
+                fields.add(new RowType.Field(Optional.of(schema.getName()), schema.getType()));
+            }
+            fields.add(new RowType.Field(Optional.empty(), BOOLEAN)); // present
+            fields.add(new RowType.Field(Optional.empty(), TINYINT)); // operation_number
+            fields.add(new RowType.Field(Optional.empty(), INTEGER)); // case_number
+            RowType mergeRowType = RowType.from(fields);
 
             analysis.setMergeAnalysis(new MergeAnalysis(
                     table,
                     dataColumnSchemas,
                     dataColumnHandles,
                     redistributionColumnHandles,
-                    mergeCaseColumnHandles,
+                    updatedColumns,
                     nonNullableColumnHandles,
                     columnHandleFieldNumbers,
+                    mergeRowType,
                     insertPartitioningArgumentIndexes,
                     insertLayout,
                     updateLayout,
-                    targetTableScope,
+                    tableScope,
                     joinScope));
-
-            return createAndAssignScope(merge, Optional.empty(), Field.newUnqualified("rows", BIGINT));
         }
 
         private static Table getMergeTargetTable(Relation relation)
@@ -3211,6 +3826,12 @@ class StatementAnalyzer
             return createAndAssignScope(node, scope, fields);
         }
 
+        @Override
+        protected Scope visitJsonTable(JsonTable node, Optional<Scope> context)
+        {
+            throw semanticException(NOT_SUPPORTED, node, "JSON_TABLE is not yet supported");
+        }
+
         private void analyzeWindowDefinitions(QuerySpecification node, Scope scope)
         {
             for (WindowDefinition windowDefinition : node.getWindows()) {
@@ -3232,12 +3853,11 @@ class StatementAnalyzer
 
         private ResolvedWindow resolveWindowSpecification(QuerySpecification querySpecification, Window window)
         {
-            if (window instanceof WindowReference) {
-                WindowReference windowReference = (WindowReference) window;
+            if (window instanceof WindowReference windowReference) {
                 CanonicalizationAware<Identifier> canonicalName = canonicalizationAwareKey(windowReference.getName());
                 ResolvedWindow referencedWindow = analysis.getWindowDefinition(querySpecification, canonicalName);
                 if (referencedWindow == null) {
-                    throw semanticException(INVALID_WINDOW_REFERENCE, windowReference.getName(), "Cannot resolve WINDOW name " + windowReference.getName());
+                    throw semanticException(INVALID_WINDOW_REFERENCE, windowReference.getName(), "Cannot resolve WINDOW name %s", windowReference.getName());
                 }
 
                 return new ResolvedWindow(
@@ -3256,7 +3876,7 @@ class StatementAnalyzer
                 CanonicalizationAware<Identifier> canonicalName = canonicalizationAwareKey(referencedName);
                 ResolvedWindow referencedWindow = analysis.getWindowDefinition(querySpecification, canonicalName);
                 if (referencedWindow == null) {
-                    throw semanticException(INVALID_WINDOW_REFERENCE, referencedName, "Cannot resolve WINDOW name " + referencedName);
+                    throw semanticException(INVALID_WINDOW_REFERENCE, referencedName, "Cannot resolve WINDOW name %s", referencedName);
                 }
 
                 // analyze dependencies between this window specification and referenced window specification
@@ -3413,7 +4033,7 @@ class StatementAnalyzer
             if (node.getHaving().isPresent()) {
                 Expression predicate = node.getHaving().get();
 
-                List<Expression> windowExpressions = extractWindowExpressions(ImmutableList.of(predicate));
+                List<Expression> windowExpressions = extractWindowExpressions(ImmutableList.of(predicate), session, metadata);
                 if (!windowExpressions.isEmpty()) {
                     throw semanticException(NESTED_WINDOW, windowExpressions.get(0), "HAVING clause cannot contain window functions or row pattern measures");
                 }
@@ -3440,18 +4060,18 @@ class StatementAnalyzer
                     if (element instanceof SimpleGroupBy) {
                         product = 1;
                     }
-                    else if (element instanceof Cube) {
-                        int exponent = element.getExpressions().size();
-                        if (exponent > 30) {
-                            throw new ArithmeticException();
-                        }
-                        product = 1 << exponent;
-                    }
-                    else if (element instanceof Rollup) {
-                        product = element.getExpressions().size() + 1;
-                    }
-                    else if (element instanceof GroupingSets) {
-                        product = ((GroupingSets) element).getSets().size();
+                    else if (element instanceof GroupingSets groupingSets) {
+                        product = switch (groupingSets.getType()) {
+                            case CUBE -> {
+                                int exponent = ((GroupingSets) element).getSets().size();
+                                if (exponent > 30) {
+                                    throw new ArithmeticException();
+                                }
+                                yield 1 << exponent;
+                            }
+                            case ROLLUP -> groupingSets.getSets().size() + 1;
+                            case EXPLICIT -> groupingSets.getSets().size();
+                        };
                     }
                     else {
                         throw new UnsupportedOperationException("Unsupported grouping element type: " + element.getClass().getName());
@@ -3472,8 +4092,8 @@ class StatementAnalyzer
         private GroupingSetAnalysis analyzeGroupBy(QuerySpecification node, Scope scope, List<Expression> outputExpressions)
         {
             if (node.getGroupBy().isPresent()) {
-                ImmutableList.Builder<Set<FieldId>> cubes = ImmutableList.builder();
-                ImmutableList.Builder<List<FieldId>> rollups = ImmutableList.builder();
+                ImmutableList.Builder<List<Set<FieldId>>> cubes = ImmutableList.builder();
+                ImmutableList.Builder<List<Set<FieldId>>> rollups = ImmutableList.builder();
                 ImmutableList.Builder<List<Set<FieldId>>> sets = ImmutableList.builder();
                 ImmutableList.Builder<Expression> complexExpressions = ImmutableList.builder();
                 ImmutableList.Builder<Expression> groupingExpressions = ImmutableList.builder();
@@ -3484,7 +4104,7 @@ class StatementAnalyzer
                         for (Expression column : groupingElement.getExpressions()) {
                             // simple GROUP BY expressions allow ordinals or arbitrary expressions
                             if (column instanceof LongLiteral) {
-                                long ordinal = ((LongLiteral) column).getValue();
+                                long ordinal = ((LongLiteral) column).getParsedValue();
                                 if (ordinal < 1 || ordinal > outputExpressions.size()) {
                                     throw semanticException(INVALID_COLUMN_REFERENCE, column, "GROUP BY position %s is not in select list", ordinal);
                                 }
@@ -3509,7 +4129,7 @@ class StatementAnalyzer
                             groupingExpressions.add(column);
                         }
                     }
-                    else {
+                    else if (groupingElement instanceof GroupingSets element) {
                         for (Expression column : groupingElement.getExpressions()) {
                             analyzeExpression(column, scope);
                             if (!analysis.getColumnReferences().contains(NodeRef.of(column))) {
@@ -3519,34 +4139,18 @@ class StatementAnalyzer
                             groupingExpressions.add(column);
                         }
 
-                        if (groupingElement instanceof Cube) {
-                            Set<FieldId> cube = groupingElement.getExpressions().stream()
-                                    .map(NodeRef::of)
-                                    .map(analysis.getColumnReferenceFields()::get)
-                                    .map(ResolvedField::getFieldId)
-                                    .collect(toImmutableSet());
+                        List<Set<FieldId>> groupingSets = element.getSets().stream()
+                                .map(set -> set.stream()
+                                        .map(NodeRef::of)
+                                        .map(analysis.getColumnReferenceFields()::get)
+                                        .map(ResolvedField::getFieldId)
+                                        .collect(toImmutableSet()))
+                                .collect(toImmutableList());
 
-                            cubes.add(cube);
-                        }
-                        else if (groupingElement instanceof Rollup) {
-                            List<FieldId> rollup = groupingElement.getExpressions().stream()
-                                    .map(NodeRef::of)
-                                    .map(analysis.getColumnReferenceFields()::get)
-                                    .map(ResolvedField::getFieldId)
-                                    .collect(toImmutableList());
-
-                            rollups.add(rollup);
-                        }
-                        else if (groupingElement instanceof GroupingSets) {
-                            List<Set<FieldId>> groupingSets = ((GroupingSets) groupingElement).getSets().stream()
-                                    .map(set -> set.stream()
-                                            .map(NodeRef::of)
-                                            .map(analysis.getColumnReferenceFields()::get)
-                                            .map(ResolvedField::getFieldId)
-                                            .collect(toImmutableSet()))
-                                    .collect(toImmutableList());
-
-                            sets.add(groupingSets);
+                        switch (element.getType()) {
+                            case CUBE -> cubes.add(groupingSets);
+                            case ROLLUP -> rollups.add(groupingSets);
+                            case EXPLICIT -> sets.add(groupingSets);
                         }
                     }
                 }
@@ -3591,9 +4195,7 @@ class StatementAnalyzer
             ImmutableList.Builder<Field> outputFields = ImmutableList.builder();
 
             for (SelectItem item : node.getSelect().getSelectItems()) {
-                if (item instanceof AllColumns) {
-                    AllColumns allColumns = (AllColumns) item;
-
+                if (item instanceof AllColumns allColumns) {
                     List<Field> fields = analysis.getSelectAllResultFields(allColumns);
                     checkNotNull(fields, "output fields is null for select item %s", item);
                     for (int i = 0; i < fields.size(); i++) {
@@ -3612,9 +4214,7 @@ class StatementAnalyzer
                         outputFields.add(newField);
                     }
                 }
-                else if (item instanceof SingleColumn) {
-                    SingleColumn column = (SingleColumn) item;
-
+                else if (item instanceof SingleColumn column) {
                     Expression expression = column.getExpression();
                     Optional<Identifier> field = column.getAlias();
 
@@ -3976,12 +4576,9 @@ class StatementAnalyzer
                 //     SELECT a + sum(b) GROUP BY a
                 List<Expression> distinctGroupingColumns = ImmutableSet.copyOf(groupByAnalysis.getOriginalExpressions()).asList();
 
-                for (Expression expression : outputExpressions) {
-                    verifySourceAggregations(distinctGroupingColumns, sourceScope, expression, session, metadata, analysis);
-                }
-
-                for (Expression expression : orderByExpressions) {
-                    verifyOrderByAggregations(distinctGroupingColumns, sourceScope, orderByScope.orElseThrow(), expression, session, metadata, analysis);
+                verifySourceAggregations(distinctGroupingColumns, sourceScope, outputExpressions, session, metadata, analysis);
+                if (!orderByExpressions.isEmpty()) {
+                    verifyOrderByAggregations(distinctGroupingColumns, sourceScope, orderByScope.orElseThrow(), orderByExpressions, session, metadata, analysis);
                 }
             }
         }
@@ -3992,11 +4589,17 @@ class StatementAnalyzer
                 // run view as view owner if set; otherwise, run as session user
                 Identity identity;
                 AccessControl viewAccessControl;
-                if (owner.isPresent() && !owner.get().getUser().equals(session.getIdentity().getUser())) {
+                if (owner.isPresent()) {
                     identity = Identity.from(owner.get())
                             .withGroups(groupProvider.getGroups(owner.get().getUser()))
                             .build();
-                    viewAccessControl = new ViewAccessControl(accessControl, session.getIdentity());
+                    if (owner.get().getUser().equals(session.getIdentity().getUser())) {
+                        // View owner does not need GRANT OPTION to grant access themselves
+                        viewAccessControl = accessControl;
+                    }
+                    else {
+                        viewAccessControl = new ViewAccessControl(accessControl, session.getIdentity());
+                    }
                 }
                 else {
                     identity = session.getIdentity();
@@ -4009,7 +4612,7 @@ class StatementAnalyzer
                 StatementAnalyzer analyzer = statementAnalyzerFactory
                         .withSpecializedAccessControl(viewAccessControl)
                         .createStatementAnalyzer(analysis, viewSession, warningCollector, CorrelationSupport.ALLOWED);
-                Scope queryScope = analyzer.analyze(query, Scope.create());
+                Scope queryScope = analyzer.analyze(query);
                 return queryScope.getRelationType().withAlias(name.getObjectName(), null);
             }
             catch (RuntimeException e) {
@@ -4129,8 +4732,13 @@ class StatementAnalyzer
 
             ExpressionAnalysis expressionAnalysis;
             try {
+                Identity filterIdentity = filter.getSecurityIdentity()
+                        .map(filterUser -> Identity.forUser(filterUser)
+                                .withGroups(groupProvider.getGroups(filterUser))
+                                .build())
+                        .orElseGet(session::getIdentity);
                 expressionAnalysis = ExpressionAnalyzer.analyzeExpression(
-                        createViewSession(filter.getCatalog(), filter.getSchema(), Identity.forUser(filter.getIdentity()).build(), session.getPath()), // TODO: path should be included in row filter
+                        createViewSession(filter.getCatalog(), filter.getSchema(), filterIdentity, session.getPath()), // TODO: path should be included in row filter
                         plannerContext,
                         statementAnalyzerFactory,
                         accessControl,
@@ -4163,6 +4771,64 @@ class StatementAnalyzer
             analysis.addRowFilter(table, expression);
         }
 
+        private void analyzeCheckConstraint(Table table, QualifiedObjectName name, Scope scope, ViewExpression constraint)
+        {
+            Expression expression;
+            try {
+                expression = sqlParser.createExpression(constraint.getExpression(), createParsingOptions(session));
+            }
+            catch (ParsingException e) {
+                throw new TrinoException(INVALID_CHECK_CONSTRAINT, extractLocation(table), format("Invalid check constraint for '%s': %s", name, e.getErrorMessage()), e);
+            }
+
+            verifyNoAggregateWindowOrGroupingFunctions(session, metadata, expression, format("Check constraint for '%s'", name));
+
+            ExpressionAnalysis expressionAnalysis;
+            try {
+                Identity constraintIdentity = constraint.getSecurityIdentity()
+                        .map(user -> Identity.forUser(user)
+                            .withGroups(groupProvider.getGroups(user))
+                            .build())
+                        .orElseGet(session::getIdentity);
+                expressionAnalysis = ExpressionAnalyzer.analyzeExpression(
+                        createViewSession(constraint.getCatalog(), constraint.getSchema(), constraintIdentity, session.getPath()),
+                        plannerContext,
+                        statementAnalyzerFactory,
+                        accessControl,
+                        scope,
+                        analysis,
+                        expression,
+                        warningCollector,
+                        correlationSupport);
+            }
+            catch (TrinoException e) {
+                throw new TrinoException(e::getErrorCode, extractLocation(table), format("Invalid check constraint for '%s': %s", name, e.getRawMessage()), e);
+            }
+
+            // Ensure that the expression doesn't contain non-deterministic functions. This should be "retrospectively deterministic" per SQL standard.
+            if (!isDeterministic(expression, this::getResolvedFunction)) {
+                throw semanticException(INVALID_CHECK_CONSTRAINT, expression, "Check constraint expression should be deterministic");
+            }
+            if (containsCurrentTimeFunctions(expression)) {
+                throw semanticException(INVALID_CHECK_CONSTRAINT, expression, "Check constraint expression should not contain temporal expression");
+            }
+
+            analysis.recordSubqueries(expression, expressionAnalysis);
+
+            Type actualType = expressionAnalysis.getType(expression);
+            if (!actualType.equals(BOOLEAN)) {
+                TypeCoercion coercion = new TypeCoercion(plannerContext.getTypeManager()::getType);
+
+                if (!coercion.canCoerce(actualType, BOOLEAN)) {
+                    throw new TrinoException(TYPE_MISMATCH, extractLocation(table), format("Expected check constraint for '%s' to be of type BOOLEAN, but was %s", name, actualType), null);
+                }
+
+                analysis.addCoercion(expression, BOOLEAN, coercion.isTypeOnlyCoercion(actualType, BOOLEAN));
+            }
+
+            analysis.addCheckConstraints(table, expression);
+        }
+
         private void analyzeColumnMask(String currentIdentity, Table table, QualifiedObjectName tableName, Field field, Scope scope, ViewExpression mask)
         {
             String column = field.getName().orElseThrow();
@@ -4184,8 +4850,13 @@ class StatementAnalyzer
             verifyNoAggregateWindowOrGroupingFunctions(session, metadata, expression, format("Column mask for '%s.%s'", table.getName(), column));
 
             try {
+                Identity maskIdentity = mask.getSecurityIdentity()
+                        .map(maskUser -> Identity.forUser(maskUser)
+                                .withGroups(groupProvider.getGroups(maskUser))
+                                .build())
+                        .orElseGet(session::getIdentity);
                 expressionAnalysis = ExpressionAnalyzer.analyzeExpression(
-                        createViewSession(mask.getCatalog(), mask.getSchema(), Identity.forUser(mask.getIdentity()).build(), session.getPath()), // TODO: path should be included in row filter
+                        createViewSession(mask.getCatalog(), mask.getSchema(), maskIdentity, session.getPath()), // TODO: path should be included in row filter
                         plannerContext,
                         statementAnalyzerFactory,
                         accessControl,
@@ -4272,7 +4943,7 @@ class StatementAnalyzer
 
                 if (!isRecursive) {
                     Query query = withQuery.getQuery();
-                    process(query, withScopeBuilder.build());
+                    analyze(query, withScopeBuilder.build());
 
                     // check if all or none of the columns are explicitly alias
                     if (withQuery.getColumnNames().isPresent()) {
@@ -4301,10 +4972,9 @@ class StatementAnalyzer
             // if RECURSIVE is specified, all queries in the WITH list are considered potentially recursive
             // try resolve WITH query as expandable query
             // a) validate shape of the query and location of recursive reference
-            if (!(withQuery.getQuery().getQueryBody() instanceof Union)) {
+            if (!(withQuery.getQuery().getQueryBody() instanceof Union union)) {
                 return false;
             }
-            Union union = (Union) withQuery.getQuery().getQueryBody();
             if (union.getRelations().size() != 2) {
                 return false;
             }
@@ -4427,10 +5097,9 @@ class StatementAnalyzer
         private Predicate<Node> isTableWithName(Identifier name)
         {
             return node -> {
-                if (!(node instanceof Table)) {
+                if (!(node instanceof Table table)) {
                     return false;
                 }
-                Table table = (Table) node;
                 QualifiedName tableName = table.getName();
                 return tableName.getPrefix().isEmpty() && tableName.hasSuffix(QualifiedName.of(name.getValue()));
             };
@@ -4439,10 +5108,9 @@ class StatementAnalyzer
         private Predicate<Node> isQueryWithNameShadowed(Identifier name)
         {
             return node -> {
-                if (!(node instanceof Query)) {
+                if (!(node instanceof Query query)) {
                     return false;
                 }
-                Query query = (Query) node;
                 if (query.getWith().isEmpty()) {
                     return false;
                 }
@@ -4545,7 +5213,7 @@ class StatementAnalyzer
             }
 
             for (Expression expression : orderByExpressions) {
-                if (!DeterminismEvaluator.isDeterministic(expression, this::getResolvedFunction)) {
+                if (!isDeterministic(expression, this::getResolvedFunction)) {
                     throw semanticException(EXPRESSION_NOT_IN_DISTINCT, expression, "Non deterministic ORDER BY expression is not supported with SELECT DISTINCT");
                 }
             }
@@ -4555,22 +5223,19 @@ class StatementAnalyzer
         {
             ImmutableSet.Builder<CanonicalizationAware<Identifier>> aliases = ImmutableSet.builder();
             for (SelectItem item : node.getSelectItems()) {
-                if (item instanceof SingleColumn) {
-                    SingleColumn column = (SingleColumn) item;
+                if (item instanceof SingleColumn column) {
                     Optional<Identifier> alias = column.getAlias();
                     if (alias.isPresent()) {
                         aliases.add(canonicalizationAwareKey(alias.get()));
                     }
-                    else if (column.getExpression() instanceof Identifier) {
-                        aliases.add(canonicalizationAwareKey((Identifier) column.getExpression()));
+                    else if (column.getExpression() instanceof Identifier identifier) {
+                        aliases.add(canonicalizationAwareKey(identifier));
                     }
-                    else if (column.getExpression() instanceof DereferenceExpression) {
-                        aliases.add(canonicalizationAwareKey(((DereferenceExpression) column.getExpression()).getField().orElseThrow()));
+                    else if (column.getExpression() instanceof DereferenceExpression dereferenceExpression) {
+                        aliases.add(canonicalizationAwareKey(dereferenceExpression.getField().orElseThrow()));
                     }
                 }
-                else if (item instanceof AllColumns) {
-                    AllColumns allColumns = (AllColumns) item;
-
+                else if (item instanceof AllColumns allColumns) {
                     List<Field> fields = analysis.getSelectAllResultFields(allColumns);
                     checkNotNull(fields, "output fields is null for select item %s", item);
                     for (int i = 0; i < fields.size(); i++) {
@@ -4606,7 +5271,7 @@ class StatementAnalyzer
                 if (expression instanceof LongLiteral) {
                     // this is an ordinal in the output tuple
 
-                    long ordinal = ((LongLiteral) expression).getValue();
+                    long ordinal = ((LongLiteral) expression).getParsedValue();
                     if (ordinal < 1 || ordinal > orderByScope.getRelationType().getVisibleFieldCount()) {
                         throw semanticException(INVALID_COLUMN_REFERENCE, expression, "ORDER BY position %s is not in select list", ordinal);
                     }
@@ -4641,7 +5306,7 @@ class StatementAnalyzer
         {
             long rowCount;
             if (node.getRowCount() instanceof LongLiteral) {
-                rowCount = ((LongLiteral) node.getRowCount()).getValue();
+                rowCount = ((LongLiteral) node.getRowCount()).getParsedValue();
             }
             else {
                 checkState(node.getRowCount() instanceof Parameter, "unexpected OFFSET rowCount: " + node.getRowCount().getClass().getSimpleName());
@@ -4675,7 +5340,7 @@ class StatementAnalyzer
             if (node.getRowCount().isPresent()) {
                 Expression count = node.getRowCount().get();
                 if (count instanceof LongLiteral) {
-                    rowCount = ((LongLiteral) count).getValue();
+                    rowCount = ((LongLiteral) count).getParsedValue();
                 }
                 else {
                     checkState(count instanceof Parameter, "unexpected FETCH FIRST rowCount: " + count.getClass().getSimpleName());
@@ -4700,7 +5365,7 @@ class StatementAnalyzer
                 rowCount = OptionalLong.empty();
             }
             else if (node.getRowCount() instanceof LongLiteral) {
-                rowCount = OptionalLong.of(((LongLiteral) node.getRowCount()).getValue());
+                rowCount = OptionalLong.of(((LongLiteral) node.getRowCount()).getParsedValue());
             }
             else {
                 checkState(node.getRowCount() instanceof Parameter, "unexpected LIMIT rowCount: " + node.getRowCount().getClass().getSimpleName());
@@ -4844,9 +5509,9 @@ class StatementAnalyzer
                 if (!(type instanceof TimestampWithTimeZoneType ||
                         type instanceof TimestampType ||
                         type instanceof DateType)) {
-                    throw semanticException(TYPE_MISMATCH, queryPeriod, format(
+                    throw semanticException(TYPE_MISMATCH, queryPeriod,
                             "Type %s invalid. Temporal pointers must be of type Timestamp, Timestamp with Time Zone, or Date.",
-                            type.getDisplayName()));
+                            type.getDisplayName());
                 }
                 if (pointer == null) {
                     throw semanticException(INVALID_ARGUMENTS, queryPeriod, "Pointer value cannot be NULL");
@@ -4857,7 +5522,8 @@ class StatementAnalyzer
                     throw semanticException(
                             INVALID_ARGUMENTS,
                             queryPeriod,
-                            format("Pointer value '%s' is not in the past", varchar));
+                            "Pointer value '%s' is not in the past",
+                            varchar);
                 }
             }
             else {
@@ -4898,6 +5564,7 @@ class StatementAnalyzer
                 .setQueryId(session.getQueryId())
                 .setTransactionId(session.getTransactionId().orElse(null))
                 .setIdentity(identity)
+                .setOriginalIdentity(session.getOriginalIdentity())
                 .setSource(session.getSource().orElse(null))
                 .setCatalog(catalog)
                 .setSchema(schema)
@@ -4922,5 +5589,49 @@ class StatementAnalyzer
         }
 
         return false;
+    }
+
+    private static final class ArgumentAnalysis
+    {
+        private final Argument argument;
+        private final Optional<TableArgumentAnalysis> tableArgumentAnalysis;
+
+        public ArgumentAnalysis(Argument argument, Optional<TableArgumentAnalysis> tableArgumentAnalysis)
+        {
+            this.argument = requireNonNull(argument, "argument is null");
+            this.tableArgumentAnalysis = requireNonNull(tableArgumentAnalysis, "tableArgumentAnalysis is null");
+        }
+
+        public Argument getArgument()
+        {
+            return argument;
+        }
+
+        public Optional<TableArgumentAnalysis> getTableArgumentAnalysis()
+        {
+            return tableArgumentAnalysis;
+        }
+    }
+
+    private static final class ArgumentsAnalysis
+    {
+        private final Map<String, Argument> passedArguments;
+        private final List<TableArgumentAnalysis> tableArgumentAnalyses;
+
+        public ArgumentsAnalysis(Map<String, Argument> passedArguments, List<TableArgumentAnalysis> tableArgumentAnalyses)
+        {
+            this.passedArguments = ImmutableMap.copyOf(requireNonNull(passedArguments, "passedArguments is null"));
+            this.tableArgumentAnalyses = ImmutableList.copyOf(requireNonNull(tableArgumentAnalyses, "tableArgumentAnalyses is null"));
+        }
+
+        public Map<String, Argument> getPassedArguments()
+        {
+            return passedArguments;
+        }
+
+        public List<TableArgumentAnalysis> getTableArgumentAnalyses()
+        {
+            return tableArgumentAnalyses;
+        }
     }
 }

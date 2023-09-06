@@ -87,6 +87,8 @@ public class LocalDispatchQueryFactory
 
         this.clusterSizeMonitor = requireNonNull(clusterSizeMonitor, "clusterSizeMonitor is null");
 
+        this.clusterSizeMonitor.addNode();
+
         this.executor = requireNonNull(dispatchExecutor, "dispatchExecutor is null").getExecutor();
     }
 

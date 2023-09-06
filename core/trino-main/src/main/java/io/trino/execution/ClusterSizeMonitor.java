@@ -79,8 +79,12 @@ public class ClusterSizeMonitor
     @PostConstruct
     public void start()
     {
-        nodeManager.addNodeChangeListener(listener);
         updateAllNodes(nodeManager.getAllNodes());
+    }
+
+    public void addNode()
+    {
+        nodeManager.addNodeChangeListener(listener);
     }
 
     @PreDestroy
